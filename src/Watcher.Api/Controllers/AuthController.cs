@@ -1,8 +1,13 @@
+using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Watcher.Api.Security;
+using Watcher.Domain.Entities;
+using Watcher.Infrastructure.Persistence;
 
 namespace Watcher.Api.Controllers;
 
@@ -36,8 +41,18 @@ public sealed class AuthController(IConfiguration configuration) : ControllerBas
     [Authorize]
     [ValidateAntiForgeryToken]
     [HttpPost("logout")]
-    public async Task<IActionResult> Logout()
+    public async Task<IActionResult> Logout(
+        [FromServices] WatcherDbContext db,
+        [FromServices] TimeProvider clock,
+        CancellationToken cancellationToken)
     {
+        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId))
+        {
+            return Forbid();
+        }
+
+        await AuthenticationAuditWriter.RecordAsync(
+            db, clock, "auth.logout", userId, "session", cancellationToken: cancellationToken);
         await HttpContext.SignOutAsync();
         return NoContent();
     }

@@ -26,6 +26,7 @@ public sealed class GoogleTicketTests
 
         Assert.NotNull(result.Failure);
         Assert.Contains("підтвердив", result.Failure.Message, StringComparison.OrdinalIgnoreCase);
+        AssertRejectedLoginAudit(result, "email_unverified");
     }
 
     [Fact]
@@ -37,6 +38,7 @@ public sealed class GoogleTicketTests
 
         Assert.NotNull(result.Failure);
         Assert.Contains("не зареєстрований", result.Failure.Message, StringComparison.OrdinalIgnoreCase);
+        AssertRejectedLoginAudit(result, "account_not_allowed");
     }
 
     [Fact]
@@ -47,6 +49,7 @@ public sealed class GoogleTicketTests
         TicketResult result = await RunTicketEventAsync(factory, emailVerified: true, accountIsActive: false);
 
         Assert.NotNull(result.Failure);
+        AssertRejectedLoginAudit(result, "account_not_allowed");
     }
 
     [Fact]
@@ -61,10 +64,27 @@ public sealed class GoogleTicketTests
         Assert.Contains(result.Claims, claim =>
             claim.Type == "kgta_user_id" && claim.Value == result.UserId.ToString());
         Assert.Contains(result.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == "admin");
+        AuditEvent audit = Assert.Single(result.AuditEvents);
+        Assert.Equal("auth.login.succeeded", audit.EventType);
+        Assert.Equal(result.UserId, audit.ActorId);
+        Assert.Contains("google", audit.Payload);
+        Assert.DoesNotContain("token", audit.Payload, StringComparison.OrdinalIgnoreCase);
     }
 
     private static WebApplicationFactory<Program> CreateFactory() =>
         new AuthTestWebApplicationFactory(googleEnabled: true);
+
+    private static void AssertRejectedLoginAudit(TicketResult result, string reason)
+    {
+        AuditEvent audit = Assert.Single(result.AuditEvents);
+        Assert.Equal("auth.login.rejected", audit.EventType);
+        Assert.Equal("system", audit.ActorType);
+        Assert.Null(audit.ActorId);
+        Assert.Contains(reason, audit.Payload);
+        Assert.DoesNotContain("operator@example.test", audit.Payload, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("google-subject", audit.Payload, StringComparison.Ordinal);
+        Assert.DoesNotContain("token", audit.Payload, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static async Task<TicketResult> RunTicketEventAsync(
         WebApplicationFactory<Program> factory,
@@ -126,8 +146,9 @@ public sealed class GoogleTicketTests
 
         await options.Events.OnCreatingTicket(context);
 
-        return new TicketResult(context.Result?.Failure, context.Identity?.Claims.ToArray() ?? [], userId);
+        AuditEvent[] auditEvents = await db.AuditEvents.AsNoTracking().ToArrayAsync();
+        return new TicketResult(context.Result?.Failure, context.Identity?.Claims.ToArray() ?? [], userId, auditEvents);
     }
 
-    private sealed record TicketResult(Exception? Failure, Claim[] Claims, Guid UserId);
+    private sealed record TicketResult(Exception? Failure, Claim[] Claims, Guid UserId, AuditEvent[] AuditEvents);
 }

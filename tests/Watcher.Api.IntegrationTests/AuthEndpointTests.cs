@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
 namespace Watcher.Api.IntegrationTests;
@@ -33,7 +34,8 @@ public sealed class AuthEndpointTests
     [Fact]
     public async Task Logout_expires_the_session_cookie_for_an_authenticated_user()
     {
-        using WebApplicationFactory<Program> factory = CreateFactory();
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
         using HttpClient client = CreateSecureClient(factory);
         var userId = Guid.NewGuid();
         var csrfToken = await GetCsrfTokenAsync(client, userId);
@@ -50,6 +52,13 @@ public sealed class AuthEndpointTests
 
         Assert.Contains("expires=", sessionCookie, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("secure", sessionCookie, StringComparison.OrdinalIgnoreCase);
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        AuditEvent audit = await db.AuditEvents.SingleAsync();
+        Assert.Equal("auth.logout", audit.EventType);
+        Assert.Equal(userId, audit.ActorId);
+        Assert.Contains("session", audit.Payload);
+        Assert.DoesNotContain("token", audit.Payload, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.EntityFrameworkCore;
+using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -54,11 +55,24 @@ if (google.GetValue<bool>("Enabled"))
         options.ClientSecret = clientSecret;
         options.Scope.Add("email");
         options.Scope.Add("profile");
+        options.Events.OnRemoteFailure = async context =>
+        {
+            WatcherDbContext db = context.HttpContext.RequestServices.GetRequiredService<WatcherDbContext>();
+            TimeProvider clock = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+            await AuthenticationAuditWriter.RecordAsync(
+                db, clock, "auth.login.rejected", null, "google", "provider_failure",
+                context.HttpContext.RequestAborted);
+        };
         options.Events.OnCreatingTicket = async context =>
         {
             if (!context.User.TryGetProperty("email_verified", out JsonElement verified) ||
                 verified.ValueKind != JsonValueKind.True)
             {
+                WatcherDbContext auditDb = context.HttpContext.RequestServices.GetRequiredService<WatcherDbContext>();
+                TimeProvider auditClock = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+                await AuthenticationAuditWriter.RecordAsync(
+                    auditDb, auditClock, "auth.login.rejected", null, "google", "email_unverified",
+                    context.HttpContext.RequestAborted);
                 context.Fail("Google підтвердив неперевірену адресу електронної пошти.");
                 return;
             }
@@ -70,6 +84,10 @@ if (google.GetValue<bool>("Enabled"))
                 context.HttpContext.RequestAborted);
             if (account is null)
             {
+                TimeProvider auditClock = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+                await AuthenticationAuditWriter.RecordAsync(
+                    db, auditClock, "auth.login.rejected", null, "google", "account_not_allowed",
+                    context.HttpContext.RequestAborted);
                 context.Fail("Обліковий запис не зареєстрований у системі.");
                 return;
             }
@@ -83,6 +101,11 @@ if (google.GetValue<bool>("Enabled"))
             {
                 context.Identity.AddClaim(new Claim(ClaimTypes.Role, role));
             }
+
+            TimeProvider clock = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+            await AuthenticationAuditWriter.RecordAsync(
+                db, clock, "auth.login.succeeded", account.Id, "google",
+                cancellationToken: context.HttpContext.RequestAborted);
         };
     });
 }
