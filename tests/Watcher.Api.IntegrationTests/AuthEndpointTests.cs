@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -10,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -124,12 +127,126 @@ public sealed class AuthEndpointTests
     }
 
     [Fact]
+    public async Task Existing_session_loses_global_role_after_database_revocation()
+    {
+        using var factory = new SessionValidationFactory();
+        using HttpClient client = CreateSecureClient(factory);
+        (Guid userId, Guid roleId) = await SeedAdministratorAsync(factory);
+        client.DefaultRequestHeaders.Add("Cookie", CreateSessionCookie(factory, userId, "admin"));
+
+        using HttpResponseMessage beforeRevocation = await client.GetAsync("/api/v1/locations");
+        Assert.Equal(HttpStatusCode.OK, beforeRevocation.StatusCode);
+        Assert.Single(await beforeRevocation.Content.ReadFromJsonAsync<LocationResponse[]>() ?? []);
+
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            UserRole assignment = await db.UserRoles.SingleAsync(item => item.RoleId == roleId);
+            db.UserRoles.Remove(assignment);
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage afterRevocation = await client.GetAsync("/api/v1/locations");
+        Assert.Equal(HttpStatusCode.OK, afterRevocation.StatusCode);
+        Assert.Empty(await afterRevocation.Content.ReadFromJsonAsync<LocationResponse[]>() ?? []);
+    }
+
+    [Fact]
+    public async Task Existing_session_is_rejected_after_account_is_blocked()
+    {
+        using var factory = new SessionValidationFactory();
+        using HttpClient client = CreateSecureClient(factory);
+        (Guid userId, _) = await SeedAdministratorAsync(factory);
+        client.DefaultRequestHeaders.Add("Cookie", CreateSessionCookie(factory, userId, "admin"));
+
+        using HttpResponseMessage beforeBlock = await client.GetAsync("/api/v1/locations");
+        Assert.Equal(HttpStatusCode.OK, beforeBlock.StatusCode);
+
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            UserAccount account = await db.Users.SingleAsync(user => user.Id == userId);
+            account.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage afterBlock = await client.GetAsync("/api/v1/locations");
+        Assert.Equal(HttpStatusCode.Unauthorized, afterBlock.StatusCode);
+        Assert.Contains(afterBlock.Headers.GetValues("Set-Cookie"), value =>
+            value.StartsWith("__Host-KgtaAlert.Session=", StringComparison.Ordinal) &&
+            value.Contains("expires=", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<(Guid UserId, Guid RoleId)> SeedAdministratorAsync(
+        WebApplicationFactory<Program> factory)
+    {
+        var userId = Guid.NewGuid();
+        var roleId = Guid.NewGuid();
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        db.Users.Add(new UserAccount
+        {
+            Id = userId,
+            ExternalSubject = "session-test-user",
+            Email = "session@example.test",
+            IsActive = true
+        });
+        db.Roles.Add(new Role { Id = roleId, Code = "admin", Name = "Адміністратор" });
+        db.UserRoles.Add(new UserRole { Id = Guid.NewGuid(), UserId = userId, RoleId = roleId });
+        db.Locations.Add(new Location
+        {
+            Id = Guid.NewGuid(),
+            Code = "main",
+            Name = "Головний корпус",
+            IsActive = true
+        });
+        await db.SaveChangesAsync();
+        return (userId, roleId);
+    }
+
+    private static string CreateSessionCookie(WebApplicationFactory<Program> factory, Guid userId, string role)
+    {
+        CookieAuthenticationOptions options = factory.Services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>()
+            .Get(CookieAuthenticationDefaults.AuthenticationScheme);
+        var identity = new ClaimsIdentity(
+        [
+            new Claim("kgta_user_id", userId.ToString()),
+            new Claim(ClaimTypes.Role, role)
+        ], CookieAuthenticationDefaults.AuthenticationScheme);
+        var ticket = new AuthenticationTicket(
+            new ClaimsPrincipal(identity), CookieAuthenticationDefaults.AuthenticationScheme);
+        return $"__Host-KgtaAlert.Session={options.TicketDataFormat.Protect(ticket)}";
+    }
+
+    private sealed record LocationResponse(Guid Id, string Name, string Code);
+
+    [Fact]
     public void Startup_fails_when_google_login_is_enabled_without_credentials()
     {
         using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
             googleEnabled: true, googleCredentialsConfigured: false);
 
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+    }
+
+    [Fact]
+    public void Production_startup_requires_persistent_data_protection_keys_and_certificate()
+    {
+        using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Production");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["DataProtection:KeysPath"] = "",
+                    ["DataProtection:CertificatePath"] = "",
+                    ["DataProtection:CertificatePassword"] = ""
+                }));
+        });
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
+
+        Assert.Contains("постійне сховище ключів Data Protection", exception.Message, StringComparison.Ordinal);
     }
 
     private static WebApplicationFactory<Program> CreateFactory(bool googleEnabled = false) =>
@@ -156,6 +273,22 @@ public sealed class AuthEndpointTests
     }
 
     private sealed record CsrfTokenResponse(string Token);
+}
+
+internal sealed class SessionValidationFactory : WebApplicationFactory<Program>
+{
+    private readonly string _databaseName = Guid.NewGuid().ToString();
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            services.RemoveAll<WatcherDbContext>();
+            services.RemoveAll<DbContextOptions<WatcherDbContext>>();
+            services.RemoveAll<IDbContextOptionsConfiguration<WatcherDbContext>>();
+            services.AddDbContext<WatcherDbContext>(options => options.UseInMemoryDatabase(_databaseName));
+        });
+    }
 }
 
 internal sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Program>

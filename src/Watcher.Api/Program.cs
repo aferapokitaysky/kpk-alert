@@ -1,7 +1,10 @@
 using System.Security.Claims;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
@@ -11,6 +14,44 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthorization();
+var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
+X509Certificate2? dataProtectionCertificate = null;
+if (builder.Environment.IsProduction())
+{
+    if (string.IsNullOrWhiteSpace(dataProtectionPath))
+    {
+        throw new InvalidOperationException("Для production потрібно налаштувати постійне сховище ключів Data Protection.");
+    }
+
+    var certificatePath = builder.Configuration["DataProtection:CertificatePath"];
+    var certificatePassword = builder.Configuration["DataProtection:CertificatePassword"];
+    if (string.IsNullOrWhiteSpace(certificatePath) || string.IsNullOrWhiteSpace(certificatePassword))
+    {
+        throw new InvalidOperationException(
+            "Для production потрібно налаштувати сертифікат шифрування ключів Data Protection.");
+    }
+
+    dataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+        certificatePath, certificatePassword, X509KeyStorageFlags.EphemeralKeySet);
+    if (!dataProtectionCertificate.HasPrivateKey)
+    {
+        dataProtectionCertificate.Dispose();
+        throw new InvalidOperationException("Сертифікат Data Protection має містити приватний ключ.");
+    }
+
+    builder.Services.AddSingleton(dataProtectionCertificate);
+}
+
+IDataProtectionBuilder dataProtection = builder.Services.AddDataProtection()
+    .SetApplicationName("KGTA.Alert");
+if (!string.IsNullOrWhiteSpace(dataProtectionPath))
+{
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionPath));
+}
+if (builder.Environment.IsProduction())
+{
+    dataProtection.ProtectKeysWithCertificate(dataProtectionCertificate!);
+}
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-CSRF-TOKEN";
@@ -36,6 +77,52 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return Task.CompletedTask;
+        };
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var userIdValue = context.Principal?.FindFirstValue("kgta_user_id");
+            if (!Guid.TryParse(userIdValue, out Guid userId))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                return;
+            }
+
+            WatcherDbContext db = context.HttpContext.RequestServices.GetRequiredService<WatcherDbContext>();
+            var isActive = await db.Users.AsNoTracking()
+                .AnyAsync(user => user.Id == userId && user.IsActive, context.HttpContext.RequestAborted);
+            if (!isActive)
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                return;
+            }
+
+            var currentRoles = await db.UserRoles.AsNoTracking()
+                .Where(assignment => assignment.UserId == userId && assignment.LocationId == null)
+                .Join(db.Roles.AsNoTracking(), assignment => assignment.RoleId, role => role.Id,
+                    (_, role) => role.Code)
+                .Distinct()
+                .ToArrayAsync(context.HttpContext.RequestAborted);
+            var ticketRoles = context.Principal!.FindAll(ClaimTypes.Role)
+                .Select(claim => claim.Value).Distinct(StringComparer.Ordinal).ToArray();
+            if (!ticketRoles.Order(StringComparer.Ordinal).SequenceEqual(currentRoles.Order(StringComparer.Ordinal),
+                    StringComparer.Ordinal))
+            {
+                var identity = (ClaimsIdentity)context.Principal.Identity!;
+                foreach (Claim claim in identity.FindAll(ClaimTypes.Role).ToArray())
+                {
+                    identity.RemoveClaim(claim);
+                }
+
+                foreach (var role in currentRoles)
+                {
+                    identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                }
+
+                context.ReplacePrincipal(context.Principal);
+                context.ShouldRenew = true;
+            }
         };
     });
 

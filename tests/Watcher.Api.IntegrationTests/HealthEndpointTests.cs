@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 
 namespace Watcher.Api.IntegrationTests;
 
@@ -25,6 +27,26 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("application/json", response.Content.Headers.ContentType?.MediaType);
         Assert.Equal("{\"status\":\"ok\"}", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Liveness_is_successful_when_database_configuration_is_missing()
+    {
+        using WebApplicationFactory<Program> factory = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Watcher"] = ""
+                })));
+        using HttpClient client = factory.CreateClient();
+
+        using HttpResponseMessage live = await client.GetAsync("/api/v1/health/live");
+        using HttpResponseMessage ready = await client.GetAsync("/api/v1/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, ready.StatusCode);
+        Assert.Equal("{\"status\":\"unavailable\",\"dependency\":\"database\"}",
+            await ready.Content.ReadAsStringAsync());
     }
 
     [Fact]
@@ -68,5 +90,21 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         using HttpResponseMessage response = await _client.GetAsync("/api/v1/auth/login");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+}
+
+public sealed class PostgresHealthEndpointTests : IClassFixture<PostgresApiFixture>
+{
+    private readonly PostgresApiFixture _fixture;
+
+    public PostgresHealthEndpointTests(PostgresApiFixture fixture) => _fixture = fixture;
+
+    [PostgresFact]
+    public async Task Readiness_is_successful_when_postgresql_is_available()
+    {
+        using HttpResponseMessage response = await _fixture.Client.GetAsync("/api/v1/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("{\"status\":\"ok\"}", await response.Content.ReadAsStringAsync());
     }
 }

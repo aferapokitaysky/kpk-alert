@@ -11,6 +11,9 @@ RUN dotnet publish src/Watcher.Api/Watcher.Api.csproj -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 ENV ASPNETCORE_HTTP_PORTS=8080
+RUN mkdir -p /var/lib/kgta-alert/data-protection-keys \
+    && chown -R $APP_UID:$APP_UID /var/lib/kgta-alert \
+    && chmod 700 /var/lib/kgta-alert/data-protection-keys
 EXPOSE 8080
 COPY --from=build /app/publish .
 USER $APP_UID

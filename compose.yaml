@@ -9,11 +9,16 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ConnectionStrings__Watcher: Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      DataProtection__KeysPath: /var/lib/kgta-alert/data-protection-keys
+      DataProtection__CertificatePath: ${DATAPROTECTION_CERTIFICATE_PATH:-}
+      DataProtection__CertificatePassword: ${DATAPROTECTION_CERTIFICATE_PASSWORD:-}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - data-protection-keys:/var/lib/kgta-alert/data-protection-keys
   postgres:
     image: postgres:16.10-alpine
     restart: unless-stopped
@@ -34,3 +39,4 @@ services:
 
 volumes:
   postgres-data:
+  data-protection-keys:
