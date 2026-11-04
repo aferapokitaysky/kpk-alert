@@ -6,6 +6,9 @@
         <Configuration>
           <Format>cobertura</Format>
           <ExcludeByFile>**/Persistence/Migrations/**/*.cs</ExcludeByFile>
+          <Threshold>70</Threshold>
+          <ThresholdType>line</ThresholdType>
+          <ThresholdStat>Minimum</ThresholdStat>
         </Configuration>
       </DataCollector>
     </DataCollectors>
