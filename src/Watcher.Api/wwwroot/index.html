@@ -24,12 +24,8 @@
         <div class="page-heading"><div><p class="eyebrow">КГТА · ОПОВІЩЕННЯ</p><h1>Пульт керування</h1><p class="lead">Оберіть сценарій і корпуси для запуску.</p></div><label class="location-select">Корпус<select aria-label="Оберіть корпус" id="location-select"><option value="">Увійдіть, щоб переглянути корпуси</option></select></label></div>
         <div class="notice"><span class="notice-mark">i</span><span><strong>Перевірте цільові корпуси перед запуском.</strong><br>Після підтвердження команда буде надіслана вибраним вузлам.</span></div>
         <h2>Швидкий запуск</h2>
-        <div class="actions">
-          <button class="action action-danger" data-preset="active-threat"><span class="action-icon">!</span><span><strong>Загроза нападу</strong><small>Негайне оповіщення</small></span><b>›</b></button>
-          <button class="action action-warning" data-preset="evacuation"><span class="action-icon">↗</span><span><strong>Евакуація</strong><small>Пожежа або інша небезпека</small></span><b>›</b></button>
-          <button class="action action-blue" data-preset="air-raid"><span class="action-icon">⌁</span><span><strong>Повітряна тривога</strong><small>Ручний запуск сигналу</small></span><b>›</b></button>
-          <button class="action action-neutral" data-preset="all-clear"><span class="action-icon">✓</span><span><strong>Відбій</strong><small>Завершити активне оповіщення</small></span><b>›</b></button>
-        </div>
+        <div class="actions" id="preset-actions" aria-live="polite"></div>
+        <div class="empty" id="presets-empty" aria-live="polite"><strong>Опублікованих сценаріїв поки немає</strong><p>Зверніться до адміністратора, щоб налаштувати доступні сценарії.</p></div>
         <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
         <section class="panel"><div class="panel-heading"><div><h2>Стан вузлів</h2><p>Підтвердження від пристроїв у корпусах</p></div><a href="/status">Усі вузли <span>→</span></a></div><div class="empty"><span class="empty-icon">•</span><strong>Вузли ще не підключені</strong><p>Після реєстрації пристрою його стан з’явиться тут.</p></div></section>
         <footer>КГТА · Система оповіщення <span>Усі дії фіксуються в журналі</span></footer>

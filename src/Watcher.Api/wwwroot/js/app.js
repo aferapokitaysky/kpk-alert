@@ -6,6 +6,7 @@ const feedback = document.querySelector('#feedback');
 const confirmTitle = document.querySelector('#confirm-title');
 const confirmCopy = document.querySelector('#confirm-copy');
 const confirmSend = document.querySelector('#confirm-send');
+const presetActions = document.querySelector('#preset-actions');
 let selectedPreset = null;
 const commandAttempt = new AlertCommandAttempt();
 
@@ -37,18 +38,60 @@ async function loadLocations() {
   }
 }
 
-document.querySelectorAll('[data-preset]').forEach((button) => {
+function createPresetButton(preset) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'action action-neutral';
+  button.dataset.preset = preset.code;
+
+  const icon = document.createElement('span');
+  icon.className = 'action-icon';
+  icon.textContent = '▶';
+
+  const copy = document.createElement('span');
+  const name = document.createElement('strong');
+  name.textContent = preset.name;
+  const description = document.createElement('small');
+  description.textContent = 'Запуск сценарію';
+  copy.append(name, description);
+
+  const arrow = document.createElement('b');
+  arrow.textContent = '›';
+  button.append(icon, copy, arrow);
   button.addEventListener('click', () => {
     if (!locationSelect.value) {
       showFeedback('Увійдіть і оберіть корпус перед запуском сценарію.', true);
       return;
     }
-    selectedPreset = button.dataset.preset;
-    confirmTitle.textContent = `Запустити сценарій «${button.querySelector('strong').textContent}»?`;
+    selectedPreset = preset.code;
+    confirmTitle.textContent = `Запустити сценарій «${preset.name}»?`;
     confirmCopy.textContent = `Команда буде надіслана до корпусу «${locationSelect.selectedOptions[0].textContent}».`;
     dialog.showModal();
   });
-});
+  return button;
+}
+
+async function loadPresets() {
+  try {
+    const response = await fetch('/api/v1/presets');
+    if (response.status === 401) {
+      document.querySelector('#presets-empty').replaceChildren(document.createTextNode('Увійдіть, щоб переглянути доступні сценарії.'));
+      return;
+    }
+    if (response.status === 403) {
+      document.querySelector('#presets-empty').replaceChildren(document.createTextNode('У вас немає права переглядати сценарії.'));
+      return;
+    }
+    if (!response.ok) throw new Error('presets-unavailable');
+
+    const presets = await response.json();
+    presetActions.replaceChildren(...presets.map(createPresetButton));
+    presetActions.hidden = presets.length === 0;
+    document.querySelector('#presets-empty').hidden = presets.length > 0;
+  } catch {
+    document.querySelector('#presets-empty').replaceChildren(document.createTextNode('Не вдалося завантажити сценарії. Оновіть сторінку або зверніться до адміністратора.'));
+  }
+}
 
 confirmSend.addEventListener('click', async (event) => {
   event.preventDefault();
@@ -93,3 +136,4 @@ confirmSend.addEventListener('click', async (event) => {
 });
 
 loadLocations();
+loadPresets();

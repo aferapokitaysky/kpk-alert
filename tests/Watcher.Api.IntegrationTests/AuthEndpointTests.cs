@@ -75,13 +75,26 @@ public sealed class AuthEndpointTests
         new AuthTestWebApplicationFactory(googleEnabled, googleCredentialsConfigured: true);
 }
 
-internal sealed class AuthTestWebApplicationFactory(
-    bool googleEnabled,
-    bool googleCredentialsConfigured = true) : WebApplicationFactory<Program>
+internal sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private readonly bool _googleEnabled;
+    private readonly bool _googleCredentialsConfigured;
+    private readonly bool _useInMemoryDatabase;
+    private readonly string _inMemoryDatabaseName = Guid.NewGuid().ToString();
+
+    public AuthTestWebApplicationFactory(
+        bool googleEnabled,
+        bool googleCredentialsConfigured = true,
+        bool useInMemoryDatabase = false)
+    {
+        _googleEnabled = googleEnabled;
+        _googleCredentialsConfigured = googleCredentialsConfigured;
+        _useInMemoryDatabase = useInMemoryDatabase;
+    }
+
     protected override IHost CreateHost(IHostBuilder builder)
     {
-        if (googleEnabled)
+        if (_googleEnabled)
         {
             builder.ConfigureHostConfiguration(configuration =>
             {
@@ -89,7 +102,7 @@ internal sealed class AuthTestWebApplicationFactory(
                 {
                     ["Authentication:Google:Enabled"] = "true"
                 };
-                if (googleCredentialsConfigured)
+                if (_googleCredentialsConfigured)
                 {
                     settings["Authentication:Google:ClientId"] = "test-client-id";
                     settings["Authentication:Google:ClientSecret"] = "test-client-secret";
@@ -114,13 +127,13 @@ internal sealed class AuthTestWebApplicationFactory(
             }).AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
                 TestAuthenticationHandler.SchemeName, _ => { });
 
-            if (googleEnabled)
+            if (_googleEnabled || _useInMemoryDatabase)
             {
                 services.RemoveAll<WatcherDbContext>();
                 services.RemoveAll<DbContextOptions<WatcherDbContext>>();
                 services.RemoveAll<IDbContextOptionsConfiguration<WatcherDbContext>>();
                 services.AddDbContext<WatcherDbContext>(options =>
-                    options.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+                    options.UseInMemoryDatabase(_inMemoryDatabaseName));
             }
         });
     }
