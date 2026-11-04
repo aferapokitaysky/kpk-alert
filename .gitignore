@@ -1,0 +1,28 @@
+# Локальная конфигурация и секреты
+.env
+.env.*
+!.env.example
+*.pfx
+*.pem
+*.key
+
+# .NET
+bin/
+obj/
+.vs/
+TestResults/
+
+# Node.js
+node_modules/
+dist/
+
+# Локальные данные Edge Agent
+*.db
+*.db-shm
+*.db-wal
+audio-cache/
+
+# ОС и IDE
+.DS_Store
+.idea/
+*.user
