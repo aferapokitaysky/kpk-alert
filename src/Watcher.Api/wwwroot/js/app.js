@@ -1,3 +1,5 @@
+import { AlertCommandAttempt } from './alert-command-attempt.js';
+
 const dialog = document.querySelector('#confirm-dialog');
 const locationSelect = document.querySelector('#location-select');
 const feedback = document.querySelector('#feedback');
@@ -5,6 +7,7 @@ const confirmTitle = document.querySelector('#confirm-title');
 const confirmCopy = document.querySelector('#confirm-copy');
 const confirmSend = document.querySelector('#confirm-send');
 let selectedPreset = null;
+const commandAttempt = new AlertCommandAttempt();
 
 function showFeedback(message, isError = false) {
   feedback.textContent = message;
@@ -51,6 +54,8 @@ confirmSend.addEventListener('click', async (event) => {
   event.preventDefault();
   if (!selectedPreset || !locationSelect.value) return;
 
+  const presetCode = selectedPreset;
+  const locationId = locationSelect.value;
   confirmSend.disabled = true;
   confirmSend.textContent = 'Надсилання…';
   try {
@@ -58,12 +63,12 @@ confirmSend.addEventListener('click', async (event) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Idempotency-Key': crypto.randomUUID()
+        'Idempotency-Key': commandAttempt.keyFor(presetCode, locationId)
       },
       body: JSON.stringify({
         action: 'start',
-        presetCode: selectedPreset,
-        locationIds: [locationSelect.value]
+        presetCode,
+        locationIds: [locationId]
       })
     });
     if (response.status === 401) {
@@ -76,6 +81,7 @@ confirmSend.addEventListener('click', async (event) => {
     }
     if (!response.ok) throw new Error('command-rejected');
 
+    commandAttempt.complete(presetCode, locationId);
     dialog.close();
     showFeedback('Команду записано. Стан відтворення буде показано після підтвердження від вузла.');
   } catch {
