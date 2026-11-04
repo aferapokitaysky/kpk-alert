@@ -38,17 +38,7 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             .SingleOrDefaultAsync(command => command.IdempotencyKey == idempotencyKey, cancellationToken);
         if (existing is not null)
         {
-            if (existing.InitiatedByUserId != userId)
-            {
-                return Conflict();
-            }
-
-            if (!Matches(existing, request))
-            {
-                return Conflict();
-            }
-
-            return AcceptedAtAction(nameof(Get), new { id = existing.Id }, ToResponse(existing));
+            return ReplayOrConflict(existing, userId, request);
         }
 
         if (request.Action != "start" || string.IsNullOrWhiteSpace(request.PresetCode) ||
@@ -151,7 +141,12 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             (exception.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
         {
             await transaction.RollbackAsync(cancellationToken);
-            return Conflict();
+            AlertCommand? concurrentReplay = await db.AlertCommands.AsNoTracking()
+                .Include(item => item.Targets)
+                .SingleOrDefaultAsync(item => item.IdempotencyKey == idempotencyKey, cancellationToken);
+            return concurrentReplay is null
+                ? Conflict()
+                : ReplayOrConflict(concurrentReplay, userId, request);
         }
 
         return AcceptedAtAction(nameof(Get), new { id = command.Id }, ToResponse(command));
@@ -198,5 +193,18 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
 
         var existingLocationIds = command.Targets.Select(target => target.LocationId).ToHashSet();
         return existingLocationIds.SetEquals(locationIds);
+    }
+
+    private IActionResult ReplayOrConflict(
+        AlertCommand existing,
+        Guid userId,
+        CreateAlertCommandRequest request)
+    {
+        if (existing.InitiatedByUserId != userId || !Matches(existing, request))
+        {
+            return Conflict();
+        }
+
+        return AcceptedAtAction(nameof(Get), new { id = existing.Id }, ToResponse(existing));
     }
 }

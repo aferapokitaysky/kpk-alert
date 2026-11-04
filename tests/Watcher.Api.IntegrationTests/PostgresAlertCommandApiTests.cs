@@ -110,7 +110,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
     }
 
     [PostgresFact]
-    public async Task Concurrent_retries_with_one_idempotency_key_create_at_most_one_command()
+    public async Task Concurrent_retries_with_one_idempotency_key_return_the_same_command()
     {
         HttpClient client = RequireClient();
         SeedData seed = await _fixture.ResetAndSeedAsync();
@@ -124,14 +124,62 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         using HttpResponseMessage first = await firstTask;
         using HttpResponseMessage second = await secondTask;
 
-        Assert.Contains(first.StatusCode, new[] { HttpStatusCode.Accepted, HttpStatusCode.Conflict });
-        Assert.Contains(second.StatusCode, new[] { HttpStatusCode.Accepted, HttpStatusCode.Conflict });
-        Assert.Contains(HttpStatusCode.Accepted, new[] { first.StatusCode, second.StatusCode });
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, second.StatusCode);
+        CommandResponse? firstBody = await first.Content.ReadFromJsonAsync<CommandResponse>();
+        CommandResponse? secondBody = await second.Content.ReadFromJsonAsync<CommandResponse>();
+        Assert.NotNull(firstBody);
+        Assert.NotNull(secondBody);
+        Assert.Equal(firstBody.Id, secondBody.Id);
         using WatcherDbContext db = _fixture.CreateDbContext();
         Assert.Equal(1, await db.AlertCommands.CountAsync());
         Assert.Equal(1, await db.CommandTargets.CountAsync());
         Assert.Equal(1, await db.AuditEvents.CountAsync());
         Assert.Equal(1, await db.OutboxMessages.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_requests_with_one_key_and_different_payloads_conflict_once()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            db.SoundPresets.Add(new SoundPreset
+            {
+                Id = Guid.NewGuid(),
+                Code = "drill",
+                Name = "Навчальна перевірка",
+                Priority = 2,
+                ManifestHash = new string('b', 64),
+                IsPublished = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var key = Guid.NewGuid();
+        var csrfToken = await GetCsrfTokenAsync(client, seed.OperatorId);
+        Task<HttpResponseMessage> firstTask = SendCreateAsync(
+            client, seed.OperatorId, key, [seed.FirstLocationId], csrfToken);
+        using HttpRequestMessage changedRequest = CreateRequest(seed.OperatorId, key, new
+        {
+            action = "start",
+            presetCode = "drill",
+            locationIds = new[] { seed.FirstLocationId }
+        });
+        changedRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        Task<HttpResponseMessage> secondTask = client.SendAsync(changedRequest);
+        using HttpResponseMessage first = await firstTask;
+        using HttpResponseMessage second = await secondTask;
+
+        Assert.Contains(HttpStatusCode.Accepted, new[] { first.StatusCode, second.StatusCode });
+        Assert.Contains(HttpStatusCode.Conflict, new[] { first.StatusCode, second.StatusCode });
+        Assert.NotEqual(first.StatusCode, second.StatusCode);
+        using WatcherDbContext readDb = _fixture.CreateDbContext();
+        Assert.Equal(1, await readDb.AlertCommands.CountAsync());
+        Assert.Equal(1, await readDb.CommandTargets.CountAsync());
+        Assert.Equal(1, await readDb.AuditEvents.CountAsync());
+        Assert.Equal(1, await readDb.OutboxMessages.CountAsync());
     }
 
     [PostgresFact]
