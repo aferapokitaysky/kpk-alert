@@ -1,4 +1,4 @@
-name: Проверки
+name: Перевірки
 
 on:
   pull_request:
@@ -9,16 +9,39 @@ permissions:
   contents: read
 
 jobs:
-  validate-compose:
-    name: Проверка Docker Compose
+  build:
+    name: Збірка Watcher
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Проверить синтаксис Compose
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore KgtaAlert.slnx
+      - run: dotnet build KgtaAlert.slnx -c Release --no-restore
+      - run: dotnet test KgtaAlert.slnx -c Release --no-build --logger "trx;LogFileName=tests.trx"
+      - run: dotnet test tests/Watcher.UnitTests/Watcher.UnitTests.csproj -c Release --no-build --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+      - run: dotnet format KgtaAlert.slnx --verify-no-changes
+      - run: dotnet list KgtaAlert.slnx package --vulnerable --include-transitive
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-and-coverage
+          path: |
+            **/TestResults/**/*.trx
+            **/TestResults/**/coverage.cobertura.xml
+          if-no-files-found: ignore
+
+  validate-compose:
+    name: Перевірка Docker Compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Перевірити синтаксис Compose
         run: docker compose --env-file .env.example config --quiet
 
   documentation:
-    name: Проверка ссылок документации
+    name: Перевірка посилань у документації
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +54,65 @@ jobs:
             [ -z "$path" ] || [ -e "$path" ] || { echo "Не знайдено: $path"; missing=1; }
           done < <(grep -rhoE '\]\((docs/[^)#]+|README\.md|AGENTS\.md)#[^)]*\)|\]\((docs/[^)]+|README\.md|AGENTS\.md)\)' --include='*.md' . | sed -E 's/.*\]\(([^)#]+).*/\1/' | sort -u)
           exit "$missing"
+
+  postgres-migrations:
+    name: Перевірка міграцій PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.10-alpine
+        env:
+          POSTGRES_DB: kgta_alert
+          POSTGRES_USER: kgta_alert
+          POSTGRES_PASSWORD: local-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kgta_alert -d kgta_alert"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      ConnectionStrings__Watcher: Host=localhost;Port=5432;Database=kgta_alert;Username=kgta_alert;Password=local-ci-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet tool install --global dotnet-ef --version 10.0.4
+      - run: dotnet restore KgtaAlert.slnx
+      - run: dotnet ef database update --project src/Watcher.Infrastructure --startup-project src/Watcher.Api
+      - run: dotnet test tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj -c Release --collect:"XPlat Code Coverage" --settings coverlet.postgres.runsettings
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgresql-integration-coverage
+          path: tests/Watcher.Api.IntegrationTests/TestResults/**/coverage.cobertura.xml
+          if-no-files-found: ignore
+
+  publish-image:
+    name: Публікація контейнера
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, validate-compose, documentation]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=ref,event=tag
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

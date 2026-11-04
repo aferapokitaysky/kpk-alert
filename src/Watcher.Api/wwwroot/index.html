@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0e62d6">
+  <title>Оповіщення · КГТА</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/overrides.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar" aria-label="Головне меню">
+      <a class="brand" href="/" aria-label="КГТА — головна">
+        <img src="/images/kpk-logo.png" alt="">
+        <span>Система оповіщення<small>Кременчуцький коледж</small></span>
+      </a>
+      <nav><a class="nav-link active" href="/">Пульт оповіщення</a><a class="nav-link" href="/status">Стан вузлів</a><a class="nav-link" href="/history">Журнал подій</a></nav>
+      <div class="sidebar-note">Система допомагає виконувати затверджені процедури закладу.</div>
+    </aside>
+    <main>
+      <header class="topbar"><span class="crumb">Пульт оповіщення</span><span class="topbar-actions"><span class="connection"><i></i>Зв’язок із сервером</span><a class="login-link" href="/api/v1/auth/login">Увійти через Google</a></span></header>
+      <section class="content">
+        <div class="page-heading"><div><p class="eyebrow">КГТА · ОПОВІЩЕННЯ</p><h1>Пульт керування</h1><p class="lead">Оберіть сценарій і корпуси для запуску.</p></div><label class="location-select">Корпус<select aria-label="Оберіть корпус" id="location-select"><option value="">Увійдіть, щоб переглянути корпуси</option></select></label></div>
+        <div class="notice"><span class="notice-mark">i</span><span><strong>Перевірте цільові корпуси перед запуском.</strong><br>Після підтвердження команда буде надіслана вибраним вузлам.</span></div>
+        <h2>Швидкий запуск</h2>
+        <div class="actions">
+          <button class="action action-danger" data-preset="active-threat"><span class="action-icon">!</span><span><strong>Загроза нападу</strong><small>Негайне оповіщення</small></span><b>›</b></button>
+          <button class="action action-warning" data-preset="evacuation"><span class="action-icon">↗</span><span><strong>Евакуація</strong><small>Пожежа або інша небезпека</small></span><b>›</b></button>
+          <button class="action action-blue" data-preset="air-raid"><span class="action-icon">⌁</span><span><strong>Повітряна тривога</strong><small>Ручний запуск сигналу</small></span><b>›</b></button>
+          <button class="action action-neutral" data-preset="all-clear"><span class="action-icon">✓</span><span><strong>Відбій</strong><small>Завершити активне оповіщення</small></span><b>›</b></button>
+        </div>
+        <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
+        <section class="panel"><div class="panel-heading"><div><h2>Стан вузлів</h2><p>Підтвердження від пристроїв у корпусах</p></div><a href="/status">Усі вузли <span>→</span></a></div><div class="empty"><span class="empty-icon">•</span><strong>Вузли ще не підключені</strong><p>Після реєстрації пристрою його стан з’явиться тут.</p></div></section>
+        <footer>КГТА · Система оповіщення <span>Усі дії фіксуються в журналі</span></footer>
+      </section>
+    </main>
+  </div>
+  <dialog id="confirm-dialog"><form method="dialog"><p class="eyebrow">ПІДТВЕРДЖЕННЯ</p><h2 id="confirm-title">Запустити сценарій?</h2><p id="confirm-copy">Команда буде надіслана вибраним корпусам.</p><div class="dialog-actions"><button class="button button-secondary" value="cancel">Скасувати</button><button class="button button-primary" id="confirm-send" value="confirm">Підтвердити запуск</button></div></form></dialog>
+  <script src="/js/app.js" defer></script>
+</body>
+</html>

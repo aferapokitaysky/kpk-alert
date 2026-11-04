@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Watcher.Api/Watcher.Api.csproj" />
+    <Project Path="src/Watcher.Domain/Watcher.Domain.csproj" />
+    <Project Path="src/Watcher.Infrastructure/Watcher.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj" />
+    <Project Path="tests/Watcher.UnitTests/Watcher.UnitTests.csproj" />
+  </Folder>
+</Solution>
