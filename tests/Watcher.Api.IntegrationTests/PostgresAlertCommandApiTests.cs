@@ -78,6 +78,36 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         Assert.Equal(1, await db.OutboxMessages.CountAsync());
     }
 
+    [PostgresTheory]
+    [InlineData("stop", "evacuation", false)]
+    [InlineData("start", "other-preset", false)]
+    [InlineData("start", "evacuation", true)]
+    public async Task Create_replay_with_a_changed_payload_returns_conflict_without_duplicate_rows(
+        string action, string presetCode, bool useDifferentLocation)
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        var idempotencyKey = Guid.NewGuid();
+        using HttpResponseMessage original = await SendCreateAsync(
+            client, seed.OperatorId, idempotencyKey, [seed.FirstLocationId]);
+        using HttpRequestMessage changedRequest = CreateRequest(seed.OperatorId, idempotencyKey, new
+        {
+            action,
+            presetCode,
+            locationIds = new[] { useDifferentLocation ? seed.SecondLocationId : seed.FirstLocationId }
+        });
+
+        using HttpResponseMessage replay = await client.SendAsync(changedRequest);
+
+        Assert.Equal(HttpStatusCode.Accepted, original.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, replay.StatusCode);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Equal(1, await db.AlertCommands.CountAsync());
+        Assert.Equal(1, await db.CommandTargets.CountAsync());
+        Assert.Equal(1, await db.AuditEvents.CountAsync());
+        Assert.Equal(1, await db.OutboxMessages.CountAsync());
+    }
+
     [PostgresFact]
     public async Task Concurrent_retries_with_one_idempotency_key_create_at_most_one_command()
     {

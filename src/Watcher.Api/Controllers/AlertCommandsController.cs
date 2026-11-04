@@ -26,16 +26,6 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
                 title: "Потрібен коректний ключ повторного запиту.");
         }
 
-        if (request.Action != "start" || string.IsNullOrWhiteSpace(request.PresetCode) ||
-            request.PresetCode.Length > 80 || request.LocationIds is null ||
-            request.LocationIds.Count is 0 or > 50 ||
-            request.LocationIds.Any(id => id == Guid.Empty) ||
-            request.LocationIds.Distinct().Count() != request.LocationIds.Count)
-        {
-            return Problem(statusCode: StatusCodes.Status400BadRequest,
-                title: "Перевірте дію, сценарій і список корпусів.");
-        }
-
         var accountId = User.FindFirstValue("kgta_user_id");
         if (!Guid.TryParse(accountId, out Guid userId))
         {
@@ -52,7 +42,22 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
                 return Conflict();
             }
 
+            if (!Matches(existing, request))
+            {
+                return Conflict();
+            }
+
             return AcceptedAtAction(nameof(Get), new { id = existing.Id }, ToResponse(existing));
+        }
+
+        if (request.Action != "start" || string.IsNullOrWhiteSpace(request.PresetCode) ||
+            request.PresetCode.Length > 80 || request.LocationIds is null ||
+            request.LocationIds.Count is 0 or > 50 ||
+            request.LocationIds.Any(id => id == Guid.Empty) ||
+            request.LocationIds.Distinct().Count() != request.LocationIds.Count)
+        {
+            return Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "Перевірте дію, сценарій і список корпусів.");
         }
 
         var presetExists = await db.SoundPresets.AnyAsync(
@@ -179,4 +184,18 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
         command.CreatedAtUtc,
         Targets = command.Targets.Select(target => new { target.LocationId, target.State })
     };
+
+    private static bool Matches(AlertCommand command, CreateAlertCommandRequest request)
+    {
+        if (request.LocationIds is not { } locationIds ||
+            !string.Equals(command.Action, request.Action, StringComparison.Ordinal) ||
+            !string.Equals(command.PresetCode, request.PresetCode, StringComparison.Ordinal) ||
+            command.Targets.Count != locationIds.Count)
+        {
+            return false;
+        }
+
+        var existingLocationIds = command.Targets.Select(target => target.LocationId).ToHashSet();
+        return existingLocationIds.SetEquals(locationIds);
+    }
 }

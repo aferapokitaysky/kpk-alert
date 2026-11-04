@@ -278,6 +278,61 @@ public sealed class AlertCommandsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_returns_conflict_when_same_key_is_reused_with_different_payload()
+    {
+        await CreateController(_userId).Create(ValidRequest(), _idempotencyKey, CancellationToken.None);
+        CreateAlertCommandRequest[] changedRequests =
+        [
+            new("stop", "evacuation", [_locationId]),
+            new("start", "other-preset", [_locationId]),
+            new("start", "evacuation", [Guid.NewGuid()])
+        ];
+
+        foreach (CreateAlertCommandRequest request in changedRequests)
+        {
+            IActionResult result = await CreateController(_userId).Create(
+                request, _idempotencyKey, CancellationToken.None);
+
+            Assert.IsType<ConflictResult>(result);
+        }
+
+        Assert.Single(_db.AlertCommands);
+        Assert.Single(_db.CommandTargets);
+        Assert.Single(_db.AuditEvents);
+        Assert.Single(_db.OutboxMessages);
+    }
+
+    [Fact]
+    public async Task Create_treats_reordered_location_ids_as_the_same_payload()
+    {
+        Location secondLocation = new() { Id = Guid.NewGuid(), Code = "bld-2", Name = "Другий корпус" };
+        _db.Locations.Add(secondLocation);
+        _db.UserRoles.Add(new UserRole
+        {
+            Id = Guid.NewGuid(),
+            UserId = _userId,
+            RoleId = _roleId,
+            LocationId = secondLocation.Id
+        });
+        await _db.SaveChangesAsync();
+        Guid[] locationIds = [_locationId, secondLocation.Id];
+
+        IActionResult first = await CreateController(_userId).Create(
+            new CreateAlertCommandRequest("start", "evacuation", locationIds),
+            _idempotencyKey, CancellationToken.None);
+        IActionResult replay = await CreateController(_userId).Create(
+            new CreateAlertCommandRequest("start", "evacuation", locationIds.Reverse().ToArray()),
+            _idempotencyKey, CancellationToken.None);
+
+        Assert.IsType<AcceptedAtActionResult>(first);
+        Assert.IsType<AcceptedAtActionResult>(replay);
+        Assert.Single(_db.AlertCommands);
+        Assert.Equal(2, _db.CommandTargets.Count());
+        Assert.Single(_db.AuditEvents);
+        Assert.Single(_db.OutboxMessages);
+    }
+
+    [Fact]
     public async Task Create_does_not_reveal_another_users_idempotency_result()
     {
         await CreateController(_userId).Create(ValidRequest(), _idempotencyKey, CancellationToken.None);
