@@ -9,10 +9,29 @@ const confirmSend = document.querySelector('#confirm-send');
 const presetActions = document.querySelector('#preset-actions');
 let selectedPreset = null;
 const commandAttempt = new AlertCommandAttempt();
+let csrfTokenPromise = null;
 
 function showFeedback(message, isError = false) {
   feedback.textContent = message;
   feedback.classList.toggle('is-error', isError);
+}
+
+async function getCsrfToken() {
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = fetch('/api/v1/auth/csrf-token').then(async (response) => {
+      if (!response.ok) throw new Error('csrf-token-unavailable');
+      const result = await response.json();
+      if (!result.token) throw new Error('csrf-token-missing');
+      return result.token;
+    });
+  }
+
+  try {
+    return await csrfTokenPromise;
+  } catch (error) {
+    csrfTokenPromise = null;
+    throw error;
+  }
 }
 
 async function loadLocations() {
@@ -102,10 +121,12 @@ confirmSend.addEventListener('click', async (event) => {
   confirmSend.disabled = true;
   confirmSend.textContent = 'Надсилання…';
   try {
+    const csrfToken = await getCsrfToken();
     const response = await fetch('/api/v1/alert-commands', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': csrfToken,
         'Idempotency-Key': commandAttempt.keyFor(presetCode, locationId)
       },
       body: JSON.stringify({

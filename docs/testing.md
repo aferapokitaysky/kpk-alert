@@ -3,7 +3,7 @@
 ## Рівні тестування
 
 - `Watcher.UnitTests` перевіряє валідацію запитів, права доступу, ідемпотентність, доступ до опублікованих сценаріїв і модель EF Core.
-- `Watcher.Api.IntegrationTests` запускає API через `WebApplicationFactory` і перевіряє HTTP-відповіді.
+- `Watcher.Api.IntegrationTests` запускає API через `WebApplicationFactory` і перевіряє HTTP-відповіді, cookie та anti-forgery для browser-запитів.
 - `PostgresAlertCommandApiTests` використовує справжній PostgreSQL: міграції, запити EF Core, JSONB, індекси й зовнішні ключі перевіряються провайдером, який використовує застосунок.
 - `tests/ui` перевіряє повторне використання ключа ідемпотентності командами пульта за допомогою вбудованого тестового засобу Node.js.
 

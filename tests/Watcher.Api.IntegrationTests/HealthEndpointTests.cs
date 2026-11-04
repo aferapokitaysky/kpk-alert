@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace Watcher.Api.IntegrationTests;
@@ -12,7 +13,7 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
     {
         _client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
-            BaseAddress = new Uri("http://localhost")
+            BaseAddress = new Uri("https://localhost")
         });
     }
 
@@ -40,6 +41,10 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
     [Fact]
     public async Task Alert_command_requires_an_authenticated_user()
     {
+        using HttpResponseMessage tokenResponse = await _client.GetAsync("/api/v1/auth/csrf-token");
+        using var tokenBody = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync());
+        var csrfToken = tokenBody.RootElement.GetProperty("token").GetString()
+            ?? throw new InvalidOperationException("API не повернув antiforgery token.");
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/alert-commands")
         {
             Content = JsonContent.Create(new
@@ -50,6 +55,7 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
             })
         };
         request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
 
         using HttpResponseMessage response = await _client.SendAsync(request);
 

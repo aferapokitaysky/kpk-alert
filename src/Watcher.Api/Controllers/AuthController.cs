@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authorization;
@@ -9,6 +10,14 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/auth")]
 public sealed class AuthController(IConfiguration configuration) : ControllerBase
 {
+    [AllowAnonymous]
+    [HttpGet("csrf-token")]
+    public IActionResult CsrfToken([FromServices] IAntiforgery antiforgery)
+    {
+        AntiforgeryTokenSet tokens = antiforgery.GetAndStoreTokens(HttpContext);
+        return Ok(new { token = tokens.RequestToken });
+    }
+
     [AllowAnonymous]
     [HttpGet("login")]
     public IActionResult Login(string? returnUrl = "/")
@@ -25,6 +34,7 @@ public sealed class AuthController(IConfiguration configuration) : ControllerBas
     }
 
     [Authorize]
+    [ValidateAntiForgeryToken]
     [HttpPost("logout")]
     public async Task<IActionResult> Logout()
     {

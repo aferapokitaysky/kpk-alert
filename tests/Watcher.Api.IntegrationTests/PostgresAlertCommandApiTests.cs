@@ -96,6 +96,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             presetCode,
             locationIds = new[] { useDifferentLocation ? seed.SecondLocationId : seed.FirstLocationId }
         });
+        changedRequest.Headers.Add("X-CSRF-TOKEN", await GetCsrfTokenAsync(client, seed.OperatorId));
 
         using HttpResponseMessage replay = await client.SendAsync(changedRequest);
 
@@ -114,9 +115,12 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         HttpClient client = RequireClient();
         SeedData seed = await _fixture.ResetAndSeedAsync();
         var key = Guid.NewGuid();
+        var csrfToken = await GetCsrfTokenAsync(client, seed.OperatorId);
 
-        Task<HttpResponseMessage> firstTask = SendCreateAsync(client, seed.OperatorId, key, [seed.FirstLocationId]);
-        Task<HttpResponseMessage> secondTask = SendCreateAsync(client, seed.OperatorId, key, [seed.FirstLocationId]);
+        Task<HttpResponseMessage> firstTask = SendCreateAsync(
+            client, seed.OperatorId, key, [seed.FirstLocationId], csrfToken);
+        Task<HttpResponseMessage> secondTask = SendCreateAsync(
+            client, seed.OperatorId, key, [seed.FirstLocationId], csrfToken);
         using HttpResponseMessage first = await firstTask;
         using HttpResponseMessage second = await secondTask;
 
@@ -168,6 +172,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             presetCode,
             locationIds = locations
         });
+        request.Headers.Add("X-CSRF-TOKEN", await GetCsrfTokenAsync(client, seed.OperatorId));
         using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(duplicateLocations || action != "start" ? HttpStatusCode.BadRequest : HttpStatusCode.UnprocessableEntity,
@@ -191,6 +196,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         };
         AddIdentity(request, seed.OperatorId);
         request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        request.Headers.Add("X-CSRF-TOKEN", await GetCsrfTokenAsync(client, seed.OperatorId));
 
         using HttpResponseMessage response = await client.SendAsync(request);
 
@@ -211,6 +217,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             presetCode = "evacuation",
             locationIds = new[] { seed.FirstLocationId }
         });
+        request.Headers.Add("X-CSRF-TOKEN", await GetCsrfTokenAsync(client, seed.OperatorId));
 
         using HttpResponseMessage response = await client.SendAsync(request);
 
@@ -377,7 +384,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
     private HttpClient RequireClient() => _fixture.Client;
 
     private static async Task<HttpResponseMessage> SendCreateAsync(
-        HttpClient client, Guid userId, Guid idempotencyKey, Guid[] locationIds)
+        HttpClient client, Guid userId, Guid idempotencyKey, Guid[] locationIds, string? csrfToken = null)
     {
         using HttpRequestMessage request = CreateRequest(userId, idempotencyKey, new
         {
@@ -385,7 +392,21 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             presetCode = "evacuation",
             locationIds
         });
+        csrfToken ??= await GetCsrfTokenAsync(client, userId);
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
         return await client.SendAsync(request);
+    }
+
+    private static async Task<string> GetCsrfTokenAsync(HttpClient client, Guid userId)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/auth/csrf-token");
+        AddIdentity(request, userId);
+        using HttpResponseMessage response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        using var body = System.Text.Json.JsonDocument.Parse(
+            await response.Content.ReadAsStringAsync());
+        return body.RootElement.GetProperty("token").GetString()
+            ?? throw new InvalidOperationException("API не повернув antiforgery token.");
     }
 
     private static HttpRequestMessage CreateRequest(Guid userId, Guid idempotencyKey, object content)
@@ -466,6 +487,11 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 }).AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
                     TestAuthenticationHandler.SchemeName, _ => { });
             });
+        });
+
+        _client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
         });
 
         using IServiceScope scope = _factory.Services.CreateScope();

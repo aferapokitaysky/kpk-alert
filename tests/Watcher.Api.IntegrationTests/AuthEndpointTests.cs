@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -19,9 +20,12 @@ public sealed class AuthEndpointTests
     public async Task Logout_requires_an_authenticated_user()
     {
         using WebApplicationFactory<Program> factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateSecureClient(factory);
+        var csrfToken = await GetCsrfTokenAsync(client);
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/auth/logout");
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
 
-        using HttpResponseMessage response = await client.PostAsync("/api/v1/auth/logout", content: null);
+        using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -30,18 +34,66 @@ public sealed class AuthEndpointTests
     public async Task Logout_expires_the_session_cookie_for_an_authenticated_user()
     {
         using WebApplicationFactory<Program> factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateSecureClient(factory);
+        var userId = Guid.NewGuid();
+        var csrfToken = await GetCsrfTokenAsync(client, userId);
         using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/auth/logout");
-        request.Headers.Add("X-Test-User-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("X-Test-User-Id", userId.ToString());
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
 
         using HttpResponseMessage response = await client.SendAsync(request);
+        Assert.True(response.StatusCode == HttpStatusCode.NoContent,
+            $"Очікувався 204, отримано {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
         var cookies = response.Headers.GetValues("Set-Cookie").ToArray();
         var sessionCookie = Assert.Single(cookies, value =>
             value.StartsWith("__Host-KgtaAlert.Session=", StringComparison.Ordinal));
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         Assert.Contains("expires=", sessionCookie, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("secure", sessionCookie, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Csrf_token_is_returned_with_a_secure_host_only_cookie()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+
+        using HttpResponseMessage response = await client.GetAsync("/api/v1/auth/csrf-token");
+        CsrfTokenResponse? token = await response.Content.ReadFromJsonAsync<CsrfTokenResponse>();
+        var cookie = Assert.Single(response.Headers.GetValues("Set-Cookie"), value =>
+            value.StartsWith("__Host-KgtaAlert.AntiForgery=", StringComparison.Ordinal));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(string.IsNullOrWhiteSpace(token?.Token));
+        Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=strict", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("path=/", cookie, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Alert_command_rejects_an_authenticated_request_without_a_csrf_token()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/alert-commands")
+        {
+            Content = JsonContent.Create(new
+            {
+                action = "start",
+                presetCode = "evacuation",
+                locationIds = new[] { Guid.NewGuid() }
+            })
+        };
+        request.Headers.Add("X-Test-User-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.True(response.StatusCode == HttpStatusCode.BadRequest,
+            $"Очікувався 400, отримано {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
     }
 
     [Fact]
@@ -73,6 +125,28 @@ public sealed class AuthEndpointTests
 
     private static WebApplicationFactory<Program> CreateFactory(bool googleEnabled = false) =>
         new AuthTestWebApplicationFactory(googleEnabled, googleCredentialsConfigured: true);
+
+    private static HttpClient CreateSecureClient(WebApplicationFactory<Program> factory) =>
+        factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost")
+        });
+
+    private static async Task<string> GetCsrfTokenAsync(HttpClient client, Guid? userId = null)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/auth/csrf-token");
+        if (userId is Guid id)
+        {
+            request.Headers.Add("X-Test-User-Id", id.ToString());
+        }
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        CsrfTokenResponse? result = await response.Content.ReadFromJsonAsync<CsrfTokenResponse>();
+        return result?.Token ?? throw new InvalidOperationException("API не повернув antiforgery token.");
+    }
+
+    private sealed record CsrfTokenResponse(string Token);
 }
 
 internal sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Program>

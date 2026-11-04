@@ -15,6 +15,7 @@ namespace Watcher.Api.Controllers;
 public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider clock) : ControllerBase
 {
     [HttpPost]
+    [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(
         [FromBody] CreateAlertCommandRequest request,
         [FromHeader(Name = "Idempotency-Key")] Guid idempotencyKey,
