@@ -147,6 +147,48 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         Assert.Empty(await db.OutboxMessages.ToListAsync());
     }
 
+    [PostgresTheory]
+    [InlineData("[]", HttpStatusCode.BadRequest)]
+    [InlineData("{\"action\":\"start\",\"presetCode\":\"evacuation\",\"locationIds\":[]}", HttpStatusCode.BadRequest)]
+    [InlineData("{\"action\":\"start\",\"presetCode\":\"evacuation\",\"locationIds\":null}", HttpStatusCode.BadRequest)]
+    public async Task Create_rejects_empty_or_incomplete_json_contracts(string payload, HttpStatusCode expectedStatus)
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/alert-commands")
+        {
+            Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json")
+        };
+        AddIdentity(request, seed.OperatorId);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Empty(await db.AlertCommands.ToListAsync());
+        Assert.Empty(await db.OutboxMessages.ToListAsync());
+    }
+
+    [PostgresFact]
+    public async Task Create_rejects_an_empty_idempotency_header()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpRequestMessage request = CreateRequest(seed.OperatorId, Guid.Empty, new
+        {
+            action = "start",
+            presetCode = "evacuation",
+            locationIds = new[] { seed.FirstLocationId }
+        });
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Empty(await db.AlertCommands.ToListAsync());
+    }
+
     [PostgresFact]
     public async Task Create_rejects_a_location_outside_the_operators_scope()
     {
@@ -222,6 +264,47 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, otherResponse.StatusCode);
         Assert.Equal(HttpStatusCode.OK, auditorResponse.StatusCode);
+    }
+
+    [PostgresFact]
+    public async Task Get_returns_not_found_for_an_unknown_command()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpRequestMessage request = new(HttpMethod.Get, $"/api/v1/alert-commands/{Guid.NewGuid()}");
+        AddIdentity(request, seed.OperatorId);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [PostgresFact]
+    public async Task Locations_returns_all_active_locations_to_a_global_notificator()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            Role notificator = await db.Roles.SingleAsync(role => role.Code == "notificator");
+            db.UserRoles.Add(new UserRole
+            {
+                Id = Guid.NewGuid(),
+                UserId = seed.OperatorId,
+                RoleId = notificator.Id,
+                LocationId = null
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/locations");
+        AddIdentity(request, seed.OperatorId);
+        using HttpResponseMessage response = await client.SendAsync(request);
+        LocationResponse[]? locations = await response.Content.ReadFromJsonAsync<LocationResponse[]>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, locations?.Length);
+        Assert.Equal(new[] { "Південний корпус", "Північний корпус" }, locations?.Select(location => location.Name));
     }
 
     [PostgresFact]
