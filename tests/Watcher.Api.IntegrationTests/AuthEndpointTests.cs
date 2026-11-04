@@ -3,9 +3,13 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Watcher.Infrastructure.Persistence;
 
 namespace Watcher.Api.IntegrationTests;
 
@@ -69,46 +73,55 @@ public sealed class AuthEndpointTests
 
     private static WebApplicationFactory<Program> CreateFactory(bool googleEnabled = false) =>
         new AuthTestWebApplicationFactory(googleEnabled, googleCredentialsConfigured: true);
+}
 
-    private sealed class AuthTestWebApplicationFactory(
-        bool googleEnabled,
-        bool googleCredentialsConfigured) : WebApplicationFactory<Program>
+internal sealed class AuthTestWebApplicationFactory(
+    bool googleEnabled,
+    bool googleCredentialsConfigured = true) : WebApplicationFactory<Program>
+{
+    protected override IHost CreateHost(IHostBuilder builder)
     {
-        protected override IHost CreateHost(IHostBuilder builder)
+        if (googleEnabled)
         {
-            if (googleEnabled)
+            builder.ConfigureHostConfiguration(configuration =>
             {
-                builder.ConfigureHostConfiguration(configuration =>
+                Dictionary<string, string?> settings = new()
                 {
-                    Dictionary<string, string?> settings = new()
-                    {
-                        ["Authentication:Google:Enabled"] = "true"
-                    };
-                    if (googleCredentialsConfigured)
-                    {
-                        settings["Authentication:Google:ClientId"] = "test-client-id";
-                        settings["Authentication:Google:ClientSecret"] = "test-client-secret";
-                    }
-
-                    configuration.AddInMemoryCollection(settings);
-                });
-            }
-
-            return base.CreateHost(builder);
-        }
-
-        protected override void ConfigureWebHost(IWebHostBuilder builder)
-        {
-            builder.ConfigureTestServices(services =>
-            {
-                services.AddAuthentication(options =>
+                    ["Authentication:Google:Enabled"] = "true"
+                };
+                if (googleCredentialsConfigured)
                 {
-                    options.DefaultAuthenticateScheme = TestAuthenticationHandler.SchemeName;
-                    options.DefaultChallengeScheme = TestAuthenticationHandler.SchemeName;
-                    options.DefaultForbidScheme = TestAuthenticationHandler.SchemeName;
-                }).AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
-                    TestAuthenticationHandler.SchemeName, _ => { });
+                    settings["Authentication:Google:ClientId"] = "test-client-id";
+                    settings["Authentication:Google:ClientSecret"] = "test-client-secret";
+                }
+
+                configuration.AddInMemoryCollection(settings);
             });
         }
+
+        return base.CreateHost(builder);
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = TestAuthenticationHandler.SchemeName;
+                options.DefaultChallengeScheme = TestAuthenticationHandler.SchemeName;
+                options.DefaultForbidScheme = TestAuthenticationHandler.SchemeName;
+            }).AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
+                TestAuthenticationHandler.SchemeName, _ => { });
+
+            if (googleEnabled)
+            {
+                services.RemoveAll<WatcherDbContext>();
+                services.RemoveAll<DbContextOptions<WatcherDbContext>>();
+                services.RemoveAll<IDbContextOptionsConfiguration<WatcherDbContext>>();
+                services.AddDbContext<WatcherDbContext>(options =>
+                    options.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+            }
+        });
     }
 }
