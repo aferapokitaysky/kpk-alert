@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Watcher.Api.AlertSources;
 using Watcher.Api.Commands;
+using Watcher.Api.Delivery;
 using Watcher.Api.Scheduling;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
@@ -228,6 +229,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     builder.Services.AddScoped<DeviceCertificateAuthenticator>();
     builder.Services.AddScoped<ILocationCommandSequenceAllocator, PostgresLocationCommandSequenceAllocator>();
     builder.Services.AddScoped<CommandReceiptProcessor>();
+    builder.Services.AddCommandOutboxWorker(builder.Configuration);
     builder.Services.AddMinuteOfSilenceScheduler();
 }
 

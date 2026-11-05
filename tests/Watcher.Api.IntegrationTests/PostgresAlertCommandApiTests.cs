@@ -660,7 +660,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:Watcher"] = _isolatedConnectionString,
-                    ["Authentication:Google:Enabled"] = "false"
+                    ["Authentication:Google:Enabled"] = "false",
+                    ["CommandOutboxWorker:Enabled"] = "false"
                 }));
             builder.ConfigureTestServices(services =>
             {
