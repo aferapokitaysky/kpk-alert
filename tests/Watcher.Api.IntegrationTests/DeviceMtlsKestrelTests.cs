@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -9,11 +11,14 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Watcher.Api.Controllers;
+using Watcher.Api.Delivery;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
@@ -22,6 +27,45 @@ namespace Watcher.Api.IntegrationTests;
 
 public sealed class DeviceMtlsKestrelTests
 {
+    [Fact]
+    public async Task Command_stream_is_available_only_on_the_mtls_listener()
+    {
+        using TestCertificateAuthority trustedAuthority = new();
+        using X509Certificate2 clientCertificate = trustedAuthority.IssueClientCertificate("stream-device");
+        using X509Certificate2 serverCertificate = CreateServerCertificate();
+        var deviceId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        (WebApplication app, Uri webAddress, Uri deviceAddress) = await StartStreamKestrelAsync(
+            serverCertificate, trustedAuthority.Root, deviceId, locationId, clientCertificate);
+        await using (app)
+        {
+            using HttpClient missingCertificateClient = CreateClient(webAddress, null);
+            using HttpResponseMessage unauthenticatedResponse = await missingCertificateClient.GetAsync(
+                "/api/v1/device/commands/stream");
+            Assert.Equal(HttpStatusCode.Forbidden, unauthenticatedResponse.StatusCode);
+
+            using HttpClient validWebClient = CreateClient(webAddress, clientCertificate);
+            using HttpResponseMessage wrongListenerResponse = await validWebClient.GetAsync(
+                "/api/v1/device/commands/stream");
+            Assert.Equal(HttpStatusCode.NotFound, wrongListenerResponse.StatusCode);
+
+            using ClientWebSocket missingCertificateSocket = CreateWebSocketClient(null);
+            Uri deviceStreamAddress = new UriBuilder(deviceAddress)
+            {
+                Scheme = "wss",
+                Path = "/api/v1/device/commands/stream"
+            }.Uri;
+            await Assert.ThrowsAnyAsync<WebSocketException>(
+                () => missingCertificateSocket.ConnectAsync(deviceStreamAddress, CancellationToken.None));
+
+            using ClientWebSocket validSocket = CreateWebSocketClient(clientCertificate);
+            await validSocket.ConnectAsync(deviceStreamAddress, CancellationToken.None);
+            Assert.Equal(WebSocketState.Open, validSocket.State);
+            await validSocket.CloseOutputAsync(
+                WebSocketCloseStatus.NormalClosure, "Тест завершено", CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task Kestrel_accepts_a_registered_certificate_and_rejects_missing_or_untrusted_certificates()
     {
@@ -109,11 +153,103 @@ public sealed class DeviceMtlsKestrelTests
         return app;
     }
 
+    private static async Task<(WebApplication App, Uri WebAddress, Uri DeviceAddress)> StartStreamKestrelAsync(
+        X509Certificate2 serverCertificate,
+        X509Certificate2 trustedRoot,
+        Guid deviceId,
+        Guid locationId,
+        X509Certificate2 registeredCertificate)
+    {
+        var databaseName = Guid.NewGuid().ToString();
+        WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            EnvironmentName = Environments.Development
+        });
+        builder.Logging.ClearProviders();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["DeviceListener:Port"] = "0"
+        });
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.Listen(IPAddress.Any, 0, listenOptions =>
+                listenOptions.UseHttps(httpsOptions =>
+                {
+                    httpsOptions.ServerCertificate = serverCertificate;
+                    httpsOptions.ClientCertificateMode = ClientCertificateMode.AllowCertificate;
+                    httpsOptions.ClientCertificateValidation = (certificate, _, _) =>
+                        DeviceClientCertificateTrust.IsTrusted(
+                            certificate, trustedRoot, X509RevocationMode.NoCheck);
+                }));
+            options.Listen(IPAddress.Loopback, 0, listenOptions =>
+                listenOptions.UseHttps(httpsOptions => DeviceClientCertificateTrust.ConfigureHttps(
+                    httpsOptions, serverCertificate, trustedRoot, X509RevocationMode.NoCheck)));
+        });
+        builder.Services.AddControllers()
+            .AddApplicationPart(typeof(DeviceCommandStreamController).Assembly);
+        builder.Services.AddAuthorization();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<DeviceCommandSessionRegistry>();
+        builder.Services.AddDeviceCertificateAuthentication(trustedRoot);
+        builder.Services.PostConfigure<CertificateAuthenticationOptions>(DeviceCertificateAuthentication.Scheme,
+            options => options.RevocationMode = X509RevocationMode.NoCheck);
+        builder.Services.AddDbContext<WatcherDbContext>(options => options.UseInMemoryDatabase(databaseName));
+        builder.Services.AddScoped<DeviceCertificateAuthenticator>();
+
+        WebApplication app = builder.Build();
+        using (IServiceScope scope = app.Services.CreateScope())
+        {
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            db.Locations.Add(new Location
+            {
+                Id = locationId,
+                Code = $"stream-test-{locationId:N}",
+                Name = "Тестовий корпус",
+                IsActive = true,
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            });
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = locationId,
+                Name = "Тестовий вузол",
+                CertificateThumbprint = Convert.ToHexString(SHA256.HashData(registeredCertificate.RawData))
+            });
+            await db.SaveChangesAsync();
+        }
+
+        app.UseWebSockets();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapControllers();
+        await app.StartAsync();
+        Uri webAddress = GetHttpsAddress(app, IPAddress.Any);
+        Uri deviceAddress = GetHttpsAddress(app, IPAddress.Loopback);
+        builder.Configuration["DeviceListener:Port"] = deviceAddress.Port.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+        return (app, webAddress, deviceAddress);
+    }
+
     private static Uri GetHttpsAddress(WebApplication app)
     {
         IServer server = app.Services.GetRequiredService<IServer>();
         var address = server.Features.Get<IServerAddressesFeature>()!.Addresses.Single();
         return new UriBuilder(address) { Scheme = Uri.UriSchemeHttps }.Uri;
+    }
+
+    private static Uri GetHttpsAddress(WebApplication app, IPAddress expectedAddress)
+    {
+        IServer server = app.Services.GetRequiredService<IServer>();
+        var address = server.Features.Get<IServerAddressesFeature>()!.Addresses
+            .Single(value => IPAddress.TryParse(new Uri(value).Host, out IPAddress? parsed) &&
+                parsed.Equals(expectedAddress));
+        UriBuilder uri = new(address) { Scheme = Uri.UriSchemeHttps };
+        if (expectedAddress.Equals(IPAddress.Any))
+        {
+            uri.Host = "localhost";
+        }
+
+        return uri.Uri;
     }
 
     private static HttpClient CreateClient(Uri address, X509Certificate2? clientCertificate)
@@ -129,6 +265,18 @@ public sealed class DeviceMtlsKestrelTests
         }
 
         return new HttpClient(handler) { BaseAddress = address };
+    }
+
+    private static ClientWebSocket CreateWebSocketClient(X509Certificate2? clientCertificate)
+    {
+        ClientWebSocket socket = new();
+        socket.Options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        if (clientCertificate is not null)
+        {
+            socket.Options.ClientCertificates.Add(clientCertificate);
+        }
+
+        return socket;
     }
 
     private static X509Certificate2 CreateServerCertificate()

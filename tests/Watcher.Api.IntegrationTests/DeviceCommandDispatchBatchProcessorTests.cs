@@ -1,7 +1,9 @@
+using System.Data.Common;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Watcher.Api.Delivery;
@@ -106,14 +108,16 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             deviceId, secondSocket, CancellationToken.None);
         try
         {
-            await using WatcherDbContext firstDb = _fixture.CreateDbContext();
-            await using WatcherDbContext secondDb = _fixture.CreateDbContext();
+            DueDeliveryQueryBarrier barrier = new(expectedQueries: 2);
+            await using WatcherDbContext firstDb = _fixture.CreateDbContext(barrier);
+            await using WatcherDbContext secondDb = _fixture.CreateDbContext(barrier);
             DeviceCommandDispatchBatchProcessor firstProcessor = CreateProcessor(firstDb, firstSessions);
             DeviceCommandDispatchBatchProcessor secondProcessor = CreateProcessor(secondDb, secondSessions);
 
-            await Task.WhenAll(
-                firstProcessor.ProcessBatchAsync(CancellationToken.None),
-                secondProcessor.ProcessBatchAsync(CancellationToken.None));
+            Task<int> firstRun = firstProcessor.ProcessBatchAsync(CancellationToken.None);
+            Task<int> secondRun = secondProcessor.ProcessBatchAsync(CancellationToken.None);
+            await barrier.WaitForBothQueriesAsync();
+            await Task.WhenAll(firstRun, secondRun);
         }
         finally
         {
@@ -203,6 +207,35 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class DueDeliveryQueryBarrier(int expectedQueries) : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _allQueriesRead = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _queryCount;
+
+        public Task WaitForBothQueriesAsync() => _allQueriesRead.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("command_deliveries", StringComparison.OrdinalIgnoreCase) &&
+                command.CommandText.Contains("alert_commands", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Interlocked.Increment(ref _queryCount) == expectedQueries)
+                {
+                    _allQueriesRead.TrySetResult();
+                }
+
+                await _allQueriesRead.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            }
+
+            return result;
+        }
     }
 
     private sealed class RecordingWebSocket : WebSocket
