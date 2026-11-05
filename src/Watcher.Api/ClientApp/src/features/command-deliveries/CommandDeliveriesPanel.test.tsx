@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CommandDeliveriesPanel } from './CommandDeliveriesPanel';
@@ -33,10 +33,21 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const fetchMock = vi.fn<typeof fetch>();
+const originalHiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
+
+function setDocumentHidden(hidden: boolean) {
+  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+}
 
 afterEach(() => {
   cleanup();
   fetchMock.mockReset();
+  vi.useRealTimers();
+  if (originalHiddenDescriptor) {
+    Object.defineProperty(document, 'hidden', originalHiddenDescriptor);
+  } else {
+    Reflect.deleteProperty(document, 'hidden');
+  }
   vi.unstubAllGlobals();
 });
 
@@ -96,7 +107,7 @@ describe('панель доставлення команди', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('оновлює лише після натискання та не запускає polling', async () => {
+  it('оновлює статус вручну до наступного інтервалу', async () => {
     const user = userEvent.setup();
     fetchMock
       .mockResolvedValueOnce(jsonResponse(page([accepted])))
@@ -110,6 +121,155 @@ describe('панель доставлення команди', () => {
     await user.click(screen.getByRole('button', { name: 'Оновити' }));
     expect(await screen.findByText('Звук відтворюється')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('оновлює статус кожні 15 секунд і не запускає паралельний запит', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(false);
+    let resolveSecondRequest: ((response: Response) => void) | undefined;
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(page([accepted])))
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecondRequest = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse(page([playing])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveSecondRequest?.(jsonResponse(page([playing])));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('Звук відтворюється')).toBeInTheDocument();
+  });
+
+  it('призупиняє запити у прихованій вкладці та оновлює одразу після повернення', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(false);
+    const requestSignals: AbortSignal[] = [];
+    fetchMock
+      .mockImplementationOnce((_input, init) => {
+        const signal = init?.signal;
+        if (signal) requestSignals.push(signal);
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Запит скасовано', 'AbortError')),
+            { once: true },
+          );
+        });
+      })
+      .mockResolvedValueOnce(jsonResponse(page([playing])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setDocumentHidden(true);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(requestSignals[0]?.aborted).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setDocumentHidden(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Звук відтворюється')).toBeInTheDocument();
+  });
+
+  it('скасовує запит при зміні commandId та під час unmount', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(false);
+    const requestSignals: AbortSignal[] = [];
+    const fetchMockImplementation: typeof fetch = (_input, init) => {
+      const signal = init?.signal;
+      if (signal) requestSignals.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Запит скасовано', 'AbortError')),
+          { once: true },
+        );
+      });
+    };
+    fetchMock.mockImplementation(fetchMockImplementation);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { rerender, unmount } = render(<CommandDeliveriesPanel commandId="command-1" />);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender(<CommandDeliveriesPanel commandId="command-2" />);
+    expect(requestSignals[0]?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/alert-commands/command-2/deliveries?page=1&pageSize=25',
+      expect.objectContaining({ signal: requestSignals[1] }),
+    );
+
+    unmount();
+    expect(requestSignals[1]?.aborted).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('показує помилку автоматичного оновлення та залишає повторну спробу доступною', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(false);
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(page([accepted])))
+      .mockResolvedValueOnce(jsonResponse({}, 503))
+      .mockResolvedValueOnce(jsonResponse(page([playing])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Не вдалося завантажити статуси доставки');
+    expect(screen.getByText('Вузол прийняв команду')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Повторити' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByText('Звук відтворюється')).toBeInTheDocument();
   });
 
   it('перемикає сторінки в межах відповіді сервера', async () => {

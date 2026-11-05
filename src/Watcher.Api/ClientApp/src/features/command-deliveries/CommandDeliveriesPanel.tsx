@@ -97,7 +97,8 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
   const [error, setError] = useState<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
-    activeRequest.current?.abort();
+    if (document.hidden || activeRequest.current) return;
+
     const controller = new AbortController();
     activeRequest.current = controller;
     setStatus('loading');
@@ -124,10 +125,38 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
   }, [commandId, page]);
 
   useEffect(() => {
-    const requestTimer = window.setTimeout(() => void load(), 0);
-    return () => {
-      window.clearTimeout(requestTimer);
+    let timer: number | null = null;
+
+    const pausePolling = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+
       activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
+
+    const resumePolling = () => {
+      if (document.hidden || timer !== null) return;
+
+      void load();
+      timer = window.setInterval(() => {
+        if (!document.hidden) void load();
+      }, 15_000);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) pausePolling();
+      else resumePolling();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resumePolling();
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      pausePolling();
     };
   }, [load]);
 
