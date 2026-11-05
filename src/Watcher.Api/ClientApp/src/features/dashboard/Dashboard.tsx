@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AlertCommand, Location, Preset } from '../../api';
 import type { ResourceState, SessionState } from '../../state';
+import { AlertSourcesPanel } from '../alert-sources/AlertSourcesPanel';
 
 interface Props {
   session: SessionState;
@@ -174,6 +175,8 @@ export function Dashboard({
           підтверджує відтворення звуку у вузлах.
         </p>
       </section>
+
+      <AlertSourcesPanel />
 
       <section className="work-section" aria-labelledby="locations-title">
         <div className="section-heading">

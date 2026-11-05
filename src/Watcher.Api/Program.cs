@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Watcher.Api.AlertSources;
 using Watcher.Api.Scheduling;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
@@ -15,6 +16,7 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthorization();
+builder.Services.AddAlertSources(builder.Configuration);
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
 X509Certificate2? dataProtectionCertificate = null;
 if (builder.Environment.IsProduction())

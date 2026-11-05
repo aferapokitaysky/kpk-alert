@@ -29,6 +29,10 @@ vi.mock('./api', async (importOriginal) => {
   };
 });
 
+vi.mock('./features/alert-sources/AlertSourcesPanel', () => ({
+  AlertSourcesPanel: () => null,
+}));
+
 const location = { id: 'location-1', name: 'Головний корпус', code: 'main' };
 const preset = { code: 'evacuation', name: 'Евакуація' };
 const command = {

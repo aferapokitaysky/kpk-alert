@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SessionState } from '../../state';
 import { Dashboard } from './Dashboard';
 
+vi.mock('../alert-sources/AlertSourcesPanel', () => ({
+  AlertSourcesPanel: () => null,
+}));
+
 function renderDashboard(session: SessionState) {
   return render(
     <Dashboard
