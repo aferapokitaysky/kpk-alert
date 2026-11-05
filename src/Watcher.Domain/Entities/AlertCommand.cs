@@ -19,5 +19,12 @@ public sealed class CommandTarget
     public Guid Id { get; set; }
     public Guid CommandId { get; set; }
     public Guid LocationId { get; set; }
+    public long Sequence { get; set; }
     public string State { get; set; } = "Created";
+}
+
+public sealed class LocationCommandSequence
+{
+    public Guid LocationId { get; set; }
+    public long NextSequence { get; set; }
 }

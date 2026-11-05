@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Watcher.Api.Commands;
 using Watcher.Api.Scheduling;
 using Watcher.Domain.Entities;
 using Watcher.Domain.Scheduling;
@@ -44,6 +45,7 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
             TimeZoneInfo.ConvertTime(command.ExpiresAtUtc,
                 TimeZoneInfo.FindSystemTimeZoneById(MinuteOfSilenceSchedule.TimeZoneId)).TimeOfDay);
         Assert.Equal(2, command.Targets.Count);
+        Assert.All(command.Targets, target => Assert.Equal(1, target.Sequence));
         Assert.Contains(command.Targets, target => target.LocationId == seed.FirstLocationId);
         Assert.Contains(command.Targets, target => target.LocationId == seed.SecondLocationId);
         Assert.Equal(command.Id, outbox.CommandId);
@@ -150,7 +152,9 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         await _fixture.ResetAndSeedAsync();
         DateOnly runDate = new(2026, 11, 5);
         using WatcherDbContext db = _fixture.CreateDbContext();
-        MinuteOfSilenceOccurrenceProcessor processor = new(db, ClockAt(runDate, MinuteOfSilenceSchedule.ExecutionWindow));
+        MinuteOfSilenceOccurrenceProcessor processor = new(
+            db, ClockAt(runDate, MinuteOfSilenceSchedule.ExecutionWindow),
+            new PostgresLocationCommandSequenceAllocator(db));
 
         MinuteOfSilenceProcessingResult result = await processor.RecordMissedAsync(runDate, CancellationToken.None);
 
@@ -178,6 +182,20 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
     }
 
     [PostgresFact]
+    public async Task Sequence_migration_backfills_order_and_initializes_the_next_counter()
+    {
+        (long FirstCommandSequence, long SecondCommandSequence, long FirstLocationNextSequence, long SecondLocationSequence, long SecondLocationNextSequence, long LegacyBinarySequence, long FirstLocationNextSequenceAfterLegacyInsert) result = await _fixture.MigrateLegacyTargetSequencesAsync();
+
+        Assert.Equal(1, result.FirstCommandSequence);
+        Assert.Equal(2, result.SecondCommandSequence);
+        Assert.Equal(3, result.FirstLocationNextSequence);
+        Assert.Equal(1, result.SecondLocationSequence);
+        Assert.Equal(2, result.SecondLocationNextSequence);
+        Assert.Equal(3, result.LegacyBinarySequence);
+        Assert.Equal(4, result.FirstLocationNextSequenceAfterLegacyInsert);
+    }
+
+    [PostgresFact]
     public async Task Concurrent_processors_claim_a_date_once_and_commit_related_rows_atomically()
     {
         await _fixture.ResetAndSeedAsync();
@@ -186,8 +204,10 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         using WatcherDbContext firstDb = _fixture.CreateDbContext();
         using WatcherDbContext secondDb = _fixture.CreateDbContext();
         TimeProvider clock = ClockAt(runDate);
-        MinuteOfSilenceOccurrenceProcessor first = new(firstDb, clock);
-        MinuteOfSilenceOccurrenceProcessor second = new(secondDb, clock);
+        MinuteOfSilenceOccurrenceProcessor first = new(
+            firstDb, clock, new PostgresLocationCommandSequenceAllocator(firstDb));
+        MinuteOfSilenceOccurrenceProcessor second = new(
+            secondDb, clock, new PostgresLocationCommandSequenceAllocator(secondDb));
         MinuteOfSilenceProcessingResult[] results = await Task.WhenAll(
             first.ProcessAsync(runDate, CancellationToken.None),
             second.ProcessAsync(runDate, CancellationToken.None));
@@ -198,6 +218,7 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         Assert.Equal(1, await db.MinuteOfSilenceOccurrences.CountAsync());
         Assert.Equal(1, await db.AlertCommands.CountAsync());
         Assert.Equal(2, await db.CommandTargets.CountAsync());
+        Assert.All(await db.CommandTargets.ToListAsync(), target => Assert.Equal(1, target.Sequence));
         Assert.Equal(1, await db.OutboxMessages.CountAsync());
         Assert.Equal(1, await db.AuditEvents.CountAsync());
     }
@@ -222,6 +243,7 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
                 {
                     Id = Guid.NewGuid(),
                     LocationId = seed.FirstLocationId,
+                    Sequence = 1,
                     State = "Created"
                 }]
             });
@@ -299,7 +321,8 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         TimeProvider? clock = null)
     {
         using WatcherDbContext db = _fixture.CreateDbContext();
-        MinuteOfSilenceOccurrenceProcessor processor = new(db, clock ?? ClockAt(runDate));
+        MinuteOfSilenceOccurrenceProcessor processor = new(
+            db, clock ?? ClockAt(runDate), new PostgresLocationCommandSequenceAllocator(db));
         return await processor.ProcessAsync(runDate, CancellationToken.None);
     }
 

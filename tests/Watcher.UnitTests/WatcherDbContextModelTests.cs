@@ -27,6 +27,7 @@ public sealed class WatcherDbContextModelTests
         Assert.Contains("command_deliveries", entityNames);
         Assert.Contains("audit_events", entityNames);
         Assert.Contains("outbox_messages", entityNames);
+        Assert.Contains("location_command_sequences", entityNames);
 
         IIndex codeIndex = db.Model.FindEntityType("Watcher.Domain.Entities.Location")!
             .GetIndexes()
@@ -59,6 +60,21 @@ public sealed class WatcherDbContextModelTests
         Assert.False(entity.FindProperty(nameof(CommandDelivery.ExpiresAtUtc))!.IsNullable);
         Assert.Equal("character varying(20)",
             entity.FindProperty(nameof(CommandDelivery.State))!.GetColumnType());
+    }
+
+    [Fact]
+    public void Model_enforces_unique_positive_sequences_per_location()
+    {
+        using WatcherDbContext db = CreateContext();
+        IEntityType entity = db.Model.FindEntityType("Watcher.Domain.Entities.CommandTarget")!;
+        IIndex index = entity.GetIndexes().Single(item => item.Properties.Select(property => property.Name)
+            .SequenceEqual(["LocationId", "Sequence"]));
+
+        Assert.True(index.IsUnique);
+        IEntityType designEntity = db.GetService<IDesignTimeModel>().Model
+            .FindEntityType("Watcher.Domain.Entities.CommandTarget")!;
+        Assert.Contains(designEntity.GetCheckConstraints(), constraint =>
+            constraint.Name == "CK_command_targets_sequence_positive");
     }
 
     [Fact]
@@ -97,7 +113,7 @@ public sealed class WatcherDbContextModelTests
         IMigrationsAssembly assembly = db.GetService<IMigrationsAssembly>();
         IReadOnlyList<string> migrationIds = assembly.Migrations.Keys.ToArray();
 
-        Assert.Equal(8, migrationIds.Count);
+        Assert.Equal(9, migrationIds.Count);
         Assert.Equal(migrationIds.Order(StringComparer.Ordinal), migrationIds);
         Assert.All(assembly.Migrations.Values, migrationType =>
         {

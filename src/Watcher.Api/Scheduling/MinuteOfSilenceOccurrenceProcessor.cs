@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Watcher.Api.Commands;
 using Watcher.Domain.Entities;
 using Watcher.Domain.Scheduling;
 using Watcher.Infrastructure.Persistence;
@@ -14,7 +15,10 @@ public enum MinuteOfSilenceProcessingResult
     AlreadyProcessed
 }
 
-public sealed class MinuteOfSilenceOccurrenceProcessor(WatcherDbContext db, TimeProvider clock)
+public sealed class MinuteOfSilenceOccurrenceProcessor(
+    WatcherDbContext db,
+    TimeProvider clock,
+    ILocationCommandSequenceAllocator sequenceAllocator)
 {
     public const string PresetCode = "minute_of_silence";
     private static readonly TimeZoneInfo KyivTimeZone =
@@ -82,13 +86,19 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(WatcherDbContext db, Time
             InitiatedByUserId = null,
             CreatedAtUtc = createdAtUtc,
             ExpiresAtUtc = expiresAtUtc,
-            Targets = locations.Select(location => new CommandTarget
+            Targets = []
+        };
+
+        foreach (Location location in locations)
+        {
+            command.Targets.Add(new CommandTarget
             {
                 Id = Guid.NewGuid(),
                 LocationId = location.Id,
+                Sequence = await sequenceAllocator.AllocateAsync(location.Id, cancellationToken),
                 State = "Created"
-            }).ToList()
-        };
+            });
+        }
 
         var payload = JsonSerializer.Serialize(new
         {

@@ -34,7 +34,8 @@ erDiagram
 | `sound_presets` | `id`, `code`, `priority`, `manifest_hash`, `status` | Погоджені сценарії відтворення |
 | `location_presets` | `location_id`, `preset_id`, `is_enabled` | Сценарії, дозволені для локації |
 | `alert_commands` | `id`, `kind`, `preset_id`, `initiated_by_user_id`, `created_at` | Створені команди та ініціатор |
-| `command_targets` | `command_id`, `location_id`, `state` | Стан доставки команди в кожну локацію |
+| `command_targets` | `command_id`, `location_id`, `sequence`, `state` | Намір і порядковий номер команди в кожній локації |
+| `location_command_sequences` | `location_id`, `next_sequence` | Транзакційний лічильник наступного номера команди для локації |
 | `command_receipts` | `id`, `command_id`, `device_id`, `status`, `occurred_at` | Підтвердження отримання, запуску та завершення |
 | `audit_events` | `id`, `event_type`, `actor_type`, `actor_id`, `payload`, `occurred_at` | Історія дій користувачів і системи |
 | `outbox_messages` | `id`, `command_id`, `event_type`, `payload`, `created_at_utc`, `processed_at_utc`, `attempts` | Надійна черга подій для подальшої доставки |
@@ -50,6 +51,9 @@ Outbox фіксує намір доставки в тій самій транз�
 
 - Унікальні значення: `locations.code`, `roles.code`, `sound_presets.code`, `users.external_subject`.
 - Пара `(command_id, location_id)` у `command_targets` унікальна.
+- Пара `(location_id, sequence)` у `command_targets` унікальна; номер завжди додатний.
+- Лічильник локації змінюється атомарно в тій самій транзакції, що команда, ціль, outbox та аудит.
+- Міграція послідовностей є forward-only: downgrade видалив би підтверджений порядок команд. Попередня версія застосунку може залишити схему без змін: тригер БД присвоїть номер цілям, вставленим без поля `sequence`.
 - Індекс за часом у `audit_events` та `alert_commands` потрібен для перегляду історії.
 - Індекс `(device_id, last_seen_at)` допомагає показувати останній зв’язок вузла.
 - Відкликання доступу фіксується полем стану або `revoked_at`; історичні команди й аудит не видаляються штатним інтерфейсом.

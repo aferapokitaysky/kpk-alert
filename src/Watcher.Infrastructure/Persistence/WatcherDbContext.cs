@@ -10,6 +10,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<SoundPreset> SoundPresets => Set<SoundPreset>();
     public DbSet<AlertCommand> AlertCommands => Set<AlertCommand>();
     public DbSet<CommandTarget> CommandTargets => Set<CommandTarget>();
+    public DbSet<LocationCommandSequence> LocationCommandSequences => Set<LocationCommandSequence>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<UserRole> UserRoles => Set<UserRole>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
@@ -78,7 +79,20 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.ToTable("command_targets");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.CommandId, x.LocationId }).IsUnique();
+            entity.HasIndex(x => new { x.LocationId, x.Sequence }).IsUnique();
+            entity.ToTable(table => table.HasCheckConstraint(
+                "CK_command_targets_sequence_positive", "\"Sequence\" > 0"));
+            entity.Property(x => x.Sequence).HasDefaultValue(0L);
             entity.Property(x => x.State).HasMaxLength(30).IsRequired();
+        });
+
+        modelBuilder.Entity<LocationCommandSequence>(entity =>
+        {
+            entity.ToTable("location_command_sequences", table => table.HasCheckConstraint(
+                "CK_location_command_sequences_next_sequence_positive", "\"NextSequence\" > 0"));
+            entity.HasKey(x => x.LocationId);
+            entity.HasOne<Location>().WithMany().HasForeignKey(x => x.LocationId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Role>(entity =>

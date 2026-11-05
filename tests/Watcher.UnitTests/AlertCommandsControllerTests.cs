@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Watcher.Api.Commands;
 using Watcher.Api.Contracts;
 using Watcher.Api.Controllers;
 using Watcher.Domain.Entities;
@@ -19,6 +20,7 @@ public sealed class AlertCommandsControllerTests : IDisposable
     private readonly Guid _presetId = Guid.NewGuid();
     private readonly Guid _roleId = Guid.NewGuid();
     private readonly Guid _idempotencyKey = Guid.NewGuid();
+    private readonly InMemoryLocationCommandSequenceAllocator _sequenceAllocator = new();
 
     public AlertCommandsControllerTests()
     {
@@ -64,6 +66,7 @@ public sealed class AlertCommandsControllerTests : IDisposable
         AlertCommand command = Assert.Single(_db.AlertCommands);
         Assert.Equal(command.CreatedAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes), command.ExpiresAtUtc);
         Assert.Single(_db.CommandTargets);
+        Assert.Equal(1, _db.CommandTargets.Single().Sequence);
         OutboxMessage outbox = Assert.Single(_db.OutboxMessages);
         Assert.Equal(command.Id, outbox.CommandId);
         Assert.Equal("alert_command.created", outbox.EventType);
@@ -77,6 +80,21 @@ public sealed class AlertCommandsControllerTests : IDisposable
         Assert.Equal("alert_command.created", audit.EventType);
         Assert.Equal(_userId, audit.ActorId);
         Assert.Contains(_locationId.ToString(), audit.Payload);
+    }
+
+    [Fact]
+    public async Task Create_allocates_a_new_sequence_for_each_command_target()
+    {
+        IActionResult first = await CreateController(_userId).Create(
+            ValidRequest(), _idempotencyKey, CancellationToken.None);
+        IActionResult second = await CreateController(_userId).Create(
+            ValidRequest(), Guid.NewGuid(), CancellationToken.None);
+
+        Assert.IsType<AcceptedAtActionResult>(first);
+        Assert.IsType<AcceptedAtActionResult>(second);
+        Assert.Equal([1L, 2L], _db.CommandTargets
+            .OrderBy(target => target.Sequence)
+            .Select(target => target.Sequence));
     }
 
     [Theory]
@@ -402,7 +420,7 @@ public sealed class AlertCommandsControllerTests : IDisposable
     {
         Claim[] claims = [new Claim("kgta_user_id", userId.ToString()), .. roles.Select(role =>
             new Claim(ClaimTypes.Role, role))];
-        AlertCommandsController controller = new(_db, TimeProvider.System)
+        AlertCommandsController controller = new(_db, TimeProvider.System, _sequenceAllocator)
         {
             ControllerContext = new ControllerContext
             {
@@ -418,6 +436,19 @@ public sealed class AlertCommandsControllerTests : IDisposable
 
     private CreateAlertCommandRequest ValidRequest() =>
         new("start", "evacuation", [_locationId]);
+
+    private sealed class InMemoryLocationCommandSequenceAllocator : ILocationCommandSequenceAllocator
+    {
+        private readonly Dictionary<Guid, long> _nextByLocation = [];
+
+        public Task<long> AllocateAsync(Guid locationId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var sequence = _nextByLocation.GetValueOrDefault(locationId) + 1;
+            _nextByLocation[locationId] = sequence;
+            return Task.FromResult(sequence);
+        }
+    }
 
     private static void AssertProblem(IActionResult result, int expectedStatus)
     {

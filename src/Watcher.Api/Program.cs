@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Watcher.Api.AlertSources;
+using Watcher.Api.Commands;
 using Watcher.Api.Scheduling;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
@@ -203,6 +204,7 @@ var connectionString = builder.Configuration.GetConnectionString("Watcher");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {
     builder.Services.AddDbContext<WatcherDbContext>(options => options.UseNpgsql(connectionString));
+    builder.Services.AddScoped<ILocationCommandSequenceAllocator, PostgresLocationCommandSequenceAllocator>();
     builder.Services.AddMinuteOfSilenceScheduler();
 }
 

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
@@ -55,10 +56,109 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             TimeSpan.Zero,
             TimeSpan.FromMicroseconds(1));
         Assert.Equal(seed.FirstLocationId, Assert.Single(command.Targets).LocationId);
+        Assert.Equal(1, command.Targets.Single().Sequence);
         Assert.Equal(command.Id, outbox.CommandId);
         Assert.Equal("alert_command.created", outbox.EventType);
         Assert.Null(outbox.ProcessedAtUtc);
         Assert.Equal(command.Id, audit.Payload.DeserializeCommandId());
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_commands_receive_distinct_increasing_sequences_for_the_same_location()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        const int commandCount = 12;
+        var csrfToken = await GetCsrfTokenAsync(client, seed.OperatorId);
+        ConcurrentBag<HttpResponseMessage> responses = [];
+        try
+        {
+            using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+            {
+                await setupDb.Database.ExecuteSqlRawAsync("""
+                    DROP TRIGGER IF EXISTS wait_for_location_command_sequence_contenders ON location_command_sequences;
+                    DROP FUNCTION IF EXISTS wait_for_location_command_sequence_contenders();
+                    DROP SEQUENCE IF EXISTS location_command_sequence_test_arrivals;
+                    """);
+
+                var barrierSql = $"""
+                CREATE SEQUENCE location_command_sequence_test_arrivals START WITH 1;
+
+                CREATE FUNCTION wait_for_location_command_sequence_contenders() RETURNS trigger
+                LANGUAGE plpgsql
+                AS $$
+                DECLARE
+                    arrival_count bigint;
+                    deadline timestamptz := clock_timestamp() + interval '15 seconds';
+                BEGIN
+                    PERFORM nextval('location_command_sequence_test_arrivals');
+                    LOOP
+                        SELECT last_value INTO arrival_count
+                        FROM location_command_sequence_test_arrivals;
+
+                        EXIT WHEN arrival_count >= {commandCount};
+                        IF clock_timestamp() >= deadline THEN
+                            RAISE EXCEPTION 'Timed out waiting for sequence allocation contenders';
+                        END IF;
+
+                        PERFORM pg_sleep(0.01);
+                    END LOOP;
+
+                    RETURN NEW;
+                END;
+                $$;
+
+                CREATE TRIGGER wait_for_location_command_sequence_contenders
+                BEFORE INSERT ON location_command_sequences
+                FOR EACH ROW
+                EXECUTE FUNCTION wait_for_location_command_sequence_contenders();
+                """;
+                await setupDb.Database.ExecuteSqlRawAsync(barrierSql);
+            }
+
+            TaskCompletionSource<bool> startGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<HttpResponseMessage>[] createTasks = Enumerable.Range(0, commandCount)
+                .Select(async _ =>
+                {
+                    await startGate.Task;
+                    HttpResponseMessage response = await SendCreateAsync(
+                        client, seed.OperatorId, Guid.NewGuid(), [seed.FirstLocationId], csrfToken);
+                    responses.Add(response);
+                    return response;
+                })
+                .ToArray();
+            startGate.SetResult(true);
+            HttpResponseMessage[] completedResponses = await Task.WhenAll(createTasks);
+
+            Assert.All(completedResponses, response => Assert.Equal(HttpStatusCode.Accepted, response.StatusCode));
+            using WatcherDbContext db = _fixture.CreateDbContext();
+            var contenderCount = await db.Database.SqlQueryRaw<long>("""
+                SELECT last_value AS "Value"
+                FROM location_command_sequence_test_arrivals
+                """).SingleAsync();
+            var sequences = await db.CommandTargets
+                .Where(target => target.LocationId == seed.FirstLocationId)
+                .OrderBy(target => target.Sequence)
+                .Select(target => target.Sequence)
+                .ToArrayAsync();
+
+            Assert.Equal(commandCount * 2, contenderCount);
+            Assert.Equal(Enumerable.Range(1, commandCount).Select(value => (long)value), sequences);
+        }
+        finally
+        {
+            foreach (HttpResponseMessage response in responses)
+            {
+                response.Dispose();
+            }
+
+            using WatcherDbContext cleanupDb = _fixture.CreateDbContext();
+            await cleanupDb.Database.ExecuteSqlRawAsync("""
+                DROP TRIGGER IF EXISTS wait_for_location_command_sequence_contenders ON location_command_sequences;
+                DROP FUNCTION IF EXISTS wait_for_location_command_sequence_contenders();
+                DROP SEQUENCE IF EXISTS location_command_sequence_test_arrivals;
+                """);
+        }
     }
 
     [PostgresFact]
@@ -633,6 +733,128 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 FROM alert_commands
                 WHERE "Id" = {commandId}
                 """).SingleAsync();
+        }
+        finally
+        {
+            await using NpgsqlConnection adminConnection = new(_connectionString);
+            await adminConnection.OpenAsync();
+            await using NpgsqlCommand dropSchema = new($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", adminConnection);
+            await dropSchema.ExecuteNonQueryAsync();
+        }
+    }
+
+    public async Task<(
+        long FirstCommandSequence,
+        long SecondCommandSequence,
+        long FirstLocationNextSequence,
+        long SecondLocationSequence,
+        long SecondLocationNextSequence,
+        long LegacyBinarySequence,
+        long FirstLocationNextSequenceAfterLegacyInsert)> MigrateLegacyTargetSequencesAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_connectionString))
+        {
+            throw new InvalidOperationException("PostgreSQL fixture is unavailable.");
+        }
+
+        var schema = $"sequence_test_{Guid.NewGuid():N}";
+        NpgsqlConnectionStringBuilder connection = new(_connectionString) { SearchPath = schema };
+        await using (NpgsqlConnection adminConnection = new(_connectionString))
+        {
+            await adminConnection.OpenAsync();
+            await using NpgsqlCommand createSchema = new($"CREATE SCHEMA \"{schema}\"", adminConnection);
+            await createSchema.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            DbContextOptions<WatcherDbContext> options = new DbContextOptionsBuilder<WatcherDbContext>()
+                .UseNpgsql(connection.ConnectionString)
+                .Options;
+            await using WatcherDbContext db = new(options);
+            IMigrator migrator = db.Database.GetService<IMigrator>();
+            await migrator.MigrateAsync("20261105010555_AddCommandExpiry");
+
+            var locationId = Guid.NewGuid();
+            var secondLocationId = Guid.NewGuid();
+            var firstCommandId = Guid.NewGuid();
+            var secondCommandId = Guid.NewGuid();
+            DateTimeOffset firstCreatedAt = new(2026, 1, 1, 8, 0, 0, TimeSpan.Zero);
+            DateTimeOffset secondCreatedAt = firstCreatedAt.AddMinutes(1);
+            DateTimeOffset locationCreatedAt = firstCreatedAt.AddDays(-1);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO locations ("Id", "Code", "Name", "IsActive", "CreatedAtUtc")
+                VALUES
+                    ({locationId}, {"migration-test-1"}, {"Тестова локація 1"}, {true}, {locationCreatedAt}),
+                    ({secondLocationId}, {"migration-test-2"}, {"Тестова локація 2"}, {true}, {locationCreatedAt});
+                """);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO alert_commands
+                    ("Id", "IdempotencyKey", "Action", "PresetCode", "InitiatedByUserId", "CreatedAtUtc", "ExpiresAtUtc")
+                VALUES
+                    ({firstCommandId}, {Guid.NewGuid()}, {"start"}, {"test"}, {null}, {firstCreatedAt}, {firstCreatedAt.AddMinutes(5)}),
+                    ({secondCommandId}, {Guid.NewGuid()}, {"start"}, {"test"}, {null}, {secondCreatedAt}, {secondCreatedAt.AddMinutes(5)});
+                """);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO command_targets ("Id", "CommandId", "LocationId", "State")
+                VALUES
+                    ({Guid.NewGuid()}, {secondCommandId}, {locationId}, {"Created"}),
+                    ({Guid.NewGuid()}, {firstCommandId}, {locationId}, {"Created"}),
+                    ({Guid.NewGuid()}, {firstCommandId}, {secondLocationId}, {"Created"});
+                """);
+
+            await migrator.MigrateAsync();
+            var firstCommandSequence = await db.Database.SqlQuery<long>($"""
+                SELECT "Sequence" AS "Value"
+                FROM command_targets
+                WHERE "CommandId" = {firstCommandId} AND "LocationId" = {locationId}
+                """).SingleAsync();
+            var secondCommandSequence = await db.Database.SqlQuery<long>($"""
+                SELECT "Sequence" AS "Value"
+                FROM command_targets
+                WHERE "CommandId" = {secondCommandId} AND "LocationId" = {locationId}
+                """).SingleAsync();
+            var firstLocationNextSequence = await db.Database.SqlQuery<long>($"""
+                SELECT "NextSequence" AS "Value"
+                FROM location_command_sequences
+                WHERE "LocationId" = {locationId}
+                """).SingleAsync();
+            var secondLocationSequence = await db.Database.SqlQuery<long>($"""
+                SELECT "Sequence" AS "Value"
+                FROM command_targets
+                WHERE "CommandId" = {firstCommandId} AND "LocationId" = {secondLocationId}
+                """).SingleAsync();
+            var secondLocationNextSequence = await db.Database.SqlQuery<long>($"""
+                SELECT "NextSequence" AS "Value"
+                FROM location_command_sequences
+                WHERE "LocationId" = {secondLocationId}
+                """).SingleAsync();
+            var legacyCommandId = Guid.NewGuid();
+            DateTimeOffset legacyCreatedAt = secondCreatedAt.AddMinutes(1);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO alert_commands
+                    ("Id", "IdempotencyKey", "Action", "PresetCode", "InitiatedByUserId", "CreatedAtUtc", "ExpiresAtUtc")
+                VALUES
+                    ({legacyCommandId}, {Guid.NewGuid()}, {"start"}, {"test"}, {null}, {legacyCreatedAt}, {legacyCreatedAt.AddMinutes(5)});
+                """);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO command_targets ("Id", "CommandId", "LocationId", "State")
+                VALUES ({Guid.NewGuid()}, {legacyCommandId}, {locationId}, {"Created"});
+                """);
+            var legacyBinarySequence = await db.Database.SqlQuery<long>($"""
+                SELECT "Sequence" AS "Value"
+                FROM command_targets
+                WHERE "CommandId" = {legacyCommandId} AND "LocationId" = {locationId}
+                """).SingleAsync();
+            var firstLocationNextSequenceAfterLegacyInsert = await db.Database.SqlQuery<long>($"""
+                SELECT "NextSequence" AS "Value"
+                FROM location_command_sequences
+                WHERE "LocationId" = {locationId}
+                """).SingleAsync();
+
+            return (firstCommandSequence, secondCommandSequence, firstLocationNextSequence,
+                secondLocationSequence, secondLocationNextSequence, legacyBinarySequence,
+                firstLocationNextSequenceAfterLegacyInsert);
         }
         finally
         {

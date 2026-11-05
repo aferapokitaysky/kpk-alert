@@ -154,6 +154,11 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("LocationId")
                         .HasColumnType("uuid");
 
+                    b.Property<long>("Sequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
                     b.Property<string>("State")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -164,7 +169,13 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.HasIndex("CommandId", "LocationId")
                         .IsUnique();
 
-                    b.ToTable("command_targets", (string)null);
+                    b.HasIndex("LocationId", "Sequence")
+                        .IsUnique();
+
+                    b.ToTable("command_targets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_command_targets_sequence_positive", "\"Sequence\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.Device", b =>
@@ -252,6 +263,22 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("locations", (string)null);
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.LocationCommandSequence", b =>
+                {
+                    b.Property<Guid>("LocationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("NextSequence")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("LocationId");
+
+                    b.ToTable("location_command_sequences", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_location_command_sequences_next_sequence_positive", "\"NextSequence\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.MinuteOfSilenceOccurrence", b =>
@@ -475,6 +502,15 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("DeviceId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.LocationCommandSequence", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.Location", null)
+                        .WithMany()
+                        .HasForeignKey("LocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Watcher.Api.Commands;
 using Watcher.Api.Contracts;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
@@ -13,7 +14,10 @@ namespace Watcher.Api.Controllers;
 [ApiController]
 [Authorize]
 [Route("api/v1/alert-commands")]
-public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider clock) : ControllerBase
+public sealed class AlertCommandsController(
+    WatcherDbContext db,
+    TimeProvider clock,
+    ILocationCommandSequenceAllocator sequenceAllocator) : ControllerBase
 {
     private const int MaximumRequestBodySizeBytes = 16 * 1024;
 
@@ -90,59 +94,71 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
         }
 
         DateTimeOffset createdAtUtc = clock.GetUtcNow();
-        AlertCommand command = new()
-        {
-            Id = Guid.NewGuid(),
-            IdempotencyKey = idempotencyKey,
-            Action = request.Action,
-            PresetCode = request.PresetCode,
-            InitiatedByUserId = userId,
-            CreatedAtUtc = createdAtUtc,
-            ExpiresAtUtc = createdAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes),
-            Targets = locations.Select(location => new CommandTarget
-            {
-                Id = Guid.NewGuid(),
-                LocationId = location.Id,
-                State = "Created"
-            }).ToList()
-        };
-
-        var payload = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            command.Id,
-            command.Action,
-            command.PresetCode,
-            command.ExpiresAtUtc,
-            LocationIds = command.Targets.Select(target => target.LocationId)
-        });
-
-        db.AlertCommands.Add(command);
-        db.OutboxMessages.Add(new OutboxMessage
-        {
-            Id = Guid.NewGuid(),
-            CommandId = command.Id,
-            EventType = "alert_command.created",
-            Payload = payload,
-            CreatedAtUtc = command.CreatedAtUtc
-        });
-        db.AuditEvents.Add(new AuditEvent
-        {
-            Id = Guid.NewGuid(),
-            EventType = "alert_command.created",
-            ActorType = "user",
-            ActorId = userId,
-            Payload = payload,
-            OccurredAtUtc = command.CreatedAtUtc
-        });
-
         await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
         {
+            List<CommandTarget> targets = [];
+            foreach (Location location in locations.OrderBy(item => item.Id))
+            {
+                targets.Add(new CommandTarget
+                {
+                    Id = Guid.NewGuid(),
+                    LocationId = location.Id,
+                    Sequence = await sequenceAllocator.AllocateAsync(location.Id, cancellationToken),
+                    State = "Created"
+                });
+            }
+
+            AlertCommand command = new()
+            {
+                Id = Guid.NewGuid(),
+                IdempotencyKey = idempotencyKey,
+                Action = request.Action,
+                PresetCode = request.PresetCode,
+                InitiatedByUserId = userId,
+                CreatedAtUtc = createdAtUtc,
+                ExpiresAtUtc = createdAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes),
+                Targets = targets
+            };
+
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                command.Id,
+                command.Action,
+                command.PresetCode,
+                command.ExpiresAtUtc,
+                LocationIds = command.Targets.Select(target => target.LocationId)
+            });
+
+            db.AlertCommands.Add(command);
+            db.OutboxMessages.Add(new OutboxMessage
+            {
+                Id = Guid.NewGuid(),
+                CommandId = command.Id,
+                EventType = "alert_command.created",
+                Payload = payload,
+                CreatedAtUtc = command.CreatedAtUtc
+            });
+            db.AuditEvents.Add(new AuditEvent
+            {
+                Id = Guid.NewGuid(),
+                EventType = "alert_command.created",
+                ActorType = "user",
+                ActorId = userId,
+                Payload = payload,
+                OccurredAtUtc = command.CreatedAtUtc
+            });
+
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            return AcceptedAtAction(nameof(Get), new { id = command.Id }, ToResponse(command));
         }
         catch (DbUpdateException exception) when
-            (exception.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+            (exception.InnerException is Npgsql.PostgresException
+            {
+                SqlState: Npgsql.PostgresErrorCodes.UniqueViolation,
+                ConstraintName: "IX_alert_commands_IdempotencyKey"
+            })
         {
             await transaction.RollbackAsync(cancellationToken);
             AlertCommand? concurrentReplay = await db.AlertCommands.AsNoTracking()
@@ -153,7 +169,6 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
                 : ReplayOrConflict(concurrentReplay, userId, request);
         }
 
-        return AcceptedAtAction(nameof(Get), new { id = command.Id }, ToResponse(command));
     }
 
     [HttpGet("{id:guid}")]
