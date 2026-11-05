@@ -25,7 +25,7 @@ function errorMessage(error: unknown): string {
   if (error instanceof CommandDeliveriesApiError) {
     if (error.status === 401) return 'Сесію завершено. Увійдіть знову, щоб продовжити.';
     if (error.status === 403) return 'У вас немає доступу до стану доставки цієї команди.';
-    if (error.status === 404) return 'Команду або записи доставки не знайдено.';
+    if (error.status === 404) return 'Команду не знайдено або немає доступу до її стану доставки.';
   }
   return 'Не вдалося завантажити статуси доставки. Перевірте з’єднання та повторіть спробу.';
 }

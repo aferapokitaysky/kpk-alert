@@ -394,14 +394,14 @@ public sealed class AlertCommandsControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Get_forbids_another_user_from_reading_command()
+    public async Task Get_hides_another_users_command()
     {
         await CreateController(_userId).Create(ValidRequest(), _idempotencyKey, CancellationToken.None);
         Guid commandId = _db.AlertCommands.Single().Id;
 
         IActionResult result = await CreateController(Guid.NewGuid()).Get(commandId, CancellationToken.None);
 
-        Assert.IsType<ForbidResult>(result);
+        Assert.IsType<NotFoundResult>(result);
     }
 
     [Fact]

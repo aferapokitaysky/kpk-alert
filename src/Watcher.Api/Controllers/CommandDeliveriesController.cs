@@ -24,17 +24,21 @@ public sealed class CommandDeliveriesController(WatcherDbContext db) : Controlle
     {
         Response.Headers.CacheControl = "no-store";
 
-        AlertCommand? command = await db.AlertCommands.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.Id == commandId, cancellationToken);
-        if (command is null)
+        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId))
         {
             return NotFound();
         }
 
-        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId) ||
-            (command.InitiatedByUserId != userId && !User.IsInRole("admin") && !User.IsInRole("auditor")))
+        IQueryable<AlertCommand> commandQuery = db.AlertCommands.AsNoTracking()
+            .Where(item => item.Id == commandId);
+        if (!User.IsInRole("admin") && !User.IsInRole("auditor"))
         {
-            return Forbid();
+            commandQuery = commandQuery.Where(item => item.InitiatedByUserId == userId);
+        }
+
+        if (!await commandQuery.AnyAsync(cancellationToken))
+        {
+            return NotFound();
         }
 
         if (page < 1 || pageSize is < 1 or > MaximumPageSize)

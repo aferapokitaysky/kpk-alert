@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -441,7 +442,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
     }
 
     [PostgresFact]
-    public async Task Get_allows_the_initiator_and_forbids_another_user()
+    public async Task Get_allows_the_initiator_and_hides_a_command_from_another_user()
     {
         HttpClient client = RequireClient();
         SeedData seed = await _fixture.ResetAndSeedAsync();
@@ -459,9 +460,18 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         using HttpRequestMessage auditorRequest = new(HttpMethod.Get, $"/api/v1/alert-commands/{body.Id}");
         AddIdentity(auditorRequest, seed.OtherUserId, "auditor");
         using HttpResponseMessage auditorResponse = await client.SendAsync(auditorRequest);
+        using HttpRequestMessage missingRequest = new(HttpMethod.Get,
+            $"/api/v1/alert-commands/{Guid.NewGuid()}");
+        AddIdentity(missingRequest, seed.OtherUserId);
+        using HttpResponseMessage missingResponse = await client.SendAsync(missingRequest);
 
         Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, otherResponse.StatusCode);
+        Assert.Equal("no-store", ownerResponse.Headers.CacheControl?.ToString());
+        Assert.Equal(HttpStatusCode.NotFound, otherResponse.StatusCode);
+        Assert.Equal("no-store", otherResponse.Headers.CacheControl?.ToString());
+        Assert.Equal(HttpStatusCode.NotFound, missingResponse.StatusCode);
+        Assert.Equal("no-store", missingResponse.Headers.CacheControl?.ToString());
+        await AssertSameNotFoundDetailsAsync(missingResponse, otherResponse);
         Assert.Equal(HttpStatusCode.OK, auditorResponse.StatusCode);
     }
 
@@ -476,6 +486,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
 
     [PostgresFact]
@@ -580,6 +591,20 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         AddIdentity(request, userId);
         request.Headers.Add("Idempotency-Key", idempotencyKey.ToString());
         return request;
+    }
+
+    private static async Task AssertSameNotFoundDetailsAsync(
+        HttpResponseMessage expected,
+        HttpResponseMessage actual)
+    {
+        using var expectedBody = JsonDocument.Parse(await expected.Content.ReadAsStringAsync());
+        using var actualBody = JsonDocument.Parse(await actual.Content.ReadAsStringAsync());
+        foreach (var propertyName in new[] { "type", "title", "status" })
+        {
+            Assert.Equal(
+                expectedBody.RootElement.GetProperty(propertyName).ToString(),
+                actualBody.RootElement.GetProperty(propertyName).ToString());
+        }
     }
 
     private static void AddIdentity(HttpRequestMessage request, Guid userId, string? role = null)

@@ -253,7 +253,7 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         using HttpResponseMessage regularUser = await GetCommandAsync(seed.OperatorId, commandId);
         using HttpResponseMessage administrator = await GetCommandAsync(seed.AdministratorId, commandId, "admin");
 
-        Assert.Equal(HttpStatusCode.Forbidden, regularUser.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, regularUser.StatusCode);
         Assert.Equal(HttpStatusCode.OK, administrator.StatusCode);
     }
 

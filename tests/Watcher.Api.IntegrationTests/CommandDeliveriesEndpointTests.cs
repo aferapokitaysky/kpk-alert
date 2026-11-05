@@ -33,15 +33,17 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
             $"/api/v1/alert-commands/{userCommandId}/deliveries");
 
         Assert.Equal(HttpStatusCode.OK, owner.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, unrelated.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, unrelated.StatusCode);
         Assert.Equal("no-store", unrelated.Headers.CacheControl?.ToString());
         Assert.Equal(HttpStatusCode.OK, auditor.StatusCode);
         Assert.Equal(HttpStatusCode.OK, administrator.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, ordinarySystem.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, ordinarySystem.StatusCode);
         Assert.Equal(HttpStatusCode.OK, auditorSystem.StatusCode);
         Assert.Equal(HttpStatusCode.OK, administratorSystem.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         Assert.Equal("no-store", missing.Headers.CacheControl?.ToString());
+        await AssertSameNotFoundDetailsAsync(missing, unrelated);
+        await AssertSameNotFoundDetailsAsync(missing, ordinarySystem);
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
 
@@ -177,5 +179,19 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         }
 
         return await client.SendAsync(request);
+    }
+
+    private static async Task AssertSameNotFoundDetailsAsync(
+        HttpResponseMessage expected,
+        HttpResponseMessage actual)
+    {
+        using var expectedBody = JsonDocument.Parse(await expected.Content.ReadAsStringAsync());
+        using var actualBody = JsonDocument.Parse(await actual.Content.ReadAsStringAsync());
+        foreach (var propertyName in new[] { "type", "title", "status" })
+        {
+            Assert.Equal(
+                expectedBody.RootElement.GetProperty(propertyName).ToString(),
+                actualBody.RootElement.GetProperty(propertyName).ToString());
+        }
     }
 }

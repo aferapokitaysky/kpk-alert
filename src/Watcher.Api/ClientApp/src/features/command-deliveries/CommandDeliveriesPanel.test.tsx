@@ -203,6 +203,17 @@ describe('панель доставлення команди', () => {
     );
   });
 
+  it('не розкриває, чи існує команда, якщо сервер повернув 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 404));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Команду не знайдено або немає доступу до її стану доставки.',
+    );
+  });
+
   it('повідомляє, коли сервер завершив сесію', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({}, 401));
     vi.stubGlobal('fetch', fetchMock);

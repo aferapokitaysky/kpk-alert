@@ -174,18 +174,26 @@ public sealed class AlertCommandsController(
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken cancellationToken)
     {
-        AlertCommand? command = await db.AlertCommands.AsNoTracking()
-            .Include(item => item.Targets)
-            .SingleOrDefaultAsync(item => item.Id == id, cancellationToken);
-        if (command is null)
+        Response.Headers.CacheControl = "no-store";
+
+        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId))
         {
             return NotFound();
         }
 
-        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId) ||
-            (command.InitiatedByUserId != userId && !User.IsInRole("admin") && !User.IsInRole("auditor")))
+        IQueryable<AlertCommand> query = db.AlertCommands.AsNoTracking()
+            .Where(item => item.Id == id);
+        if (!User.IsInRole("admin") && !User.IsInRole("auditor"))
         {
-            return Forbid();
+            query = query.Where(item => item.InitiatedByUserId == userId);
+        }
+
+        AlertCommand? command = await query
+            .Include(item => item.Targets)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (command is null)
+        {
+            return NotFound();
         }
 
         return Ok(ToResponse(command));
