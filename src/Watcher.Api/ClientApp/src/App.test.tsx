@@ -34,6 +34,10 @@ vi.mock('./features/alert-sources/AlertSourcesPanel', () => ({
   AlertSourcesPanel: () => null,
 }));
 
+vi.mock('./features/minute-of-silence/MinuteOfSilenceStatusPanel', () => ({
+  MinuteOfSilenceStatusPanel: () => null,
+}));
+
 vi.mock('./features/command-deliveries/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./features/command-deliveries/api')>();
   return { ...actual, getCommandDeliveries: vi.fn() };

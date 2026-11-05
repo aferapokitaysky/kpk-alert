@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, getAuditEvents, type AuditPage as AuditPageData } from '../../api';
 import { GoogleLoginLink } from '../auth/GoogleLoginLink';
+import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
 import { pageCount, type SessionState } from '../../state';
 
 type AuditState =
@@ -141,6 +142,7 @@ export function AuditPage({ session, onSessionExpired, onSessionRetry }: Props) 
           <p className="lead">Події системи у зворотному хронологічному порядку.</p>
         </div>
       </section>
+      <MinuteOfSilenceStatusPanel session={session} />
       <section className="panel audit-panel" aria-labelledby="audit-title">
         <div className="panel-heading">
           <div>

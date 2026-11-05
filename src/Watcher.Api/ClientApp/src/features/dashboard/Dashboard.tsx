@@ -3,6 +3,7 @@ import type { AlertCommand, Location, Preset } from '../../api';
 import type { ResourceState, SessionState } from '../../state';
 import { AlertSourcesPanel } from '../alert-sources/AlertSourcesPanel';
 import { CommandDeliveriesPanel } from '../command-deliveries/CommandDeliveriesPanel';
+import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
 
 interface Props {
   session: SessionState;
@@ -159,6 +160,8 @@ export function Dashboard({
           </svg>
         </div>
       </section>
+
+      <MinuteOfSilenceStatusPanel session={session} />
 
       {session.status === 'authenticated' && !canOperate && (
         <div className="alert alert-info" role="status">

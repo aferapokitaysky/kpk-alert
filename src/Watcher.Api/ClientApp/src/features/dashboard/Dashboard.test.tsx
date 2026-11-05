@@ -30,9 +30,9 @@ describe('права на пульті', () => {
       capabilities: { canOperate: false, canViewAudit: true },
     });
 
-    expect(screen.getByRole('status')).toHaveTextContent(
-      'має доступ до перегляду, але не до запуску команд',
-    );
+    expect(
+      screen.getByText('Ваш обліковий запис має доступ до перегляду, але не до запуску команд.'),
+    ).toHaveAttribute('role', 'status');
   });
 
   it('повідомляє про неналаштовані права, якщо користувач не може переглядати й запускати', () => {
@@ -58,6 +58,36 @@ describe('права на пульті', () => {
 });
 
 describe('робоча панель оператора', () => {
+  it('показує статус хвилини мовчання глобальному адміністратору', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            runDate: '2026-11-06',
+            timeZone: 'Europe/Kyiv',
+            scheduledAtUtc: '2026-11-06T07:00:00Z',
+            outcome: null,
+            skipReason: null,
+            commandId: null,
+            processedAtUtc: null,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+
+    renderDashboard({
+      status: 'authenticated',
+      roles: ['admin'],
+      capabilities: { canOperate: true, canViewAudit: true },
+    });
+
+    expect(await screen.findByRole('region', { name: 'Хвилина мовчання' })).toHaveTextContent(
+      'Результат ще не зафіксовано.',
+    );
+  });
+
   it('показує вибір корпусу перед сценаріями та передає вибір до підтвердження', async () => {
     const user = userEvent.setup();
     const onRun = vi.fn();
@@ -81,6 +111,7 @@ describe('робоча панель оператора', () => {
 
     const workspace = container.querySelector('.dispatch-grid');
     expect(workspace).not.toBeNull();
+    expect(screen.queryByRole('region', { name: 'Хвилина мовчання' })).not.toBeInTheDocument();
     expect(
       within(workspace as HTMLElement)
         .getAllByRole('heading', { level: 2 })
