@@ -16,6 +16,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<Device> Devices => Set<Device>();
     public DbSet<DeviceSession> DeviceSessions => Set<DeviceSession>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<MinuteOfSilenceOccurrence> MinuteOfSilenceOccurrences => Set<MinuteOfSilenceOccurrence>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -54,8 +55,21 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.HasIndex(x => x.IdempotencyKey).IsUnique();
             entity.Property(x => x.Action).HasMaxLength(20).IsRequired();
             entity.Property(x => x.PresetCode).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.ExpiresAtUtc).IsRequired();
             entity.HasIndex(x => x.CreatedAtUtc);
             entity.HasMany(x => x.Targets).WithOne().HasForeignKey(x => x.CommandId);
+        });
+
+        modelBuilder.Entity<MinuteOfSilenceOccurrence>(entity =>
+        {
+            entity.ToTable("minute_of_silence_occurrences");
+            entity.HasKey(x => x.RunDate);
+            entity.Property(x => x.RunDate).HasColumnName("run_date");
+            entity.Property(x => x.Outcome).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.SkipReason).HasMaxLength(60);
+            entity.HasIndex(x => x.CommandId).IsUnique();
+            entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<CommandTarget>(entity =>

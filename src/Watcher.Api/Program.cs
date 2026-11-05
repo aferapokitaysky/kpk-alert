@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Watcher.Api.Scheduling;
 using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
@@ -200,6 +201,7 @@ var connectionString = builder.Configuration.GetConnectionString("Watcher");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {
     builder.Services.AddDbContext<WatcherDbContext>(options => options.UseNpgsql(connectionString));
+    builder.Services.AddMinuteOfSilenceScheduler();
 }
 
 WebApplication app = builder.Build();

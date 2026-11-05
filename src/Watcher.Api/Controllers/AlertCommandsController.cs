@@ -51,13 +51,13 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
                 title: "Перевірте дію, сценарій і список корпусів.");
         }
 
-        var presetExists = await db.SoundPresets.AnyAsync(
-            preset => preset.Code == request.PresetCode && preset.IsPublished,
+        SoundPreset? preset = await db.SoundPresets.AsNoTracking().SingleOrDefaultAsync(
+            item => item.Code == request.PresetCode && item.IsPublished,
             cancellationToken);
-        if (!presetExists)
+        if (preset is null || !SoundPreset.HasValidManifestHash(preset.ManifestHash))
         {
             return Problem(statusCode: StatusCodes.Status422UnprocessableEntity,
-                title: "Обраний сценарій недоступний.");
+                title: "Обраний сценарій не опублікований або має некоректний manifest hash.");
         }
 
         List<Location> locations = await db.Locations
@@ -84,6 +84,7 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             return Forbid();
         }
 
+        DateTimeOffset createdAtUtc = clock.GetUtcNow();
         AlertCommand command = new()
         {
             Id = Guid.NewGuid(),
@@ -91,7 +92,8 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             Action = request.Action,
             PresetCode = request.PresetCode,
             InitiatedByUserId = userId,
-            CreatedAtUtc = clock.GetUtcNow(),
+            CreatedAtUtc = createdAtUtc,
+            ExpiresAtUtc = createdAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes),
             Targets = locations.Select(location => new CommandTarget
             {
                 Id = Guid.NewGuid(),
@@ -100,19 +102,22 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             }).ToList()
         };
 
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            command.Id,
+            command.Action,
+            command.PresetCode,
+            command.ExpiresAtUtc,
+            LocationIds = command.Targets.Select(target => target.LocationId)
+        });
+
         db.AlertCommands.Add(command);
         db.OutboxMessages.Add(new OutboxMessage
         {
             Id = Guid.NewGuid(),
             CommandId = command.Id,
             EventType = "alert_command.created",
-            Payload = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                command.Id,
-                command.Action,
-                command.PresetCode,
-                LocationIds = command.Targets.Select(target => target.LocationId)
-            }),
+            Payload = payload,
             CreatedAtUtc = command.CreatedAtUtc
         });
         db.AuditEvents.Add(new AuditEvent
@@ -121,13 +126,7 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
             EventType = "alert_command.created",
             ActorType = "user",
             ActorId = userId,
-            Payload = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                command.Id,
-                command.Action,
-                command.PresetCode,
-                LocationIds = command.Targets.Select(target => target.LocationId)
-            }),
+            Payload = payload,
             OccurredAtUtc = command.CreatedAtUtc
         });
 
@@ -178,6 +177,7 @@ public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider cl
         command.Action,
         command.PresetCode,
         command.CreatedAtUtc,
+        command.ExpiresAtUtc,
         Targets = command.Targets.Select(target => new { target.LocationId, target.State })
     };
 

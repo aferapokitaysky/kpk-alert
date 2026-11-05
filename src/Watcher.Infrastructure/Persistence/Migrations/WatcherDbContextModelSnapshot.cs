@@ -36,10 +36,13 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid>("IdempotencyKey")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("InitiatedByUserId")
+                    b.Property<Guid?>("InitiatedByUserId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("PresetCode")
@@ -200,6 +203,35 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("locations", (string)null);
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.MinuteOfSilenceOccurrence", b =>
+                {
+                    b.Property<DateOnly>("RunDate")
+                        .HasColumnType("date")
+                        .HasColumnName("run_date");
+
+                    b.Property<Guid?>("CommandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTimeOffset>("ProcessedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SkipReason")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.HasKey("RunDate");
+
+                    b.HasIndex("CommandId")
+                        .IsUnique();
+
+                    b.ToTable("minute_of_silence_occurrences", (string)null);
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.OutboxMessage", b =>
@@ -380,6 +412,14 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasForeignKey("DeviceId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.MinuteOfSilenceOccurrence", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.AlertCommand", null)
+                        .WithMany()
+                        .HasForeignKey("CommandId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.OutboxMessage", b =>

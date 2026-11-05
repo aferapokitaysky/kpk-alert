@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -60,12 +61,16 @@ public sealed class AlertCommandsControllerTests : IDisposable
             ValidRequest(), _idempotencyKey, CancellationToken.None);
 
         Assert.IsType<AcceptedAtActionResult>(result);
-        Assert.Single(_db.AlertCommands);
+        AlertCommand command = Assert.Single(_db.AlertCommands);
+        Assert.Equal(command.CreatedAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes), command.ExpiresAtUtc);
         Assert.Single(_db.CommandTargets);
         OutboxMessage outbox = Assert.Single(_db.OutboxMessages);
-        Assert.Equal(_db.AlertCommands.Single().Id, outbox.CommandId);
+        Assert.Equal(command.Id, outbox.CommandId);
         Assert.Equal("alert_command.created", outbox.EventType);
         Assert.Contains(_locationId.ToString(), outbox.Payload);
+        using var outboxPayload = JsonDocument.Parse(outbox.Payload);
+        Assert.Equal(command.ExpiresAtUtc,
+            outboxPayload.RootElement.GetProperty("ExpiresAtUtc").GetDateTimeOffset());
         Assert.Null(outbox.ProcessedAtUtc);
         Assert.Equal(0, outbox.Attempts);
         AuditEvent audit = Assert.Single(_db.AuditEvents);
@@ -212,6 +217,23 @@ public sealed class AlertCommandsControllerTests : IDisposable
 
         AssertProblem(result, StatusCodes.Status422UnprocessableEntity);
         Assert.Empty(_db.AlertCommands);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("not-a-sha256-hash")]
+    [InlineData("gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")]
+    public async Task Create_rejects_published_preset_with_invalid_manifest_hash(string manifestHash)
+    {
+        _db.SoundPresets.Single().ManifestHash = manifestHash;
+        await _db.SaveChangesAsync();
+
+        IActionResult result = await CreateController(_userId).Create(
+            ValidRequest(), _idempotencyKey, CancellationToken.None);
+
+        AssertProblem(result, StatusCodes.Status422UnprocessableEntity);
+        Assert.Empty(_db.AlertCommands);
+        Assert.Empty(_db.OutboxMessages);
     }
 
     [Fact]

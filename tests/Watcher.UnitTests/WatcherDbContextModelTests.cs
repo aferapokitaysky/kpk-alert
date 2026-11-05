@@ -22,6 +22,7 @@ public sealed class WatcherDbContextModelTests
         Assert.Contains("roles", entityNames);
         Assert.Contains("devices", entityNames);
         Assert.Contains("alert_commands", entityNames);
+        Assert.Contains("minute_of_silence_occurrences", entityNames);
         Assert.Contains("audit_events", entityNames);
         Assert.Contains("outbox_messages", entityNames);
 
@@ -79,7 +80,7 @@ public sealed class WatcherDbContextModelTests
         IMigrationsAssembly assembly = db.GetService<IMigrationsAssembly>();
         IReadOnlyList<string> migrationIds = assembly.Migrations.Keys.ToArray();
 
-        Assert.Equal(5, migrationIds.Count);
+        Assert.Equal(7, migrationIds.Count);
         Assert.Equal(migrationIds.Order(StringComparer.Ordinal), migrationIds);
         Assert.All(assembly.Migrations.Values, migrationType =>
         {

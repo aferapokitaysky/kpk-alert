@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -35,11 +37,22 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
             client, seed.OperatorId, idempotencyKey, [seed.FirstLocationId]);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        CommandResponse? responseBody = await response.Content.ReadFromJsonAsync<CommandResponse>();
+        Assert.NotNull(responseBody);
         using WatcherDbContext db = _fixture.CreateDbContext();
         AlertCommand command = await db.AlertCommands.Include(item => item.Targets).SingleAsync();
         OutboxMessage outbox = await db.OutboxMessages.SingleAsync();
         AuditEvent audit = await db.AuditEvents.SingleAsync();
         Assert.Equal(idempotencyKey, command.IdempotencyKey);
+        TimeSpan persistedTtl = command.ExpiresAtUtc - command.CreatedAtUtc;
+        Assert.InRange(
+            (persistedTtl - TimeSpan.FromMinutes(AlertCommand.DefaultValidityMinutes)).Duration(),
+            TimeSpan.Zero,
+            TimeSpan.FromMicroseconds(1));
+        Assert.InRange(
+            (responseBody.ExpiresAtUtc - command.ExpiresAtUtc).Duration(),
+            TimeSpan.Zero,
+            TimeSpan.FromMicroseconds(1));
         Assert.Equal(seed.FirstLocationId, Assert.Single(command.Targets).LocationId);
         Assert.Equal(command.Id, outbox.CommandId);
         Assert.Equal("alert_command.created", outbox.EventType);
@@ -482,6 +495,7 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         string Action,
         string PresetCode,
         DateTimeOffset CreatedAtUtc,
+        DateTimeOffset ExpiresAtUtc,
         TargetResponse[] Targets);
     private sealed record TargetResponse(Guid LocationId, string State);
     private sealed record LocationResponse(Guid Id, string Name, string Code);
@@ -572,6 +586,55 @@ public sealed class PostgresApiFixture : IAsyncLifetime
             .UseNpgsql(_isolatedConnectionString)
             .Options;
         return new WatcherDbContext(options);
+    }
+
+    public async Task<DateTimeOffset> MigrateLegacyCommandExpiryAsync(DateTimeOffset createdAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(_connectionString))
+        {
+            throw new InvalidOperationException("PostgreSQL fixture is unavailable.");
+        }
+
+        var schema = $"expiry_test_{Guid.NewGuid():N}";
+        NpgsqlConnectionStringBuilder connection = new(_connectionString) { SearchPath = schema };
+        await using (NpgsqlConnection adminConnection = new(_connectionString))
+        {
+            await adminConnection.OpenAsync();
+            await using NpgsqlCommand createSchema = new($"CREATE SCHEMA \"{schema}\"", adminConnection);
+            await createSchema.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            DbContextOptions<WatcherDbContext> options = new DbContextOptionsBuilder<WatcherDbContext>()
+                .UseNpgsql(connection.ConnectionString)
+                .Options;
+            await using WatcherDbContext db = new(options);
+            IMigrator migrator = db.Database.GetService<IMigrator>();
+            await migrator.MigrateAsync("20261105004326_AddMinuteOfSilenceScheduleAndSystemActor");
+
+            var commandId = Guid.NewGuid();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO alert_commands
+                    ("Id", "IdempotencyKey", "Action", "PresetCode", "InitiatedByUserId", "CreatedAtUtc")
+                VALUES
+                    ({commandId}, {Guid.NewGuid()}, {"start"}, {"minute_of_silence"}, {null}, {createdAtUtc})
+                """);
+
+            await migrator.MigrateAsync();
+            return await db.Database.SqlQuery<DateTimeOffset>($"""
+                SELECT "ExpiresAtUtc" AS "Value"
+                FROM alert_commands
+                WHERE "Id" = {commandId}
+                """).SingleAsync();
+        }
+        finally
+        {
+            await using NpgsqlConnection adminConnection = new(_connectionString);
+            await adminConnection.OpenAsync();
+            await using NpgsqlCommand dropSchema = new($"DROP SCHEMA IF EXISTS \"{schema}\" CASCADE", adminConnection);
+            await dropSchema.ExecuteNonQueryAsync();
+        }
     }
 
     public async Task<SeedData> ResetAndSeedAsync(bool includeGlobalAdministrator = false)
