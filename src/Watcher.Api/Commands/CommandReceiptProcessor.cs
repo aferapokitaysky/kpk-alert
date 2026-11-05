@@ -81,6 +81,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
 
         CommandDelivery? stoppedDelivery = null;
         var targetWasStopped = false;
+        var preserveStoppedState = command.Action == "start" && delivery.State == CommandDeliveryState.Stopped;
         if (command.Action == "stop" && receipt.State == DeviceCommandState.Completed)
         {
             if (command.TargetCommandId is not { } targetCommandId)
@@ -99,10 +100,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 item => item.Id == targetCommandId && item.Action == "start",
                 cancellationToken);
             if (stoppedDelivery is null || targetSequence == 0 || !targetIsStart ||
-                targetSequence >= receipt.Sequence ||
-                stoppedDelivery.State is not (CommandDeliveryState.InFlight or
-                    CommandDeliveryState.Accepted or CommandDeliveryState.Playing or
-                    CommandDeliveryState.Completed or CommandDeliveryState.Stopped))
+                targetSequence >= receipt.Sequence)
             {
                 return CommandReceiptOutcome.Conflict;
             }
@@ -120,10 +118,14 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             DiagnosticCode = receipt.DiagnosticCode,
             ReceivedAtUtc = receivedAtUtc
         });
-        delivery.State = ToDeliveryState(receipt.State);
+        if (!preserveStoppedState)
+        {
+            delivery.State = ToDeliveryState(receipt.State);
+        }
         delivery.NextAttemptAtUtc = null;
-        if (stoppedDelivery is not null && stoppedDelivery.State is not (
-                CommandDeliveryState.Completed or CommandDeliveryState.Stopped))
+        if (stoppedDelivery is not null && stoppedDelivery.State is (
+                CommandDeliveryState.Pending or CommandDeliveryState.InFlight or
+                CommandDeliveryState.Accepted or CommandDeliveryState.Playing))
         {
             stoppedDelivery.State = CommandDeliveryState.Stopped;
             stoppedDelivery.NextAttemptAtUtc = null;
@@ -195,6 +197,11 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         CommandDeliveryState current,
         DeviceCommandState next)
     {
+        if (action == "start" && current == CommandDeliveryState.Stopped)
+        {
+            return true;
+        }
+
         if (action != "stop")
         {
             return CanTransition(current, next);

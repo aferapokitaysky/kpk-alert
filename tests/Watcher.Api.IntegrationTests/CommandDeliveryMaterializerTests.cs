@@ -109,6 +109,95 @@ public sealed class CommandDeliveryMaterializerTests : IClassFixture<PostgresApi
     }
 
     [PostgresFact]
+    public async Task Stop_outbox_keeps_only_device_deliveries_selected_when_the_stop_was_requested()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        DateTimeOffset now = new(2026, 11, 5, 7, 0, 0, TimeSpan.Zero);
+        var activeDeviceId = Guid.NewGuid();
+        var laterDeviceId = Guid.NewGuid();
+        Guid stopCommandId;
+        Guid stopOutboxId;
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            Guid startCommandId = await AddCommandAndOutboxAsync(
+                db, [seed.FirstLocationId], now, now.AddMinutes(AlertCommand.DefaultValidityMinutes));
+            AlertCommand startCommand = await db.AlertCommands
+                .Include(item => item.Targets)
+                .SingleAsync(item => item.Id == startCommandId);
+            (await db.OutboxMessages.SingleAsync(item => item.CommandId == startCommandId)).ProcessedAtUtc = now;
+            db.Devices.AddRange(
+                CreateDevice(activeDeviceId, seed.FirstLocationId, "stop-active"),
+                CreateDevice(laterDeviceId, seed.FirstLocationId, "stop-later"));
+            db.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = startCommandId,
+                DeviceId = activeDeviceId,
+                State = CommandDeliveryState.Playing,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = startCommand.ExpiresAtUtc,
+                LastAttemptAtUtc = now,
+                NextAttemptAtUtc = now,
+                AttemptCount = 1
+            });
+            stopCommandId = Guid.NewGuid();
+            AlertCommand stopCommand = new()
+            {
+                Id = stopCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "stop",
+                TargetCommandId = startCommandId,
+                MaximumPlaybackDurationSeconds = 0,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(AlertCommand.DefaultValidityMinutes),
+                Targets = [new CommandTarget
+                {
+                    Id = Guid.NewGuid(),
+                    LocationId = seed.FirstLocationId,
+                    Sequence = startCommand.Targets.Single().Sequence + 1,
+                    State = "Created"
+                }]
+            };
+            db.AlertCommands.Add(stopCommand);
+            db.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                DeviceId = activeDeviceId,
+                State = CommandDeliveryState.Pending,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = stopCommand.ExpiresAtUtc,
+                NextAttemptAtUtc = now
+            });
+            OutboxMessage stopOutbox = new()
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                EventType = CommandDeliveryMaterializer.CommandCreatedEvent,
+                Payload = JsonSerializer.Serialize(new { stopCommand.Id, stopCommand.TargetCommandId }),
+                CreatedAtUtc = now
+            };
+            db.OutboxMessages.Add(stopOutbox);
+            stopOutboxId = stopOutbox.Id;
+            await db.SaveChangesAsync();
+        }
+
+        using WatcherDbContext processingDb = _fixture.CreateDbContext();
+        CommandDeliveryMaterializer materializer = new(processingDb, new FixedTimeProvider(now));
+        OutboxMaterializationResult result = await materializer.MaterializeAsync(stopOutboxId, CancellationToken.None);
+
+        Assert.Equal(OutboxMaterializationOutcome.Materialized, result.Outcome);
+        Assert.Equal(0, result.DeliveryCount);
+        using WatcherDbContext readDb = _fixture.CreateDbContext();
+        CommandDelivery[] stopDeliveries = await readDb.CommandDeliveries
+            .Where(item => item.CommandId == stopCommandId)
+            .ToArrayAsync();
+        Assert.Equal(activeDeviceId, Assert.Single(stopDeliveries).DeviceId);
+        Assert.Equal(CommandDeliveryState.Pending, stopDeliveries.Single().State);
+        Assert.Equal(1, await readDb.CommandDeliveries.CountAsync(item => item.CommandId == stopCommandId));
+    }
+
+    [PostgresFact]
     public async Task Concurrent_materializers_process_one_outbox_once()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();

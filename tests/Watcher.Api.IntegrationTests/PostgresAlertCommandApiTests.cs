@@ -67,6 +67,284 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
     }
 
     [PostgresFact]
+    public async Task Stop_creates_an_idempotent_device_command_for_active_start_deliveries()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpResponseMessage startResponse = await SendCreateAsync(
+            client, seed.OperatorId, Guid.NewGuid(), [seed.FirstLocationId]);
+        startResponse.EnsureSuccessStatusCode();
+        using var startBody = JsonDocument.Parse(await startResponse.Content.ReadAsStringAsync());
+        Guid startCommandId = startBody.RootElement.GetProperty("id").GetGuid();
+        var deviceId = Guid.NewGuid();
+        var retryDeviceId = Guid.NewGuid();
+        var pendingDeviceId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            AlertCommand startCommand = await db.AlertCommands.SingleAsync(item => item.Id == startCommandId);
+            OutboxMessage startOutbox = await db.OutboxMessages.SingleAsync(item => item.CommandId == startCommandId);
+            startOutbox.ProcessedAtUtc = now;
+            db.Devices.AddRange(
+                new Device
+                {
+                    Id = deviceId,
+                    LocationId = seed.FirstLocationId,
+                    Name = "Вузол тестового корпусу",
+                    CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray())
+                },
+                new Device
+                {
+                    Id = retryDeviceId,
+                    LocationId = seed.FirstLocationId,
+                    Name = "Вузол із повторною доставкою",
+                    CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray())
+                },
+                new Device
+                {
+                    Id = pendingDeviceId,
+                    LocationId = seed.FirstLocationId,
+                    Name = "Вузол до першої доставки",
+                    CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray())
+                });
+            db.CommandDeliveries.AddRange(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = startCommandId,
+                DeviceId = deviceId,
+                State = CommandDeliveryState.Playing,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = startCommand.ExpiresAtUtc,
+                LastAttemptAtUtc = now,
+                NextAttemptAtUtc = now,
+                AttemptCount = 1
+            }, new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = startCommandId,
+                DeviceId = retryDeviceId,
+                State = CommandDeliveryState.Pending,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = startCommand.ExpiresAtUtc,
+                LastAttemptAtUtc = now,
+                NextAttemptAtUtc = now,
+                AttemptCount = 1
+            }, new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = startCommandId,
+                DeviceId = pendingDeviceId,
+                State = CommandDeliveryState.Pending,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = startCommand.ExpiresAtUtc,
+                NextAttemptAtUtc = now,
+                AttemptCount = 0
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var idempotencyKey = Guid.NewGuid();
+        using HttpResponseMessage first = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, idempotencyKey, [seed.FirstLocationId]);
+        using HttpResponseMessage replay = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, idempotencyKey, [seed.FirstLocationId]);
+        using HttpResponseMessage changedReplay = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, idempotencyKey, [seed.SecondLocationId]);
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, replay.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, changedReplay.StatusCode);
+        using var responseBody = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        Guid stopCommandId = responseBody.RootElement.GetProperty("id").GetGuid();
+        Assert.Equal(startCommandId, responseBody.RootElement.GetProperty("targetCommandId").GetGuid());
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AlertCommand stopCommand = await verifyDb.AlertCommands
+            .Include(item => item.Targets)
+            .SingleAsync(item => item.Id == stopCommandId);
+        OutboxMessage stopOutbox = await verifyDb.OutboxMessages.SingleAsync(item => item.CommandId == stopCommandId);
+        CommandDelivery[] stopDeliveries = await verifyDb.CommandDeliveries
+            .Where(item => item.CommandId == stopCommandId)
+            .ToArrayAsync();
+        AuditEvent stopAudit = await verifyDb.AuditEvents
+            .SingleAsync(item => item.EventType == "alert_command.stop_requested");
+
+        Assert.Equal("stop", stopCommand.Action);
+        Assert.Equal(startCommandId, stopCommand.TargetCommandId);
+        Assert.Null(stopCommand.PresetCode);
+        Assert.Equal(0, stopCommand.MaximumPlaybackDurationSeconds);
+        Assert.Equal(idempotencyKey, stopCommand.IdempotencyKey);
+        Assert.Equal(seed.FirstLocationId, Assert.Single(stopCommand.Targets).LocationId);
+        Assert.Equal(2, stopCommand.Targets.Single().Sequence);
+        Assert.Equal(
+            new[] { deviceId, retryDeviceId, pendingDeviceId }.Order(),
+            stopDeliveries.Select(item => item.DeviceId).Order());
+        Assert.All(stopDeliveries, delivery => Assert.Equal(CommandDeliveryState.Pending, delivery.State));
+        Assert.Equal(stopCommand.Id, stopOutbox.CommandId);
+        Assert.Equal(stopCommand.Id, stopAudit.Payload.DeserializeCommandId());
+        Assert.Equal(2, await verifyDb.AlertCommands.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task Stop_rejects_a_location_without_an_active_start_delivery()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpResponseMessage startResponse = await SendCreateAsync(
+            client, seed.OperatorId, Guid.NewGuid(), [seed.FirstLocationId]);
+        using var startBody = JsonDocument.Parse(await startResponse.Content.ReadAsStringAsync());
+        Guid startCommandId = startBody.RootElement.GetProperty("id").GetGuid();
+
+        using HttpResponseMessage response = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, Guid.NewGuid(), [seed.FirstLocationId]);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Single(await db.AlertCommands.ToListAsync());
+        Assert.Empty(await db.CommandDeliveries.ToListAsync());
+    }
+
+    [PostgresFact]
+    public async Task Stop_requires_the_operator_to_have_a_role_for_every_requested_location()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        using HttpResponseMessage startResponse = await SendCreateAsync(
+            client, seed.AdministratorId, Guid.NewGuid(), [seed.FirstLocationId, seed.SecondLocationId]);
+        using var startBody = JsonDocument.Parse(await startResponse.Content.ReadAsStringAsync());
+        Guid startCommandId = startBody.RootElement.GetProperty("id").GetGuid();
+
+        using HttpResponseMessage response = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, Guid.NewGuid(), [seed.SecondLocationId]);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Single(await db.AlertCommands.ToListAsync());
+        Assert.Empty(await db.AuditEvents.Where(item => item.EventType == "alert_command.stop_requested")
+            .ToListAsync());
+    }
+
+    [PostgresTheory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Stop_rejects_locations_with_no_routable_devices(bool revokeDevice, bool deactivateLocation)
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpResponseMessage startResponse = await SendCreateAsync(
+            client, seed.OperatorId, Guid.NewGuid(), [seed.FirstLocationId]);
+        using var startBody = JsonDocument.Parse(await startResponse.Content.ReadAsStringAsync());
+        Guid startCommandId = startBody.RootElement.GetProperty("id").GetGuid();
+        var deviceId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            AlertCommand startCommand = await db.AlertCommands.SingleAsync(item => item.Id == startCommandId);
+            (await db.OutboxMessages.SingleAsync(item => item.CommandId == startCommandId)).ProcessedAtUtc = now;
+            if (deactivateLocation)
+            {
+                Location location = await db.Locations.SingleAsync(item => item.Id == seed.FirstLocationId);
+                location.IsActive = false;
+            }
+
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Недоступний вузол",
+                CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray()),
+                RevokedAtUtc = revokeDevice ? now : null
+            });
+            db.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = startCommandId,
+                DeviceId = deviceId,
+                State = CommandDeliveryState.Playing,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = startCommand.ExpiresAtUtc,
+                LastAttemptAtUtc = now,
+                AttemptCount = 1
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage response = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, Guid.NewGuid(), [seed.FirstLocationId]);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        Assert.Single(await verifyDb.AlertCommands.ToListAsync());
+        Assert.Single(await verifyDb.CommandDeliveries.ToListAsync());
+    }
+
+    [PostgresFact]
+    public async Task Stop_keeps_every_original_device_in_delivery_history_when_some_are_unavailable()
+    {
+        HttpClient client = RequireClient();
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        using HttpResponseMessage startResponse = await SendCreateAsync(
+            client, seed.OperatorId, Guid.NewGuid(), [seed.FirstLocationId]);
+        using var startBody = JsonDocument.Parse(await startResponse.Content.ReadAsStringAsync());
+        Guid startCommandId = startBody.RootElement.GetProperty("id").GetGuid();
+        var availableDeviceId = Guid.NewGuid();
+        var revokedDeviceId = Guid.NewGuid();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            AlertCommand startCommand = await db.AlertCommands.SingleAsync(item => item.Id == startCommandId);
+            (await db.OutboxMessages.SingleAsync(item => item.CommandId == startCommandId)).ProcessedAtUtc = now;
+            db.Devices.AddRange(
+                new Device
+                {
+                    Id = availableDeviceId,
+                    LocationId = seed.FirstLocationId,
+                    Name = "Доступний вузол",
+                    CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray())
+                },
+                new Device
+                {
+                    Id = revokedDeviceId,
+                    LocationId = seed.FirstLocationId,
+                    Name = "Відкликаний вузол",
+                    CertificateThumbprint = Convert.ToHexString(Guid.NewGuid().ToByteArray()),
+                    RevokedAtUtc = now
+                });
+            db.CommandDeliveries.AddRange(
+                CreatePlayingDelivery(startCommand, availableDeviceId, now),
+                CreatePlayingDelivery(startCommand, revokedDeviceId, now));
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage response = await SendStopAsync(
+            client, seed.OperatorId, startCommandId, Guid.NewGuid(), [seed.FirstLocationId]);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        using var responseBody = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Guid stopCommandId = responseBody.RootElement.GetProperty("id").GetGuid();
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        Guid[] stopDeviceIds = await verifyDb.CommandDeliveries
+            .Where(item => item.CommandId == stopCommandId)
+            .Select(item => item.DeviceId)
+            .ToArrayAsync();
+        Assert.Equal(new[] { availableDeviceId, revokedDeviceId }.Order(), stopDeviceIds.Order());
+    }
+
+    private static CommandDelivery CreatePlayingDelivery(
+        AlertCommand command,
+        Guid deviceId,
+        DateTimeOffset now) => new()
+        {
+            Id = Guid.NewGuid(),
+            CommandId = command.Id,
+            DeviceId = deviceId,
+            State = CommandDeliveryState.Playing,
+            CreatedAtUtc = now,
+            ExpiresAtUtc = command.ExpiresAtUtc,
+            LastAttemptAtUtc = now,
+            AttemptCount = 1
+        };
+
+    [PostgresFact]
     public async Task Concurrent_commands_receive_distinct_increasing_sequences_for_the_same_location()
     {
         HttpClient client = RequireClient();
@@ -569,6 +847,24 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         });
         csrfToken ??= await GetCsrfTokenAsync(client, userId);
         request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task<HttpResponseMessage> SendStopAsync(
+        HttpClient client,
+        Guid userId,
+        Guid targetCommandId,
+        Guid idempotencyKey,
+        Guid[] locationIds)
+    {
+        using HttpRequestMessage request = new(
+            HttpMethod.Post, $"/api/v1/alert-commands/{targetCommandId}/stop")
+        {
+            Content = JsonContent.Create(new { locationIds })
+        };
+        AddIdentity(request, userId);
+        request.Headers.Add("Idempotency-Key", idempotencyKey.ToString());
+        request.Headers.Add("X-CSRF-TOKEN", await GetCsrfTokenAsync(client, userId));
         return await client.SendAsync(request);
     }
 

@@ -48,15 +48,18 @@ public sealed class CommandDeliveryMaterializer(WatcherDbContext db, TimeProvide
         AlertCommand command = await db.AlertCommands.AsNoTracking()
             .SingleAsync(item => item.Id == outbox.CommandId, cancellationToken);
 
-        Guid[] eligibleDeviceIds = await (
-            from target in db.CommandTargets.AsNoTracking()
-            join device in db.Devices.AsNoTracking() on target.LocationId equals device.LocationId
-            join location in db.Locations.AsNoTracking() on target.LocationId equals location.Id
-            where target.CommandId == command.Id && location.IsActive && device.RevokedAtUtc == null
-            select device.Id)
-            .Distinct()
-            .OrderBy(deviceId => deviceId)
-            .ToArrayAsync(cancellationToken);
+        // Набір вузлів STOP зафіксований API разом із командою, щоб outbox не додав нові пристрої.
+        Guid[] eligibleDeviceIds = command.Action == "stop"
+            ? []
+            : await (
+                from target in db.CommandTargets.AsNoTracking()
+                join device in db.Devices.AsNoTracking() on target.LocationId equals device.LocationId
+                join location in db.Locations.AsNoTracking() on target.LocationId equals location.Id
+                where target.CommandId == command.Id && location.IsActive && device.RevokedAtUtc == null
+                select device.Id)
+                .Distinct()
+                .OrderBy(deviceId => deviceId)
+                .ToArrayAsync(cancellationToken);
 
         HashSet<Guid> existingDeviceIds = await db.CommandDeliveries.AsNoTracking()
             .Where(delivery => delivery.CommandId == command.Id)

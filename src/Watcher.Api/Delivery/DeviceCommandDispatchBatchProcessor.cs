@@ -237,8 +237,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             .SingleOrDefaultAsync(item => item.CommandId == targetCommandId &&
                                           item.DeviceId == delivery.DeviceId,
                 cancellationToken);
-        if (targetDelivery?.State is not (CommandDeliveryState.InFlight or
-            CommandDeliveryState.Accepted or CommandDeliveryState.Playing))
+        if (targetDelivery is null)
         {
             return null;
         }

@@ -62,7 +62,7 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
     }
 
     [PostgresFact]
-    public async Task Completing_stop_command_stops_its_target_delivery_in_the_same_transaction()
+    public async Task Completing_stop_command_cancels_a_start_that_has_not_been_delivered()
     {
         ReceiptSeed seed = await CreateReceiptSeedAsync();
         var stopCommandId = Guid.NewGuid();
@@ -70,7 +70,72 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
         {
             CommandDelivery startDelivery = await db.CommandDeliveries
                 .SingleAsync(item => item.CommandId == seed.CommandId);
-            startDelivery.State = CommandDeliveryState.Playing;
+            startDelivery.State = CommandDeliveryState.Pending;
+            startDelivery.NextAttemptAtUtc = Now.AddMinutes(1);
+            startDelivery.LastAttemptAtUtc = null;
+            startDelivery.AttemptCount = 0;
+            db.AlertCommands.Add(new AlertCommand
+            {
+                Id = stopCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "stop",
+                TargetCommandId = seed.CommandId,
+                MaximumPlaybackDurationSeconds = 0,
+                InitiatedByUserId = seed.OperatorId,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5)
+            });
+            db.CommandTargets.Add(new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                LocationId = await db.CommandTargets.Where(item => item.CommandId == seed.CommandId)
+                    .Select(item => item.LocationId).SingleAsync(),
+                Sequence = 2,
+                State = "Created"
+            });
+            db.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                DeviceId = seed.DeviceId,
+                State = CommandDeliveryState.InFlight,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5),
+                NextAttemptAtUtc = Now.AddSeconds(30)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
+            CreateReceipt(stopCommandId, 2, DeviceCommandState.Accepted)));
+        Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
+            CreateReceipt(stopCommandId, 2, DeviceCommandState.Completed)));
+        Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
+            CreateReceipt(seed.CommandId, 1, DeviceCommandState.Rejected) with
+            {
+                DiagnosticCode = "stale_sequence"
+            }));
+
+        using WatcherDbContext result = _fixture.CreateDbContext();
+        Assert.Equal(CommandDeliveryState.Stopped, await result.CommandDeliveries
+            .Where(item => item.CommandId == seed.CommandId).Select(item => item.State).SingleAsync());
+        Assert.Equal(CommandDeliveryState.Completed, await result.CommandDeliveries
+            .Where(item => item.CommandId == stopCommandId).Select(item => item.State).SingleAsync());
+        Assert.Single(await result.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_stopped").ToArrayAsync());
+    }
+
+    [PostgresFact]
+    public async Task Completing_stop_command_preserves_a_start_that_already_completed()
+    {
+        ReceiptSeed seed = await CreateReceiptSeedAsync();
+        var stopCommandId = Guid.NewGuid();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            CommandDelivery startDelivery = await db.CommandDeliveries
+                .SingleAsync(item => item.CommandId == seed.CommandId);
+            startDelivery.State = CommandDeliveryState.Completed;
             startDelivery.NextAttemptAtUtc = null;
             db.AlertCommands.Add(new AlertCommand
             {
@@ -111,11 +176,11 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
             CreateReceipt(stopCommandId, 2, DeviceCommandState.Completed)));
 
         using WatcherDbContext result = _fixture.CreateDbContext();
-        Assert.Equal(CommandDeliveryState.Stopped, await result.CommandDeliveries
+        Assert.Equal(CommandDeliveryState.Completed, await result.CommandDeliveries
             .Where(item => item.CommandId == seed.CommandId).Select(item => item.State).SingleAsync());
         Assert.Equal(CommandDeliveryState.Completed, await result.CommandDeliveries
             .Where(item => item.CommandId == stopCommandId).Select(item => item.State).SingleAsync());
-        Assert.Single(await result.AuditEvents
+        Assert.Empty(await result.AuditEvents
             .Where(item => item.EventType == "alert_command.delivery_stopped").ToArrayAsync());
     }
 

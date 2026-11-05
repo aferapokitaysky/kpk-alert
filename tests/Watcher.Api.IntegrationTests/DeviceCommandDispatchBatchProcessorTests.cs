@@ -94,6 +94,77 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     }
 
     [PostgresFact]
+    public async Task Process_batch_dispatches_stop_before_an_undelivered_start()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid startCommandId, Guid deviceId, Guid startDeliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        var stopCommandId = Guid.NewGuid();
+        var stopDeliveryId = Guid.NewGuid();
+        await using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+        {
+            CommandDelivery startDelivery = await setupDb.CommandDeliveries
+                .SingleAsync(item => item.Id == startDeliveryId);
+            startDelivery.NextAttemptAtUtc = Now.AddMinutes(1);
+            setupDb.AlertCommands.Add(new AlertCommand
+            {
+                Id = stopCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "stop",
+                TargetCommandId = startCommandId,
+                MaximumPlaybackDurationSeconds = 0,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5),
+                Targets =
+                [
+                    new CommandTarget
+                    {
+                        Id = Guid.NewGuid(),
+                        LocationId = seed.FirstLocationId,
+                        Sequence = 2,
+                        State = "Created"
+                    }
+                ]
+            });
+            setupDb.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = stopDeliveryId,
+                CommandId = stopCommandId,
+                DeviceId = deviceId,
+                State = CommandDeliveryState.Pending,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5),
+                NextAttemptAtUtc = Now
+            });
+            await setupDb.SaveChangesAsync();
+        }
+
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, socket, CancellationToken.None);
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+
+            Assert.Equal(1, await processor.ProcessBatchAsync(CancellationToken.None));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        CommandDispatch? dispatch = JsonSerializer.Deserialize<CommandDispatch>(socket.Payload);
+        Assert.NotNull(dispatch);
+        Assert.Equal(stopCommandId, dispatch.CommandId);
+        Assert.Equal(DeviceCommandAction.Stop, dispatch.Action);
+        Assert.Equal(startCommandId, dispatch.TargetCommandId);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        Assert.Equal(CommandDeliveryState.InFlight,
+            (await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == stopDeliveryId)).State);
+    }
+
+    [PostgresFact]
     public async Task Concurrent_workers_dispatch_one_delivery_only_once()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
