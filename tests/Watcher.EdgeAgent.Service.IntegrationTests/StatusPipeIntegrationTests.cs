@@ -225,12 +225,14 @@ public sealed class EdgeAgentStartupIntegrationTests
     }
 
     [Fact]
-    public void AudioStateRemainsUnavailableUntilAnEndpointIsConfigured()
+    public void AudioStateRequiresAnActiveConfiguredEndpointAndRecoversWhenItReturns()
     {
-        Assert.Equal("unavailable", EdgeAgentHostedService.ResolveAudioState(null, null, "unavailable"));
-        Assert.Equal("unavailable", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, "unavailable"));
-        Assert.Equal("idle", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, "idle"));
-        Assert.Equal("ready", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, "ready"));
+        Assert.Equal("unavailable", EdgeAgentHostedService.ResolveAudioState(null, null, false, "unavailable"));
+        Assert.Equal("unavailable", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, false, "ready"));
+        Assert.Equal("idle", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, true, "idle"));
+        Assert.Equal("ready", EdgeAgentHostedService.ResolveAudioState("endpoint-1", null, true, "unavailable"));
+        Assert.Equal("playing", EdgeAgentHostedService.ResolveAudioState("endpoint-1",
+            new ProcessedCommand(Guid.NewGuid(), 1, "hash", DeviceCommandState.Playing, null), false, "ready"));
     }
 
     [Theory]
@@ -268,7 +270,7 @@ public sealed class EdgeAgentStartupIntegrationTests
                 status.Update(current => current with
                 {
                     AudioState = EdgeAgentHostedService.ResolveAudioState(
-                        current.AudioEndpointId, null, current.AudioState)
+                        current.AudioEndpointId, null, false, current.AudioState)
                 });
                 Assert.Equal("unavailable", status.Get().AudioState);
             }
@@ -304,7 +306,7 @@ public sealed class EdgeAgentStartupIntegrationTests
             EdgeAgentStatus actual = status.Get();
             Assert.Equal(EdgeAgentConnectionState.Connecting, actual.ConnectionState);
             Assert.Equal("endpoint-1", actual.AudioEndpointId);
-            Assert.Equal("ready", actual.AudioState);
+            Assert.Equal("unavailable", actual.AudioState);
         }
         File.Delete(databasePath);
         File.Delete(databasePath + "-shm");
@@ -326,7 +328,8 @@ public sealed class EdgeAgentStartupIntegrationTests
                 new StartupTestAudioPlayer(), clock, TimeSpan.FromMinutes(2), 100);
             DeviceCommandTransport transport = new(options, processor);
             using EdgeAgentHostedService hostedService = new(store, coordinator, transport,
-                new StartupTestAudioPlayer(), options, clock, status, NullLogger<EdgeAgentHostedService>.Instance);
+                new StartupTestAudioPlayer(), new StartupTestAudioEndpointAvailabilityMonitor(),
+                options, clock, status, NullLogger<EdgeAgentHostedService>.Instance);
             var previousExitCode = Environment.ExitCode;
             try
             {
@@ -373,6 +376,11 @@ public sealed class EdgeAgentStartupIntegrationTests
         public Guid? ActiveCommandId => null;
         public Task StartAsync(PlaybackRequest request, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<bool> StopAsync(Guid targetCommandId, CancellationToken cancellationToken) => Task.FromResult(false);
+    }
+
+    private sealed class StartupTestAudioEndpointAvailabilityMonitor : IAudioEndpointAvailabilityMonitor
+    {
+        public bool IsAvailable(string? endpointId) => !string.IsNullOrWhiteSpace(endpointId);
     }
 }
 

@@ -37,6 +37,7 @@ internal static class Program
         builder.Services.AddSingleton<IAudioPlaybackEventHandler, EdgeAgentPlaybackEventHandler>();
         builder.Services.AddSingleton<WasapiAudioPlayer>();
         builder.Services.AddSingleton<IAudioPlayer>(services => services.GetRequiredService<WasapiAudioPlayer>());
+        builder.Services.AddSingleton<IAudioEndpointAvailabilityMonitor, WasapiAudioEndpointAvailabilityMonitor>();
         builder.Services.AddSingleton<DeviceCommandProcessor>(services => new DeviceCommandProcessor(
             services.GetRequiredService<IEdgeAgentStore>(),
             services.GetRequiredService<IAudioAssetResolver>(),
