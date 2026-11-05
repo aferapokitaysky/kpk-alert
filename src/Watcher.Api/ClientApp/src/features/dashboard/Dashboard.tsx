@@ -11,6 +11,7 @@ interface Props {
   presets: ResourceState<Preset[]>;
   lastCommand: AlertCommand | null;
   commandLocations: Location[];
+  lastCommandRestoreStatus: 'idle' | 'loading' | 'error';
   onRefresh: () => void;
   onRun: (preset: Preset, locationIds: string[]) => void;
 }
@@ -132,6 +133,7 @@ export function Dashboard({
   presets,
   lastCommand,
   commandLocations,
+  lastCommandRestoreStatus,
   onRefresh,
   onRun,
 }: Props) {
@@ -275,8 +277,10 @@ export function Dashboard({
               <p className="eyebrow">КОМАНДА ЗБЕРЕЖЕНА</p>
               <h2 id="result-title">Команду прийнято до черги</h2>
               <p>
-                {commandLocations.map((location) => location.name).join(', ')} ·{' '}
-                {new Date(lastCommand.createdAtUtc).toLocaleString('uk-UA')}
+                {commandLocations.length === lastCommand.targets.length
+                  ? commandLocations.map((location) => location.name).join(', ')
+                  : `Корпусів: ${lastCommand.targets.length}`}{' '}
+                · {new Date(lastCommand.createdAtUtc).toLocaleString('uk-UA')}
               </p>
               <small>
                 Це не є підтвердженням відтворення звуку. Ідентифікатор: {lastCommand.id}
@@ -285,6 +289,20 @@ export function Dashboard({
           </section>
           <CommandDeliveriesPanel key={lastCommand.id} commandId={lastCommand.id} />
         </>
+      )}
+
+      {lastCommandRestoreStatus === 'loading' && (
+        <p className="alert alert-info" role="status">
+          Перевіряємо останню команду…
+        </p>
+      )}
+      {lastCommandRestoreStatus === 'error' && (
+        <div className="alert alert-error" role="alert">
+          <span>Не вдалося відновити стан останньої команди.</span>
+          <button className="text-button" type="button" onClick={onRefresh}>
+            Повторити
+          </button>
+        </div>
       )}
 
       <section className="panel node-panel" aria-labelledby="nodes-title">

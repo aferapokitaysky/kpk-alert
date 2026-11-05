@@ -198,6 +198,37 @@ export async function createAlertCommand(
   };
 }
 
+export async function getAlertCommand(commandId: string): Promise<AlertCommand> {
+  const result = await getJson(`/api/v1/alert-commands/${encodeURIComponent(commandId)}`);
+  if (
+    !isRecord(result) ||
+    typeof result.id !== 'string' ||
+    result.id !== commandId ||
+    result.action !== 'start' ||
+    typeof result.presetCode !== 'string' ||
+    typeof result.createdAtUtc !== 'string' ||
+    !Array.isArray(result.targets) ||
+    !result.targets.every(isRecord)
+  ) {
+    throw new Error('invalid-command-response');
+  }
+
+  const targets = result.targets.map((target) => {
+    if (typeof target.locationId !== 'string' || typeof target.state !== 'string') {
+      throw new Error('invalid-command-response');
+    }
+    return { locationId: target.locationId, state: target.state };
+  });
+
+  return {
+    id: result.id,
+    action: 'start',
+    presetCode: result.presetCode,
+    createdAtUtc: result.createdAtUtc,
+    targets,
+  };
+}
+
 export async function getAuditEvents(
   page: number,
   pageSize: number,

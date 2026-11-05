@@ -7,6 +7,7 @@ import App from './App';
 import {
   ApiError,
   createAlertCommand,
+  getAlertCommand,
   getAuditEvents,
   getLocations,
   getPresets,
@@ -21,6 +22,7 @@ vi.mock('./api', async (importOriginal) => {
   return {
     ...actual,
     createAlertCommand: vi.fn(),
+    getAlertCommand: vi.fn(),
     getAuditEvents: vi.fn(),
     getLocations: vi.fn(),
     getPresets: vi.fn(),
@@ -45,8 +47,9 @@ vi.mock('./features/command-deliveries/api', async (importOriginal) => {
 
 const location = { id: 'location-1', name: 'Головний корпус', code: 'main' };
 const preset = { code: 'evacuation', name: 'Евакуація' };
+const commandId = '11111111-1111-4111-8111-111111111111';
 const command = {
-  id: 'command-1',
+  id: commandId,
   action: 'start' as const,
   presetCode: preset.code,
   createdAtUtc: '2026-11-05T12:00:00Z',
@@ -71,6 +74,7 @@ function setViewport(isMobile: boolean) {
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
+  window.sessionStorage.clear();
   setViewport(false);
   vi.mocked(getSession).mockResolvedValue({
     authenticated: true,
@@ -88,6 +92,7 @@ beforeEach(() => {
   });
   vi.mocked(getAuditEvents).mockResolvedValue({ items: [], page: 1, pageSize: 25, totalCount: 0 });
   vi.mocked(createAlertCommand).mockResolvedValue(command);
+  vi.mocked(getAlertCommand).mockResolvedValue(command);
   vi.mocked(logout).mockResolvedValue(undefined);
 });
 
@@ -136,11 +141,13 @@ describe('пульт оператора', () => {
 
   it('завершує авторизовану сесію через API та оновлює інтерфейс', async () => {
     const user = userEvent.setup();
+    window.sessionStorage.setItem('kgta-alert:last-command-id', commandId);
     render(<App />);
 
     await user.click(await screen.findByRole('button', { name: 'Вийти' }));
     expect(await screen.findByRole('heading', { name: 'Увійдіть до системи' })).toBeInTheDocument();
     expect(logout).toHaveBeenCalledTimes(1);
+    expect(window.sessionStorage.getItem('kgta-alert:last-command-id')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Вийти' })).not.toBeInTheDocument();
   });
 
@@ -174,7 +181,48 @@ describe('пульт оператора', () => {
     );
     expect(screen.getByText(/не є підтвердженням відтворення звуку/i)).toBeInTheDocument();
     expect(await screen.findByRole('region', { name: 'Доставка команди' })).toBeInTheDocument();
-    expect(getCommandDeliveries).toHaveBeenCalledWith('command-1', 1, expect.any(AbortSignal));
+    expect(getCommandDeliveries).toHaveBeenCalledWith(commandId, 1, expect.any(AbortSignal));
+    expect(window.sessionStorage.getItem('kgta-alert:last-command-id')).toBe(commandId);
+  });
+
+  it('відновлює останню команду з сервера після перезавантаження вкладки', async () => {
+    window.sessionStorage.setItem('kgta-alert:last-command-id', commandId);
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Команду прийнято до черги' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Головний корпус')).not.toHaveLength(0);
+    expect(getAlertCommand).toHaveBeenCalledWith(commandId);
+    expect(getCommandDeliveries).toHaveBeenCalledWith(commandId, 1, expect.any(AbortSignal));
+  });
+
+  it('очищає посилання на команду, яку сервер не дозволяє переглядати', async () => {
+    window.sessionStorage.setItem('kgta-alert:last-command-id', commandId);
+    vi.mocked(getAlertCommand).mockRejectedValueOnce(new ApiError(404));
+    render(<App />);
+
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem('kgta-alert:last-command-id')).toBeNull(),
+    );
+    expect(screen.queryByRole('heading', { name: 'Команду прийнято до черги' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('залишає UUID для повторної спроби, якщо сервер тимчасово недоступний', async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem('kgta-alert:last-command-id', commandId);
+    vi.mocked(getAlertCommand)
+      .mockRejectedValueOnce(new ApiError(503))
+      .mockResolvedValueOnce(command);
+    render(<App />);
+
+    const retryButton = await screen.findByRole('button', { name: 'Повторити' });
+    expect(window.sessionStorage.getItem('kgta-alert:last-command-id')).toBe(commandId);
+    await user.click(retryButton);
+    expect(
+      await screen.findByRole('heading', { name: 'Команду прийнято до черги' }),
+    ).toBeInTheDocument();
   });
 
   it('керує мобільним меню клавіатурою та прибирає закриту панель із фокусу', async () => {

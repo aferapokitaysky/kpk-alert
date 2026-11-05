@@ -16,6 +16,7 @@ function renderDashboard(session: SessionState) {
       presets={{ status: 'empty' }}
       lastCommand={null}
       commandLocations={[]}
+      lastCommandRestoreStatus="idle"
       onRefresh={vi.fn()}
       onRun={vi.fn()}
     />,
@@ -104,6 +105,7 @@ describe('робоча панель оператора', () => {
         presets={{ status: 'ready', data: [preset] }}
         lastCommand={null}
         commandLocations={[]}
+        lastCommandRestoreStatus="idle"
         onRefresh={vi.fn()}
         onRun={onRun}
       />,

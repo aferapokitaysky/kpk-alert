@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   createAlertCommand,
+  getAlertCommand,
   getLocations,
   getPresets,
   getReadiness,
@@ -15,6 +16,11 @@ import { AuditPage } from './features/audit/AuditPage';
 import { GoogleLoginLink } from './features/auth/GoogleLoginLink';
 import { Dashboard } from './features/dashboard/Dashboard';
 import { CommandDialog } from './features/dashboard/CommandDialog';
+import {
+  clearLastCommandId,
+  readLastCommandId,
+  saveLastCommandId,
+} from './features/dashboard/last-command-storage';
 import {
   commandErrorMessage,
   readinessFromResponse,
@@ -70,6 +76,9 @@ function App() {
   const [commandError, setCommandError] = useState('');
   const [lastCommand, setLastCommand] = useState<AlertCommand | null>(null);
   const [lastCommandLocations, setLastCommandLocations] = useState<Location[]>([]);
+  const [lastCommandRestoreStatus, setLastCommandRestoreStatus] = useState<
+    'idle' | 'loading' | 'error'
+  >('idle');
   const retryKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const menuToggleRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -95,19 +104,72 @@ function App() {
       ]);
       setLocations(resourceFromResult(locationsResult, (items) => items.length === 0));
       setPresets(resourceFromResult(presetsResult, (items) => items.length === 0));
+
+      const savedCommandId = readLastCommandId();
+      if (!savedCommandId) {
+        setLastCommand(null);
+        setLastCommandLocations([]);
+        setLastCommandRestoreStatus('idle');
+        return;
+      }
+      if (!operatorSession.capabilities.canOperate) {
+        clearLastCommandId();
+        setLastCommand(null);
+        setLastCommandLocations([]);
+        setLastCommandRestoreStatus('idle');
+        return;
+      }
+
+      setLastCommandRestoreStatus('loading');
+      try {
+        const restoredCommand = await getAlertCommand(savedCommandId);
+        const availableLocations =
+          locationsResult.status === 'fulfilled' ? locationsResult.value : [];
+        setLastCommand(restoredCommand);
+        setLastCommandLocations(
+          restoredCommand.targets.flatMap((target) => {
+            const location = availableLocations.find((item) => item.id === target.locationId);
+            return location ? [location] : [];
+          }),
+        );
+        setLastCommandRestoreStatus('idle');
+      } catch (error) {
+        if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
+          if (error.status !== 401) clearLastCommandId();
+          setLastCommand(null);
+          setLastCommandLocations([]);
+          setLastCommandRestoreStatus('idle');
+          if (error.status === 401) {
+            setSession({ status: 'unauthenticated' });
+            setLocations({ status: 'unauthenticated' });
+            setPresets({ status: 'unauthenticated' });
+          }
+        } else {
+          setLastCommandRestoreStatus('error');
+        }
+      }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setSession({ status: 'unauthenticated' });
         setLocations({ status: 'unauthenticated' });
         setPresets({ status: 'unauthenticated' });
+        setLastCommand(null);
+        setLastCommandLocations([]);
+        setLastCommandRestoreStatus('idle');
       } else if (error instanceof ApiError && error.status === 403) {
         setSession({ status: 'forbidden' });
         setLocations({ status: 'forbidden' });
         setPresets({ status: 'forbidden' });
+        setLastCommand(null);
+        setLastCommandLocations([]);
+        setLastCommandRestoreStatus('idle');
       } else {
         setSession({ status: 'error' });
         setLocations({ status: 'error' });
         setPresets({ status: 'error' });
+        setLastCommand(null);
+        setLastCommandLocations([]);
+        setLastCommandRestoreStatus('idle');
       }
     }
   }, []);
@@ -202,12 +264,14 @@ function App() {
     setLogoutPending(true);
     try {
       await logout();
+      clearLastCommandId();
       setSession({ status: 'unauthenticated' });
       setLocations({ status: 'unauthenticated' });
       setPresets({ status: 'unauthenticated' });
       setLastCommand(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        clearLastCommandId();
         setSession({ status: 'unauthenticated' });
         setLocations({ status: 'unauthenticated' });
         setPresets({ status: 'unauthenticated' });
@@ -252,6 +316,8 @@ function App() {
       );
       setLastCommand(command);
       setLastCommandLocations(selectedLocations);
+      saveLastCommandId(command.id);
+      setLastCommandRestoreStatus('idle');
       retryKeyRef.current = null;
       setPendingCommand(null);
     } catch (error) {
@@ -413,6 +479,7 @@ function App() {
               presets={presets}
               lastCommand={lastCommand}
               commandLocations={lastCommandLocations}
+              lastCommandRestoreStatus={lastCommandRestoreStatus}
               onRefresh={() => void refreshData()}
               onRun={(preset, locationIds) => {
                 setCommandError('');

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAlertCommand, getAuditEvents, getSession, logout } from './api';
+import { createAlertCommand, getAlertCommand, getAuditEvents, getSession, logout } from './api';
 
 function response(status: number, body?: unknown): Response {
   return {
@@ -71,6 +71,50 @@ describe('контракти клієнта', () => {
       presetCode: 'evacuation',
       locationIds: ['location-id'],
     });
+  });
+
+  it('відновлює команду лише з повної серверної відповіді', async () => {
+    const commandId = '11111111-1111-4111-8111-111111111111';
+    const command = {
+      id: commandId,
+      action: 'start',
+      presetCode: 'evacuation',
+      targetCommandId: null,
+      createdAtUtc: '2026-11-05T12:00:00Z',
+      expiresAtUtc: '2026-11-05T12:05:00Z',
+      targets: [{ locationId: 'location-id', state: 'Created' }],
+    };
+    fetchMock.mockResolvedValueOnce(response(200, command));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getAlertCommand(commandId)).resolves.toEqual({
+      id: commandId,
+      action: 'start',
+      presetCode: 'evacuation',
+      createdAtUtc: command.createdAtUtc,
+      targets: command.targets,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/alert-commands/${commandId}`,
+      expect.objectContaining({ cache: 'no-store', credentials: 'same-origin' }),
+    );
+  });
+
+  it('не принимает серверную команду другого типа при восстановлении панели запуска', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        id: '11111111-1111-4111-8111-111111111111',
+        action: 'stop',
+        presetCode: null,
+        createdAtUtc: '2026-11-05T12:00:00Z',
+        targets: [],
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getAlertCommand('11111111-1111-4111-8111-111111111111')).rejects.toThrow(
+      'invalid-command-response',
+    );
   });
 
   it('передає серверні фільтр і пагінацію журналу без довільних параметрів', async () => {

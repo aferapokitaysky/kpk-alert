@@ -79,6 +79,11 @@ public sealed class NeptunRealtimeMonitorTests
         try
         {
             await WaitForAsync(() => connectionFactory.FirstConnection?.AlertApplied.Task.IsCompleted == true);
+            await WaitForAsync(async () =>
+            {
+                IReadOnlyList<AlertSourceObservation> current = await provider.ReadAsync(CancellationToken.None);
+                return current.Count == 2 && current.All(item => item.State == AlertState.Active);
+            });
             IReadOnlyList<AlertSourceObservation> whileConnected = await provider.ReadAsync(CancellationToken.None);
             Assert.Equal(AlertState.Active, whileConnected.Single(item => item.Scope == AlertScope.Oblast).State);
             Assert.Equal(AlertState.Active, whileConnected.Single(item => item.Scope == AlertScope.Raion).State);
