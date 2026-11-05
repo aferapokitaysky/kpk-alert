@@ -1,6 +1,5 @@
-using System.Collections.Concurrent;
 using System.Net;
-using System.Text.Json;
+using System.Text;
 
 namespace Watcher.Api.AlertSources;
 
@@ -10,15 +9,85 @@ public sealed class NeptunProvider(
     ILogger<NeptunProvider> logger) : IAlertSourceProvider
 {
     public const string ClientName = "Neptun";
+    internal const int MaximumRestResponseBytes = 1024 * 1024;
 
-    private readonly ConcurrentDictionary<string, CachedStatus> _lastSuccessfulStatuses = new();
+    private readonly object _stateLock = new();
+    private NeptunAlertSnapshot? _lastSuccessfulSnapshot;
+    private DateTimeOffset _checkedAtUtc;
+    private string? _errorCode;
+    private bool _realtimeEnabled;
 
     public IReadOnlyList<AlertSourceObservation> CreateUnavailableObservations(
         DateTimeOffset checkedAtUtc,
-        string errorCode) => Fail(errorCode, checkedAtUtc);
+        string errorCode)
+    {
+        SetFailure(errorCode, checkedAtUtc);
+        lock (_stateLock)
+        {
+            return CreateCurrentObservations();
+        }
+    }
 
     public async Task<IReadOnlyList<AlertSourceObservation>> ReadAsync(
         CancellationToken cancellationToken)
+    {
+        lock (_stateLock)
+        {
+            if (_realtimeEnabled)
+            {
+                return CreateCurrentObservations();
+            }
+        }
+
+        await RefreshFromRestAsync(cancellationToken);
+        lock (_stateLock)
+        {
+            return CreateCurrentObservations();
+        }
+    }
+
+    internal void EnableRealtime()
+    {
+        lock (_stateLock)
+        {
+            _realtimeEnabled = true;
+            _checkedAtUtc = timeProvider.GetUtcNow();
+            _errorCode = "source_unavailable";
+        }
+    }
+
+    internal void ApplyRealtimeSnapshot(NeptunAlertSnapshot snapshot)
+    {
+        lock (_stateLock)
+        {
+            _lastSuccessfulSnapshot = snapshot;
+            _checkedAtUtc = timeProvider.GetUtcNow();
+            _errorCode = null;
+        }
+    }
+
+    internal void MarkRealtimeUnavailable(string errorCode)
+    {
+        lock (_stateLock)
+        {
+            _checkedAtUtc = timeProvider.GetUtcNow();
+            _errorCode = errorCode;
+        }
+    }
+
+    internal void InvalidateRealtimeSnapshot(string errorCode)
+    {
+        lock (_stateLock)
+        {
+            _lastSuccessfulSnapshot = null;
+            _checkedAtUtc = timeProvider.GetUtcNow();
+            _errorCode = errorCode;
+        }
+    }
+
+    internal async Task<bool> RefreshFromRestAsync(
+        CancellationToken cancellationToken,
+        bool allowRealtimeStateUpdate = false)
     {
         try
         {
@@ -31,40 +100,56 @@ public sealed class NeptunProvider(
             DateTimeOffset checkedAt = timeProvider.GetUtcNow();
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                return Fail("rate_limited", checkedAt);
+                SetFailure("rate_limited", checkedAt, allowRealtimeStateUpdate);
+                return false;
             }
 
             if (!response.IsSuccessStatusCode)
             {
                 logger.LogWarning("Джерело {Source} повернуло HTTP {StatusCode}.",
                     AlertSourceCatalog.NeptunCode, (int)response.StatusCode);
-                return Fail("source_unavailable", checkedAt);
+                SetFailure("source_unavailable", checkedAt, allowRealtimeStateUpdate);
+                return false;
             }
 
-            await using Stream body = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using JsonDocument document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
-            if (!TryReadStatus(
-                    document.RootElement,
-                    out var oblastActive,
-                    out var raionActive))
+            if (response.Content.Headers.ContentLength is > MaximumRestResponseBytes)
+            {
+                logger.LogWarning("Джерело {Source} перевищило максимальний розмір відповіді.",
+                    AlertSourceCatalog.NeptunCode);
+                SetFailure("invalid_response", checkedAt, allowRealtimeStateUpdate);
+                return false;
+            }
+
+            await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            var body = await ReadBoundedBodyAsync(contentStream, cancellationToken);
+            if (body is null)
+            {
+                logger.LogWarning("Джерело {Source} перевищило максимальний розмір відповіді.",
+                    AlertSourceCatalog.NeptunCode);
+                SetFailure("invalid_response", checkedAt, allowRealtimeStateUpdate);
+                return false;
+            }
+
+            if (!NeptunAlertSnapshotParser.TryParseRest(
+                    body,
+                    out NeptunAlertSnapshot snapshot))
             {
                 logger.LogWarning("Джерело {Source} повернуло невідомий формат статусу.",
                     AlertSourceCatalog.NeptunCode);
-                return Fail("invalid_response", checkedAt);
+                SetFailure("invalid_response", checkedAt, allowRealtimeStateUpdate);
+                return false;
             }
 
-            _lastSuccessfulStatuses["oblast"] = new(
-                oblastActive ? AlertState.Active : AlertState.Inactive);
-            _lastSuccessfulStatuses["raion"] = new(
-                raionActive ? AlertState.Active : AlertState.Inactive);
-            return [
-                CreateObservation(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId,
-                    AlertSourceCatalog.PoltavaOblastName,
-                    _lastSuccessfulStatuses["oblast"], AlertFreshness.Fresh, checkedAt, null),
-                CreateObservation(AlertScope.Raion, AlertSourceCatalog.KremenchukRaionId,
-                    AlertSourceCatalog.KremenchukRaionName, _lastSuccessfulStatuses["raion"],
-                    AlertFreshness.Fresh, checkedAt, null)
-            ];
+            lock (_stateLock)
+            {
+                if (allowRealtimeStateUpdate || !_realtimeEnabled)
+                {
+                    _lastSuccessfulSnapshot = snapshot;
+                    _checkedAtUtc = checkedAt;
+                    _errorCode = null;
+                }
+            }
+            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -74,95 +159,75 @@ public sealed class NeptunProvider(
         {
             logger.LogWarning("Не вдалося отримати відповідь від джерела {Source}.",
                 AlertSourceCatalog.NeptunCode);
-            return Fail("source_unavailable", timeProvider.GetUtcNow());
+            SetFailure("source_unavailable", timeProvider.GetUtcNow(), allowRealtimeStateUpdate);
+            return false;
+        }
+        catch (IOException)
+        {
+            logger.LogWarning("Не вдалося прочитати відповідь від джерела {Source}.",
+                AlertSourceCatalog.NeptunCode);
+            SetFailure("source_unavailable", timeProvider.GetUtcNow(), allowRealtimeStateUpdate);
+            return false;
         }
         catch (OperationCanceledException)
         {
             logger.LogWarning("Вичерпано час очікування відповіді від джерела {Source}.",
                 AlertSourceCatalog.NeptunCode);
-            return Fail("source_unavailable", timeProvider.GetUtcNow());
-        }
-        catch (JsonException)
-        {
-            logger.LogWarning("Джерело {Source} повернуло некоректний JSON.",
-                AlertSourceCatalog.NeptunCode);
-            return Fail("invalid_response", timeProvider.GetUtcNow());
+            SetFailure("source_unavailable", timeProvider.GetUtcNow(), allowRealtimeStateUpdate);
+            return false;
         }
     }
 
-    private static bool TryReadStatus(
-        JsonElement root,
-        out bool oblastActive,
-        out bool raionActive)
+    private void SetFailure(string errorCode, DateTimeOffset checkedAtUtc, bool allowRealtimeStateUpdate = false)
     {
-        oblastActive = false;
-        raionActive = false;
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("oblasts", out JsonElement oblasts) || oblasts.ValueKind != JsonValueKind.Array ||
-            !root.TryGetProperty("raions", out JsonElement raions) || raions.ValueKind != JsonValueKind.Array)
+        lock (_stateLock)
         {
-            return false;
-        }
-
-        if (!TryReadLocations(oblasts, out IReadOnlyList<NeptunLocation> oblastEntries) ||
-            !TryReadLocations(raions, out IReadOnlyList<NeptunLocation> raionEntries))
-        {
-            return false;
-        }
-
-        NeptunLocation? activeOblast = oblastEntries.FirstOrDefault(location =>
-            string.Equals(location.Key, AlertSourceCatalog.PoltavaOblastNeptunKey, StringComparison.Ordinal));
-        NeptunLocation? activeRaion = raionEntries.FirstOrDefault(location =>
-            string.Equals(location.Key, AlertSourceCatalog.KremenchukRaionId, StringComparison.Ordinal));
-        var oblastNameWithoutKnownKey = activeOblast is null && oblastEntries.Any(location =>
-            string.Equals(location.Name, AlertSourceCatalog.PoltavaOblastName, StringComparison.Ordinal));
-        var raionNameWithoutKnownKey = activeRaion is null && raionEntries.Any(location =>
-            string.Equals(location.Name, AlertSourceCatalog.KremenchukRaionName, StringComparison.Ordinal) &&
-            string.Equals(location.Oblast, AlertSourceCatalog.PoltavaOblastName, StringComparison.Ordinal));
-        if (oblastNameWithoutKnownKey || raionNameWithoutKnownKey)
-        {
-            return false;
-        }
-
-        oblastActive = activeOblast is not null;
-        raionActive = activeRaion is not null;
-        return true;
-    }
-
-    private static bool TryReadLocations(JsonElement array, out IReadOnlyList<NeptunLocation> locations)
-    {
-        List<NeptunLocation> found = [];
-        HashSet<string> keys = new(StringComparer.Ordinal);
-        foreach (JsonElement item in array.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object ||
-                !item.TryGetProperty("key", out JsonElement key) || key.ValueKind != JsonValueKind.String ||
-                !item.TryGetProperty("name", out JsonElement name) || name.ValueKind != JsonValueKind.String ||
-                !item.TryGetProperty("oblast", out JsonElement oblast) || oblast.ValueKind != JsonValueKind.String ||
-                string.IsNullOrWhiteSpace(key.GetString()) || string.IsNullOrWhiteSpace(name.GetString()) ||
-                !keys.Add(key.GetString()!))
+            if (_realtimeEnabled && !allowRealtimeStateUpdate)
             {
-                locations = [];
-                return false;
+                return;
             }
 
-            found.Add(new(key.GetString()!, name.GetString()!, oblast.GetString()));
+            _checkedAtUtc = checkedAtUtc;
+            _errorCode = errorCode;
         }
-
-        locations = found;
-        return true;
     }
 
-    private IReadOnlyList<AlertSourceObservation> Fail(string errorCode, DateTimeOffset checkedAtUtc)
+    private static async Task<string?> ReadBoundedBodyAsync(
+        Stream contentStream,
+        CancellationToken cancellationToken)
     {
-        _lastSuccessfulStatuses.TryGetValue("oblast", out CachedStatus? oblast);
-        _lastSuccessfulStatuses.TryGetValue("raion", out CachedStatus? raion);
+        using MemoryStream body = new();
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var bytesRead = await contentStream.ReadAsync(buffer, cancellationToken);
+            if (bytesRead == 0)
+            {
+                return Encoding.UTF8.GetString(body.ToArray());
+            }
+
+            if (body.Length + bytesRead > MaximumRestResponseBytes)
+            {
+                return null;
+            }
+
+            await body.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+        }
+    }
+
+    private IReadOnlyList<AlertSourceObservation> CreateCurrentObservations()
+    {
+        NeptunAlertSnapshot? snapshot = _lastSuccessfulSnapshot;
+        var fresh = _errorCode is null && snapshot is not null;
         return [
             CreateObservation(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId,
-                AlertSourceCatalog.PoltavaOblastName,
-                oblast, AlertFreshness.Stale, checkedAtUtc, errorCode),
+                AlertSourceCatalog.PoltavaOblastName, snapshot?.OblastState,
+                fresh ? AlertFreshness.Fresh : snapshot is null ? AlertFreshness.Unknown : AlertFreshness.Stale,
+                _checkedAtUtc, _errorCode),
             CreateObservation(AlertScope.Raion, AlertSourceCatalog.KremenchukRaionId,
-                AlertSourceCatalog.KremenchukRaionName, raion, AlertFreshness.Stale, checkedAtUtc, errorCode)
+                AlertSourceCatalog.KremenchukRaionName, snapshot?.RaionState,
+                fresh ? AlertFreshness.Fresh : snapshot is null ? AlertFreshness.Unknown : AlertFreshness.Stale,
+                _checkedAtUtc, _errorCode)
         ];
     }
 
@@ -170,7 +235,7 @@ public sealed class NeptunProvider(
         AlertScope scope,
         string scopeId,
         string scopeName,
-        CachedStatus? status,
+        AlertState? state,
         AlertFreshness freshness,
         DateTimeOffset checkedAtUtc,
         string? errorCode) =>
@@ -180,16 +245,13 @@ public sealed class NeptunProvider(
             scope,
             scopeId,
             scopeName,
-            freshness == AlertFreshness.Fresh && status is not null ? status.State : AlertState.Unknown,
+            freshness == AlertFreshness.Fresh && state is not null ? state.Value : AlertState.Unknown,
             null,
-            status is null && freshness != AlertFreshness.Fresh ? AlertFreshness.Unknown : freshness,
+            freshness,
             checkedAtUtc,
             null,
             errorCode,
             AlertSourceCatalog.NeptunAttributionUrl,
-            freshness == AlertFreshness.Stale ? status?.State : null);
+            freshness == AlertFreshness.Stale ? state : null);
 
-    private sealed record CachedStatus(AlertState State);
-
-    private sealed record NeptunLocation(string Key, string Name, string? Oblast);
 }
