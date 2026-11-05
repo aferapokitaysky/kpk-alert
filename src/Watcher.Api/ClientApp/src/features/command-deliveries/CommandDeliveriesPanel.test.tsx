@@ -66,6 +66,8 @@ describe('панель доставлення команди', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     render(<CommandDeliveriesPanel commandId="command-1" />);
+    const panel = screen.getByRole('region', { name: 'Доставка команди' });
+    expect(panel).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByRole('status')).toHaveTextContent('Завантажуємо статуси доставки');
 
     resolveResponse?.(jsonResponse(page([])));
@@ -74,6 +76,7 @@ describe('панель доставлення команди', () => {
         'Для цієї команди поки немає записів доставки.',
       ),
     );
+    expect(panel).toHaveAttribute('aria-busy', 'false');
   });
 
   it('дає повторити запит після помилки сервера', async () => {
@@ -119,6 +122,9 @@ describe('панель доставлення команди', () => {
 
     render(<CommandDeliveriesPanel commandId="command-1" />);
     expect(await screen.findByText('Сторінка 1 з 2')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Статуси доставки за вузлами' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Сторінки доставки' })).toBeInTheDocument();
+    expect(screen.getByText('Сторінка 1 з 2')).toHaveAttribute('aria-live', 'polite');
     await user.click(screen.getByRole('button', { name: 'Наступна' }));
 
     expect(await screen.findByText('Сторінка 2 з 2')).toBeInTheDocument();
@@ -129,6 +135,61 @@ describe('панель доставлення команди', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Попередня' }));
     expect(await screen.findByText('Сторінка 1 з 2')).toBeInTheDocument();
+  });
+
+  it('зберігає клавіатурний фокус під час переходу між сторінками', async () => {
+    const user = userEvent.setup();
+    let resolveSecondPage: ((response: Response) => void) | undefined;
+    fetchMock.mockResolvedValueOnce(jsonResponse(page([accepted], 1, 26))).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSecondPage = resolve;
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+    expect(await screen.findByText('Сторінка 1 з 2')).toBeInTheDocument();
+
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    const nextButton = screen.getByRole('button', { name: 'Наступна' });
+    expect(nextButton).toHaveFocus();
+    await user.keyboard('{Enter}');
+
+    expect(screen.getByRole('status')).toHaveTextContent('Оновлюємо статуси доставки');
+    expect(nextButton).toHaveAttribute('aria-disabled', 'true');
+    expect(nextButton).toHaveFocus();
+
+    resolveSecondPage?.(jsonResponse(page([playing], 2, 26)));
+    expect(await screen.findByText('Сторінка 2 з 2')).toBeInTheDocument();
+    expect(nextButton).toHaveFocus();
+  });
+
+  it('зберігає фокус на повторі запиту до завершення завантаження', async () => {
+    const user = userEvent.setup();
+    let resolveRetry: ((response: Response) => void) | undefined;
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 503)).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRetry = resolve;
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="command-1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Не вдалося завантажити статуси доставки',
+    );
+    const retryButton = screen.getByRole('button', { name: 'Повторити' });
+    await user.click(retryButton);
+
+    expect(retryButton).toHaveFocus();
+    expect(retryButton).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+
+    resolveRetry?.(jsonResponse(page([accepted])));
+    expect(await screen.findByText('Вузол прийняв команду')).toBeInTheDocument();
+    expect(retryButton).toHaveFocus();
   });
 
   it('повідомляє про відсутність доступу без технічної відповіді сервера', async () => {

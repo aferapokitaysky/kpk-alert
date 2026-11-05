@@ -1661,6 +1661,18 @@ h3 {
   flex: 0 0 auto;
 }
 
+.delivery-panel .button[aria-disabled='true'] {
+  opacity: 0.58;
+}
+
+.delivery-panel-heading .button[aria-disabled='true'] {
+  cursor: wait;
+}
+
+.delivery-page-controls .button[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
 .delivery-message {
   margin: 0;
   padding: var(--space-4);

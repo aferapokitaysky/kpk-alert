@@ -7,10 +7,7 @@ import {
   type CommandDeliveriesPage,
 } from './api';
 
-type PanelState =
-  | { status: 'loading' }
-  | { status: 'ready'; data: CommandDeliveriesPage }
-  | { status: 'error'; message: string };
+type PanelStatus = 'loading' | 'ready' | 'error';
 
 const stateLabels: Record<CommandDeliveryState, string> = {
   Pending: 'Очікує надсилання',
@@ -95,13 +92,15 @@ function DeliveryItem({ delivery }: { delivery: CommandDelivery }) {
 
 export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
   const [page, setPage] = useState(1);
-  const [state, setState] = useState<PanelState>({ status: 'loading' });
+  const [status, setStatus] = useState<PanelStatus>('loading');
+  const [data, setData] = useState<CommandDeliveriesPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
     activeRequest.current?.abort();
     const controller = new AbortController();
     activeRequest.current = controller;
-    setState({ status: 'loading' });
+    setStatus('loading');
 
     try {
       const data = await getCommandDeliveries(commandId, page, controller.signal);
@@ -111,9 +110,14 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
         setPage(lastPage);
         return;
       }
-      setState({ status: 'ready', data });
+      setData(data);
+      setError(null);
+      setStatus('ready');
     } catch (error) {
-      if (!controller.signal.aborted) setState({ status: 'error', message: errorMessage(error) });
+      if (!controller.signal.aborted) {
+        setError(errorMessage(error));
+        setStatus('error');
+      }
     } finally {
       if (activeRequest.current === controller) activeRequest.current = null;
     }
@@ -127,13 +131,14 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
     };
   }, [load]);
 
-  const pageCount =
-    state.status === 'ready'
-      ? Math.max(1, Math.ceil(state.data.totalCount / state.data.pageSize))
-      : 1;
+  const pageCount = data ? Math.max(1, Math.ceil(data.totalCount / data.pageSize)) : 1;
 
   return (
-    <section className="delivery-panel" aria-labelledby="delivery-title">
+    <section
+      className="delivery-panel"
+      aria-labelledby="delivery-title"
+      aria-busy={status === 'loading'}
+    >
       <header className="delivery-panel-heading">
         <div>
           <p className="eyebrow">СТАН ВУЗЛІВ</p>
@@ -143,63 +148,68 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
         <button
           className="button button-secondary"
           type="button"
-          onClick={() => void load()}
-          disabled={state.status === 'loading'}
+          aria-disabled={status === 'loading'}
+          onClick={() => status !== 'loading' && void load()}
         >
-          {state.status === 'loading' ? 'Завантаження…' : 'Оновити'}
+          {status === 'loading' ? 'Завантаження…' : status === 'error' ? 'Повторити' : 'Оновити'}
         </button>
       </header>
 
-      {state.status === 'loading' && (
+      {status === 'loading' && (
         <p className="delivery-message" role="status">
-          Завантажуємо статуси доставки…
+          {data ? 'Оновлюємо статуси доставки…' : 'Завантажуємо статуси доставки…'}
         </p>
       )}
-      {state.status === 'error' && (
+      {error && (
         <div className="delivery-message delivery-message-error" role="alert">
-          <span>{state.message}</span>
-          <button className="inline-button" type="button" onClick={() => void load()}>
-            Повторити
-          </button>
+          <span>{error}</span>
         </div>
       )}
-      {state.status === 'ready' && (
+      {data && (
         <>
-          {state.data.items.length === 0 ? (
+          {data.items.length === 0 ? (
             <p className="delivery-message" role="status">
-              {state.data.totalCount === 0
+              {data.totalCount === 0
                 ? 'Для цієї команди поки немає записів доставки.'
                 : 'На цій сторінці записів немає. Оновіть дані або перейдіть на іншу сторінку.'}
             </p>
           ) : (
             <ol className="delivery-list" aria-label="Статуси доставки за вузлами">
-              {state.data.items.map((delivery) => (
+              {data.items.map((delivery) => (
                 <DeliveryItem key={delivery.deviceId} delivery={delivery} />
               ))}
             </ol>
           )}
           <footer className="delivery-pagination">
             <span>
-              Вузлів: {state.data.totalCount} · {state.data.pageSize} на сторінці
+              Вузлів: {data.totalCount} · {data.pageSize} на сторінці
             </span>
             {pageCount > 1 && (
               <nav className="delivery-page-controls" aria-label="Сторінки доставки">
                 <button
                   className="button button-secondary"
                   type="button"
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
-                  disabled={state.data.page <= 1}
+                  aria-disabled={status === 'loading' || data.page <= 1}
+                  onClick={() => {
+                    if (status !== 'loading' && data.page > 1) {
+                      setPage((current) => Math.max(1, current - 1));
+                    }
+                  }}
                 >
                   Попередня
                 </button>
-                <span>
-                  Сторінка {state.data.page} з {pageCount}
+                <span aria-live="polite" aria-atomic="true">
+                  Сторінка {data.page} з {pageCount}
                 </span>
                 <button
                   className="button button-secondary"
                   type="button"
-                  onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                  disabled={state.data.page >= pageCount}
+                  aria-disabled={status === 'loading' || data.page >= pageCount}
+                  onClick={() => {
+                    if (status !== 'loading' && data.page < pageCount) {
+                      setPage((current) => Math.min(pageCount, current + 1));
+                    }
+                  }}
                 >
                   Наступна
                 </button>
