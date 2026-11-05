@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AlertCommand, Location, Preset } from '../../api';
 import type { ResourceState, SessionState } from '../../state';
 import { AlertSourcesPanel } from '../alert-sources/AlertSourcesPanel';
+import { CommandDeliveriesPanel } from '../command-deliveries/CommandDeliveriesPanel';
 
 interface Props {
   session: SessionState;
@@ -260,22 +261,27 @@ export function Dashboard({
       </div>
 
       {lastCommand && (
-        <section className="command-result" aria-labelledby="result-title" role="status">
-          <span className="result-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="m5 12 4 4L19 6" />
-            </svg>
-          </span>
-          <div>
-            <p className="eyebrow">КОМАНДА ЗБЕРЕЖЕНА</p>
-            <h2 id="result-title">Команду прийнято до черги</h2>
-            <p>
-              {commandLocations.map((location) => location.name).join(', ')} ·{' '}
-              {new Date(lastCommand.createdAtUtc).toLocaleString('uk-UA')}
-            </p>
-            <small>Це не є підтвердженням відтворення звуку. Ідентифікатор: {lastCommand.id}</small>
-          </div>
-        </section>
+        <>
+          <section className="command-result" aria-labelledby="result-title" role="status">
+            <span className="result-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="m5 12 4 4L19 6" />
+              </svg>
+            </span>
+            <div>
+              <p className="eyebrow">КОМАНДА ЗБЕРЕЖЕНА</p>
+              <h2 id="result-title">Команду прийнято до черги</h2>
+              <p>
+                {commandLocations.map((location) => location.name).join(', ')} ·{' '}
+                {new Date(lastCommand.createdAtUtc).toLocaleString('uk-UA')}
+              </p>
+              <small>
+                Це не є підтвердженням відтворення звуку. Ідентифікатор: {lastCommand.id}
+              </small>
+            </div>
+          </section>
+          <CommandDeliveriesPanel key={lastCommand.id} commandId={lastCommand.id} />
+        </>
       )}
 
       <section className="panel node-panel" aria-labelledby="nodes-title">

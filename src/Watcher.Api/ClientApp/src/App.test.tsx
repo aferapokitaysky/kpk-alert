@@ -14,6 +14,7 @@ import {
   getSession,
   logout,
 } from './api';
+import { getCommandDeliveries } from './features/command-deliveries/api';
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
@@ -32,6 +33,11 @@ vi.mock('./api', async (importOriginal) => {
 vi.mock('./features/alert-sources/AlertSourcesPanel', () => ({
   AlertSourcesPanel: () => null,
 }));
+
+vi.mock('./features/command-deliveries/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./features/command-deliveries/api')>();
+  return { ...actual, getCommandDeliveries: vi.fn() };
+});
 
 const location = { id: 'location-1', name: 'Головний корпус', code: 'main' };
 const preset = { code: 'evacuation', name: 'Евакуація' };
@@ -70,6 +76,12 @@ beforeEach(() => {
   vi.mocked(getLocations).mockResolvedValue([location]);
   vi.mocked(getPresets).mockResolvedValue([preset]);
   vi.mocked(getReadiness).mockResolvedValue({ httpStatus: 200, status: 'ok' });
+  vi.mocked(getCommandDeliveries).mockResolvedValue({
+    items: [],
+    page: 1,
+    pageSize: 25,
+    totalCount: 0,
+  });
   vi.mocked(getAuditEvents).mockResolvedValue({ items: [], page: 1, pageSize: 25, totalCount: 0 });
   vi.mocked(createAlertCommand).mockResolvedValue(command);
   vi.mocked(logout).mockResolvedValue(undefined);
@@ -157,6 +169,8 @@ describe('пульт оператора', () => {
       vi.mocked(createAlertCommand).mock.calls[0]?.[2],
     );
     expect(screen.getByText(/не є підтвердженням відтворення звуку/i)).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Доставка команди' })).toBeInTheDocument();
+    expect(getCommandDeliveries).toHaveBeenCalledWith('command-1', 1, expect.any(AbortSignal));
   });
 
   it('керує мобільним меню клавіатурою та прибирає закриту панель із фокусу', async () => {
