@@ -19,6 +19,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<MinuteOfSilenceOccurrence> MinuteOfSilenceOccurrences => Set<MinuteOfSilenceOccurrence>();
     public DbSet<CommandDelivery> CommandDeliveries => Set<CommandDelivery>();
+    public DbSet<DeviceCommandReceipt> DeviceCommandReceipts => Set<DeviceCommandReceipt>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -169,6 +170,24 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.CommandId, x.DeviceId }).IsUnique();
             entity.HasIndex(x => new { x.State, x.NextAttemptAtUtc, x.ExpiresAtUtc });
+        });
+
+        modelBuilder.Entity<DeviceCommandReceipt>(entity =>
+        {
+            entity.ToTable("device_command_receipts", table =>
+            {
+                table.HasCheckConstraint("CK_device_command_receipts_sequence", "\"Sequence\" > 0");
+                table.HasCheckConstraint("CK_device_command_receipts_state",
+                    "\"State\" IN ('Accepted', 'Playing', 'Completed', 'Stopped', 'Rejected', 'Failed', 'Expired')");
+            });
+            entity.HasKey(x => new { x.DeviceId, x.EventId });
+            entity.Property(x => x.State).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.DiagnosticCode).HasMaxLength(64);
+            entity.HasOne<Device>().WithMany().HasForeignKey(x => x.DeviceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(x => new { x.CommandId, x.DeviceId, x.ReceivedAtUtc });
         });
     }
 }

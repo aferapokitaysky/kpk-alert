@@ -210,6 +210,47 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.ToTable("devices", (string)null);
                 });
 
+            modelBuilder.Entity("Watcher.Domain.Entities.DeviceCommandReceipt", b =>
+                {
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CommandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DiagnosticCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Sequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("DeviceId", "EventId");
+
+                    b.HasIndex("CommandId", "DeviceId", "ReceivedAtUtc");
+
+                    b.ToTable("device_command_receipts", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_device_command_receipts_sequence", "\"Sequence\" > 0");
+
+                            t.HasCheckConstraint("CK_device_command_receipts_state", "\"State\" IN ('Accepted', 'Playing', 'Completed', 'Stopped', 'Rejected', 'Failed', 'Expired')");
+                        });
+                });
+
             modelBuilder.Entity("Watcher.Domain.Entities.DeviceSession", b =>
                 {
                     b.Property<Guid>("Id")
@@ -493,6 +534,21 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("LocationId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.DeviceCommandReceipt", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.AlertCommand", null)
+                        .WithMany()
+                        .HasForeignKey("CommandId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Watcher.Domain.Entities.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

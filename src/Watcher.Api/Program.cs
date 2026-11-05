@@ -227,6 +227,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     builder.Services.AddDbContext<WatcherDbContext>(options => options.UseNpgsql(connectionString));
     builder.Services.AddScoped<DeviceCertificateAuthenticator>();
     builder.Services.AddScoped<ILocationCommandSequenceAllocator, PostgresLocationCommandSequenceAllocator>();
+    builder.Services.AddScoped<CommandReceiptProcessor>();
     builder.Services.AddMinuteOfSilenceScheduler();
 }
 

@@ -9,6 +9,7 @@ RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY src/Watcher.Api/Watcher.Api.csproj src/Watcher.Api/
+COPY src/Watcher.Contracts/Watcher.Contracts.csproj src/Watcher.Contracts/
 COPY src/Watcher.Domain/Watcher.Domain.csproj src/Watcher.Domain/
 COPY src/Watcher.Infrastructure/Watcher.Infrastructure.csproj src/Watcher.Infrastructure/
 RUN dotnet restore src/Watcher.Api/Watcher.Api.csproj

@@ -28,6 +28,7 @@ public sealed class WatcherDbContextModelTests
         Assert.Contains("audit_events", entityNames);
         Assert.Contains("outbox_messages", entityNames);
         Assert.Contains("location_command_sequences", entityNames);
+        Assert.Contains("device_command_receipts", entityNames);
 
         IIndex codeIndex = db.Model.FindEntityType("Watcher.Domain.Entities.Location")!
             .GetIndexes()
@@ -60,6 +61,19 @@ public sealed class WatcherDbContextModelTests
         Assert.False(entity.FindProperty(nameof(CommandDelivery.ExpiresAtUtc))!.IsNullable);
         Assert.Equal("character varying(20)",
             entity.FindProperty(nameof(CommandDelivery.State))!.GetColumnType());
+    }
+
+    [Fact]
+    public void Device_receipts_are_deduplicated_by_device_and_event()
+    {
+        using WatcherDbContext db = CreateContext();
+        IEntityType entity = db.Model.FindEntityType(typeof(DeviceCommandReceipt))!;
+        IKey key = entity.FindPrimaryKey()!;
+
+        Assert.Equal(
+            [nameof(DeviceCommandReceipt.DeviceId), nameof(DeviceCommandReceipt.EventId)],
+            key.Properties.Select(property => property.Name));
+        Assert.Equal(64, entity.FindProperty(nameof(DeviceCommandReceipt.DiagnosticCode))!.GetMaxLength());
     }
 
     [Fact]
@@ -113,7 +127,7 @@ public sealed class WatcherDbContextModelTests
         IMigrationsAssembly assembly = db.GetService<IMigrationsAssembly>();
         IReadOnlyList<string> migrationIds = assembly.Migrations.Keys.ToArray();
 
-        Assert.Equal(9, migrationIds.Count);
+        Assert.Equal(11, migrationIds.Count);
         Assert.Equal(migrationIds.Order(StringComparer.Ordinal), migrationIds);
         Assert.All(assembly.Migrations.Values, migrationType =>
         {
