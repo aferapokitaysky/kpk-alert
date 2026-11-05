@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -231,6 +232,29 @@ public sealed class AuthEndpointTests
 
         Assert.True(response.StatusCode == HttpStatusCode.BadRequest,
             $"Очікувався 400, отримано {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+    }
+
+    [Fact]
+    public async Task Alert_command_rejects_a_request_body_over_16_kibibytes()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        var userId = Guid.NewGuid();
+        var csrfToken = await GetCsrfTokenAsync(client, userId);
+        var body = "{\"action\":\"start\",\"presetCode\":\"evacuation\",\"locationIds\":[]}" +
+                   new string(' ', 16 * 1024);
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/v1/alert-commands")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("X-Test-User-Id", userId.ToString());
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
     }
 
     [Fact]

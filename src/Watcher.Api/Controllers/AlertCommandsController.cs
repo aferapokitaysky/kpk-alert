@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Watcher.Api.Contracts;
+using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -14,7 +15,11 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/alert-commands")]
 public sealed class AlertCommandsController(WatcherDbContext db, TimeProvider clock) : ControllerBase
 {
+    private const int MaximumRequestBodySizeBytes = 16 * 1024;
+
     [HttpPost]
+    [RequestSizeLimit(MaximumRequestBodySizeBytes)]
+    [RequestBodySizeLimit(MaximumRequestBodySizeBytes)]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(
         [FromBody] CreateAlertCommandRequest request,
