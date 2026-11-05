@@ -2,8 +2,12 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.HttpsPolicy;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Watcher.Api.IntegrationTests;
 
@@ -91,6 +95,28 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
+
+    [Fact]
+    public async Task Http_redirect_uses_the_public_https_port_configured_for_the_reverse_proxy()
+    {
+        using WebApplicationFactory<Program> factory = CreateReverseProxyFactory();
+        Assert.Equal(443, factory.Services.GetRequiredService<IOptions<HttpsRedirectionOptions>>().Value.HttpsPort);
+        using HttpClient client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("http://localhost"),
+            AllowAutoRedirect = false
+        });
+
+        using HttpResponseMessage response = await client.GetAsync("/api/v1/health");
+
+        Assert.Equal(HttpStatusCode.TemporaryRedirect, response.StatusCode);
+        Assert.Equal(new Uri("https://localhost:443/api/v1/health"), response.Headers.Location);
+    }
+
+    private static WebApplicationFactory<Program> CreateReverseProxyFactory() =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
+            builder.ConfigureTestServices(services =>
+                services.Configure<HttpsRedirectionOptions>(options => options.HttpsPort = 443)));
 }
 
 public sealed class PostgresHealthEndpointTests : IClassFixture<PostgresApiFixture>

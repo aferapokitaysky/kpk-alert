@@ -61,6 +61,7 @@ if (builder.Environment.IsProduction())
 DeviceListenerCertificates? deviceListenerCertificates = DeviceListenerConfiguration.ValidateAndLoad(
     builder.Configuration, builder.Environment);
 X509Certificate2? deviceClientCaCertificate = deviceListenerCertificates?.ClientCaCertificate;
+TrustedProxyConfiguration.AddTrustedProxyForwarding(builder.Services, builder.Configuration, builder.Environment);
 if (deviceListenerCertificates is not null)
 {
     builder.Services.AddSingleton(deviceListenerCertificates);
@@ -235,6 +236,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
 
 WebApplication app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
