@@ -27,8 +27,11 @@ public sealed class AuthEndpointTests
         using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
             googleEnabled: false, useInMemoryDatabase: true);
         using HttpClient client = CreateSecureClient(factory);
+        var userId = Guid.NewGuid();
+        await SeedRolesAsync(factory, userId,
+            ["admin", "auditor", "notificator", "sound_engineer", "internal_role"]);
         using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/auth/session");
-        request.Headers.Add("X-Test-User-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("X-Test-User-Id", userId.ToString());
         request.Headers.Add("X-Test-Role", ["notificator", "auditor", "sound_engineer", "admin", "internal_role"]);
 
         using HttpResponseMessage response = await client.SendAsync(request);
@@ -39,8 +42,10 @@ public sealed class AuthEndpointTests
         Assert.True(body.RootElement.GetProperty("authenticated").GetBoolean());
         Assert.Equal(new[] { "admin", "auditor", "notificator", "sound_engineer" },
             body.RootElement.GetProperty("roles").EnumerateArray().Select(role => role.GetString()));
-        Assert.Equal(new[] { "authenticated", "roles" },
+        Assert.Equal(new[] { "authenticated", "capabilities", "roles" },
             body.RootElement.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+        Assert.True(body.RootElement.GetProperty("capabilities").GetProperty("canOperate").GetBoolean());
+        Assert.True(body.RootElement.GetProperty("capabilities").GetProperty("canViewAudit").GetBoolean());
     }
 
     [Fact]
@@ -58,6 +63,84 @@ public sealed class AuthEndpointTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, invalidIdentityResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Session_does_not_promote_local_roles_to_global_roles_or_audit_access()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        var userId = Guid.NewGuid();
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            db.Users.Add(new UserAccount
+            {
+                Id = userId,
+                ExternalSubject = $"session-{userId}",
+                Email = $"{userId}@example.test"
+            });
+            var locationId = Guid.NewGuid();
+            db.Locations.Add(new Location
+            {
+                Id = locationId,
+                Code = "main",
+                Name = "Головний корпус"
+            });
+            foreach (var roleCode in new[] { "notificator", "admin", "auditor" })
+            {
+                var role = new Role { Id = Guid.NewGuid(), Code = roleCode, Name = roleCode };
+                db.Roles.Add(role);
+                db.UserRoles.Add(new UserRole
+                {
+                    Id = Guid.NewGuid(),
+                    UserId = userId,
+                    RoleId = role.Id,
+                    LocationId = locationId
+                });
+            }
+            await db.SaveChangesAsync();
+        }
+
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/auth/session");
+        request.Headers.Add("X-Test-User-Id", userId.ToString());
+        using HttpResponseMessage response = await client.SendAsync(request);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(body.RootElement.GetProperty("roles").EnumerateArray());
+        JsonElement capabilities = body.RootElement.GetProperty("capabilities");
+        Assert.True(capabilities.GetProperty("canOperate").GetBoolean());
+        Assert.False(capabilities.GetProperty("canViewAudit").GetBoolean());
+    }
+
+    private static async Task SeedRolesAsync(
+        WebApplicationFactory<Program> factory,
+        Guid userId,
+        IReadOnlyCollection<string> roleCodes)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        db.Users.Add(new UserAccount
+        {
+            Id = userId,
+            ExternalSubject = $"session-{userId}",
+            Email = $"{userId}@example.test"
+        });
+        foreach (var roleCode in roleCodes)
+        {
+            Role role = new() { Id = Guid.NewGuid(), Code = roleCode, Name = roleCode };
+            db.Roles.Add(role);
+            db.UserRoles.Add(new UserRole
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                RoleId = role.Id
+            });
+        }
+
+        await db.SaveChangesAsync();
     }
 
     [Fact]
