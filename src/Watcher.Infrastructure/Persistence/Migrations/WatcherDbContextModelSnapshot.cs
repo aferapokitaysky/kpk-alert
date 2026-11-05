@@ -93,6 +93,55 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.ToTable("audit_events", (string)null);
                 });
 
+            modelBuilder.Entity("Watcher.Domain.Entities.CommandDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("CommandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId");
+
+                    b.HasIndex("CommandId", "DeviceId")
+                        .IsUnique();
+
+                    b.HasIndex("State", "NextAttemptAtUtc", "ExpiresAtUtc");
+
+                    b.ToTable("command_deliveries", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_command_deliveries_attempt_count", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_command_deliveries_state", "\"State\" IN ('Pending', 'InFlight', 'Accepted', 'Playing', 'Completed', 'Stopped', 'Rejected', 'Failed', 'Expired')");
+                        });
+                });
+
             modelBuilder.Entity("Watcher.Domain.Entities.CommandTarget", b =>
                 {
                     b.Property<Guid>("Id")
@@ -385,6 +434,21 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("user_roles", (string)null);
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.CommandDelivery", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.AlertCommand", null)
+                        .WithMany()
+                        .HasForeignKey("CommandId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Watcher.Domain.Entities.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.CommandTarget", b =>

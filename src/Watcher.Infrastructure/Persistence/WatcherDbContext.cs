@@ -17,6 +17,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<DeviceSession> DeviceSessions => Set<DeviceSession>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<MinuteOfSilenceOccurrence> MinuteOfSilenceOccurrences => Set<MinuteOfSilenceOccurrence>();
+    public DbSet<CommandDelivery> CommandDeliveries => Set<CommandDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -136,6 +137,24 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId);
             entity.HasIndex(x => x.CommandId).IsUnique();
             entity.HasIndex(x => new { x.ProcessedAtUtc, x.CreatedAtUtc });
+        });
+
+        modelBuilder.Entity<CommandDelivery>(entity =>
+        {
+            entity.ToTable("command_deliveries", table =>
+            {
+                table.HasCheckConstraint("CK_command_deliveries_attempt_count", "\"AttemptCount\" >= 0");
+                table.HasCheckConstraint("CK_command_deliveries_state",
+                    "\"State\" IN ('Pending', 'InFlight', 'Accepted', 'Playing', 'Completed', 'Stopped', 'Rejected', 'Failed', 'Expired')");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.State).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Device>().WithMany().HasForeignKey(x => x.DeviceId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(x => new { x.CommandId, x.DeviceId }).IsUnique();
+            entity.HasIndex(x => new { x.State, x.NextAttemptAtUtc, x.ExpiresAtUtc });
         });
     }
 }

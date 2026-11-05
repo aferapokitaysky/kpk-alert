@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
@@ -575,16 +576,21 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         }
     }
 
-    public WatcherDbContext CreateDbContext()
+    public WatcherDbContext CreateDbContext(params IInterceptor[] interceptors)
     {
         if (_isolatedConnectionString is null)
         {
             throw new InvalidOperationException("PostgreSQL fixture is unavailable.");
         }
 
-        DbContextOptions<WatcherDbContext> options = new DbContextOptionsBuilder<WatcherDbContext>()
-            .UseNpgsql(_isolatedConnectionString)
-            .Options;
+        DbContextOptionsBuilder<WatcherDbContext> optionsBuilder = new DbContextOptionsBuilder<WatcherDbContext>()
+            .UseNpgsql(_isolatedConnectionString);
+        if (interceptors.Length > 0)
+        {
+            optionsBuilder.AddInterceptors(interceptors);
+        }
+
+        DbContextOptions<WatcherDbContext> options = optionsBuilder.Options;
         return new WatcherDbContext(options);
     }
 
@@ -641,7 +647,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     {
         using WatcherDbContext db = CreateDbContext();
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE TABLE outbox_messages, audit_events, command_targets, alert_commands, " +
+            "TRUNCATE TABLE command_deliveries, outbox_messages, audit_events, command_targets, alert_commands, " +
+            "device_sessions, devices, " +
             "user_roles, roles, sound_presets, locations, users CASCADE");
 
         var seed = SeedData.Create(includeGlobalAdministrator);

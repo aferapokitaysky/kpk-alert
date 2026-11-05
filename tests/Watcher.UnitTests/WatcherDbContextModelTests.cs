@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Migrations;
+using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
 namespace Watcher.UnitTests;
@@ -23,6 +24,7 @@ public sealed class WatcherDbContextModelTests
         Assert.Contains("devices", entityNames);
         Assert.Contains("alert_commands", entityNames);
         Assert.Contains("minute_of_silence_occurrences", entityNames);
+        Assert.Contains("command_deliveries", entityNames);
         Assert.Contains("audit_events", entityNames);
         Assert.Contains("outbox_messages", entityNames);
 
@@ -42,6 +44,21 @@ public sealed class WatcherDbContextModelTests
                 .SequenceEqual(["CommandId", "LocationId"]));
 
         Assert.True(index.IsUnique);
+    }
+
+    [Fact]
+    public void Command_deliveries_require_expiry_and_are_unique_per_command_and_device()
+    {
+        using WatcherDbContext db = CreateContext();
+        IEntityType entity = db.Model.FindEntityType(typeof(CommandDelivery))!;
+        IIndex uniqueIndex = entity.GetIndexes().Single(index =>
+            index.Properties.Select(property => property.Name)
+                .SequenceEqual([nameof(CommandDelivery.CommandId), nameof(CommandDelivery.DeviceId)]));
+
+        Assert.True(uniqueIndex.IsUnique);
+        Assert.False(entity.FindProperty(nameof(CommandDelivery.ExpiresAtUtc))!.IsNullable);
+        Assert.Equal("character varying(20)",
+            entity.FindProperty(nameof(CommandDelivery.State))!.GetColumnType());
     }
 
     [Fact]
@@ -80,7 +97,7 @@ public sealed class WatcherDbContextModelTests
         IMigrationsAssembly assembly = db.GetService<IMigrationsAssembly>();
         IReadOnlyList<string> migrationIds = assembly.Migrations.Keys.ToArray();
 
-        Assert.Equal(7, migrationIds.Count);
+        Assert.Equal(8, migrationIds.Count);
         Assert.Equal(migrationIds.Order(StringComparer.Ordinal), migrationIds);
         Assert.All(assembly.Migrations.Values, migrationType =>
         {
