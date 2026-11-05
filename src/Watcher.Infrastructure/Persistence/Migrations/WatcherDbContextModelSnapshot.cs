@@ -45,10 +45,17 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("InitiatedByUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("MaximumPlaybackDurationSeconds")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(900);
+
                     b.Property<string>("PresetCode")
-                        .IsRequired()
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
+
+                    b.Property<Guid?>("TargetCommandId")
+                        .HasColumnType("uuid");
 
                     b.HasKey("Id");
 
@@ -57,7 +64,12 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.HasIndex("IdempotencyKey")
                         .IsUnique();
 
-                    b.ToTable("alert_commands", (string)null);
+                    b.HasIndex("TargetCommandId");
+
+                    b.ToTable("alert_commands", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_alert_commands_device_payload", "(\"Action\" = 'start' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR (\"Action\" = 'stop' AND \"PresetCode\" IS NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" = 0)");
+                        });
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.AuditEvent", b =>
@@ -502,6 +514,14 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("user_roles", (string)null);
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.AlertCommand", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.AlertCommand", null)
+                        .WithMany()
+                        .HasForeignKey("TargetCommandId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.CommandDelivery", b =>

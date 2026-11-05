@@ -67,9 +67,45 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             return CommandReceiptOutcome.NotFound;
         }
 
-        if (expectedSequence != receipt.Sequence || !CanTransition(delivery.State, receipt.State))
+        if (expectedSequence != receipt.Sequence)
         {
             return CommandReceiptOutcome.Conflict;
+        }
+
+        AlertCommand? command = await db.AlertCommands.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == receipt.CommandId, cancellationToken);
+        if (command is null || !CanTransition(command.Action, delivery.State, receipt.State))
+        {
+            return CommandReceiptOutcome.Conflict;
+        }
+
+        CommandDelivery? stoppedDelivery = null;
+        var targetWasStopped = false;
+        if (command.Action == "stop" && receipt.State == DeviceCommandState.Completed)
+        {
+            if (command.TargetCommandId is not { } targetCommandId)
+            {
+                return CommandReceiptOutcome.Conflict;
+            }
+
+            stoppedDelivery = await db.CommandDeliveries.SingleOrDefaultAsync(
+                item => item.CommandId == targetCommandId && item.DeviceId == deviceId,
+                cancellationToken);
+            var targetSequence = await db.CommandTargets.AsNoTracking()
+                .Where(item => item.CommandId == targetCommandId && item.LocationId == device.LocationId)
+                .Select(item => item.Sequence)
+                .SingleOrDefaultAsync(cancellationToken);
+            var targetIsStart = await db.AlertCommands.AsNoTracking().AnyAsync(
+                item => item.Id == targetCommandId && item.Action == "start",
+                cancellationToken);
+            if (stoppedDelivery is null || targetSequence == 0 || !targetIsStart ||
+                targetSequence >= receipt.Sequence ||
+                stoppedDelivery.State is not (CommandDeliveryState.InFlight or
+                    CommandDeliveryState.Accepted or CommandDeliveryState.Playing or
+                    CommandDeliveryState.Completed or CommandDeliveryState.Stopped))
+            {
+                return CommandReceiptOutcome.Conflict;
+            }
         }
 
         DateTimeOffset receivedAtUtc = clock.GetUtcNow();
@@ -86,6 +122,13 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         });
         delivery.State = ToDeliveryState(receipt.State);
         delivery.NextAttemptAtUtc = null;
+        if (stoppedDelivery is not null && stoppedDelivery.State is not (
+                CommandDeliveryState.Completed or CommandDeliveryState.Stopped))
+        {
+            stoppedDelivery.State = CommandDeliveryState.Stopped;
+            stoppedDelivery.NextAttemptAtUtc = null;
+            targetWasStopped = true;
+        }
         db.AuditEvents.Add(new AuditEvent
         {
             Id = Guid.NewGuid(),
@@ -102,6 +145,23 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 receipt.DiagnosticCode
             })
         });
+        if (targetWasStopped && stoppedDelivery is not null)
+        {
+            db.AuditEvents.Add(new AuditEvent
+            {
+                Id = Guid.NewGuid(),
+                EventType = "alert_command.delivery_stopped",
+                ActorType = "device",
+                ActorId = deviceId,
+                OccurredAtUtc = receivedAtUtc,
+                Payload = JsonSerializer.Serialize(new
+                {
+                    CommandId = stoppedDelivery.CommandId,
+                    StopCommandId = receipt.CommandId,
+                    DeviceId = deviceId
+                })
+            });
+        }
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return CommandReceiptOutcome.Recorded;
@@ -123,6 +183,26 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         (current == CommandDeliveryState.Playing &&
             next is DeviceCommandState.Completed or DeviceCommandState.Stopped or
                 DeviceCommandState.Failed or DeviceCommandState.Expired);
+
+    private static bool CanTransition(
+        string action,
+        CommandDeliveryState current,
+        DeviceCommandState next)
+    {
+        if (action != "stop")
+        {
+            return CanTransition(current, next);
+        }
+
+        if (current is CommandDeliveryState.Pending or CommandDeliveryState.InFlight)
+        {
+            return next is DeviceCommandState.Accepted or DeviceCommandState.Completed or
+                DeviceCommandState.Rejected or DeviceCommandState.Failed or DeviceCommandState.Expired;
+        }
+
+        return current == CommandDeliveryState.Accepted &&
+            next is DeviceCommandState.Completed or DeviceCommandState.Failed or DeviceCommandState.Expired;
+    }
 
     private static CommandDeliveryState ToDeliveryState(DeviceCommandState state) => state switch
     {

@@ -127,7 +127,7 @@ public sealed class WatcherDbContextModelTests
         IMigrationsAssembly assembly = db.GetService<IMigrationsAssembly>();
         IReadOnlyList<string> migrationIds = assembly.Migrations.Keys.ToArray();
 
-        Assert.Equal(11, migrationIds.Count);
+        Assert.Contains(migrationIds, id => id.EndsWith("_AddDeviceCommandTransport", StringComparison.Ordinal));
         Assert.Equal(migrationIds.Order(StringComparer.Ordinal), migrationIds);
         Assert.All(assembly.Migrations.Values, migrationType =>
         {

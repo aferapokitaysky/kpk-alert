@@ -663,7 +663,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                 {
                     ["ConnectionStrings:Watcher"] = _isolatedConnectionString,
                     ["Authentication:Google:Enabled"] = "false",
-                    ["CommandOutboxWorker:Enabled"] = "false"
+                    ["CommandOutboxWorker:Enabled"] = "false",
+                    ["DeviceCommandTransport:Enabled"] = "false"
                 }));
             builder.ConfigureTestServices(services =>
             {

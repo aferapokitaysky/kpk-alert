@@ -62,6 +62,64 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
     }
 
     [PostgresFact]
+    public async Task Completing_stop_command_stops_its_target_delivery_in_the_same_transaction()
+    {
+        ReceiptSeed seed = await CreateReceiptSeedAsync();
+        var stopCommandId = Guid.NewGuid();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            CommandDelivery startDelivery = await db.CommandDeliveries
+                .SingleAsync(item => item.CommandId == seed.CommandId);
+            startDelivery.State = CommandDeliveryState.Playing;
+            startDelivery.NextAttemptAtUtc = null;
+            db.AlertCommands.Add(new AlertCommand
+            {
+                Id = stopCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "stop",
+                TargetCommandId = seed.CommandId,
+                MaximumPlaybackDurationSeconds = 0,
+                InitiatedByUserId = seed.OperatorId,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5)
+            });
+            db.CommandTargets.Add(new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                LocationId = await db.CommandTargets.Where(item => item.CommandId == seed.CommandId)
+                    .Select(item => item.LocationId).SingleAsync(),
+                Sequence = 2,
+                State = "Created"
+            });
+            db.CommandDeliveries.Add(new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommandId,
+                DeviceId = seed.DeviceId,
+                State = CommandDeliveryState.InFlight,
+                CreatedAtUtc = Now,
+                ExpiresAtUtc = Now.AddMinutes(5),
+                NextAttemptAtUtc = Now.AddSeconds(30)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
+            CreateReceipt(stopCommandId, 2, DeviceCommandState.Accepted)));
+        Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
+            CreateReceipt(stopCommandId, 2, DeviceCommandState.Completed)));
+
+        using WatcherDbContext result = _fixture.CreateDbContext();
+        Assert.Equal(CommandDeliveryState.Stopped, await result.CommandDeliveries
+            .Where(item => item.CommandId == seed.CommandId).Select(item => item.State).SingleAsync());
+        Assert.Equal(CommandDeliveryState.Completed, await result.CommandDeliveries
+            .Where(item => item.CommandId == stopCommandId).Select(item => item.State).SingleAsync());
+        Assert.Single(await result.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_stopped").ToArrayAsync());
+    }
+
+    [PostgresFact]
     public async Task Concurrent_retries_of_the_same_event_are_deduplicated()
     {
         ReceiptSeed seed = await CreateReceiptSeedAsync();
@@ -128,15 +186,22 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
 
         using WatcherDbContext db = _fixture.CreateDbContext();
         IMigrator migrator = db.Database.GetService<IMigrator>();
-        PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
-            () => migrator.MigrateAsync("20261105105244_AddDeviceCommandReceipts"));
+        try
+        {
+            PostgresException exception = await Assert.ThrowsAsync<PostgresException>(
+                () => migrator.MigrateAsync("20261105105244_AddDeviceCommandReceipts"));
 
-        Assert.Contains("є довші значення", exception.MessageText, StringComparison.Ordinal);
-        var preservedCode = await db.DeviceCommandReceipts
-            .Where(item => item.EventId == receipt.EventId)
-            .Select(item => item.DiagnosticCode)
-            .SingleAsync();
-        Assert.Equal(diagnosticCode, preservedCode);
+            Assert.Contains("є довші значення", exception.MessageText, StringComparison.Ordinal);
+            var preservedCode = await db.DeviceCommandReceipts
+                .Where(item => item.EventId == receipt.EventId)
+                .Select(item => item.DiagnosticCode)
+                .SingleAsync();
+            Assert.Equal(diagnosticCode, preservedCode);
+        }
+        finally
+        {
+            await migrator.MigrateAsync();
+        }
     }
 
     [PostgresFact]
@@ -253,13 +318,13 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
             NextAttemptAtUtc = Now
         });
         await db.SaveChangesAsync();
-        return new(deviceId, commandId);
+        return new(deviceId, commandId, locations.OperatorId);
     }
 
     private static CommandReceipt CreateReceipt(Guid commandId, long sequence, DeviceCommandState state) =>
         new(1, Guid.NewGuid(), commandId, sequence, state, Now.AddSeconds(1), null);
 
-    private sealed record ReceiptSeed(Guid DeviceId, Guid CommandId);
+    private sealed record ReceiptSeed(Guid DeviceId, Guid CommandId, Guid OperatorId);
 
     private sealed class DeviceLockQueryInterceptor : DbCommandInterceptor
     {

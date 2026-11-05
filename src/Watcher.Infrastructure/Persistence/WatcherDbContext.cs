@@ -53,11 +53,20 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
 
         modelBuilder.Entity<AlertCommand>(entity =>
         {
-            entity.ToTable("alert_commands");
+            entity.ToTable("alert_commands", table => table.HasCheckConstraint(
+                "CK_alert_commands_device_payload",
+                "(\"Action\" = 'start' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR " +
+                "(\"Action\" = 'stop' AND \"PresetCode\" IS NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" = 0)"));
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.IdempotencyKey).IsUnique();
             entity.Property(x => x.Action).HasMaxLength(20).IsRequired();
-            entity.Property(x => x.PresetCode).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.PresetCode).HasMaxLength(80);
+            entity.Property(x => x.MaximumPlaybackDurationSeconds)
+                .HasDefaultValue(900)
+                .HasSentinel(-1)
+                .IsRequired();
+            entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.TargetCommandId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.Property(x => x.ExpiresAtUtc).IsRequired();
             entity.HasIndex(x => x.CreatedAtUtc);
             entity.HasMany(x => x.Targets).WithOne().HasForeignKey(x => x.CommandId);

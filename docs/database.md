@@ -24,26 +24,26 @@ erDiagram
   users ||--o{ audit_events : виконує
 ```
 
-| Таблиця | Основні поля | Призначення |
-| --- | --- | --- |
-| `users` | `id`, `external_subject`, `email`, `is_active` | Облікові записи з довіреного постачальника входу |
-| `roles` | `id`, `code` | Ролі `admin`, `sound_engineer`, `notificator`, `auditor` |
-| `user_roles` | `user_id`, `role_id`, `location_id?` | Глобальні права або права в конкретній локації |
-| `locations` | `id`, `code`, `name`, `is_active` | Корпус або окрема зона трансляції |
-| `devices` | `id`, `location_id`, `certificate_thumbprint`, `status` | Зареєстровані вузли та стан сертифіката |
-| `sound_presets` | `id`, `code`, `priority`, `manifest_hash`, `status` | Погоджені сценарії відтворення |
-| `location_presets` | `location_id`, `preset_id`, `is_enabled` | Сценарії, дозволені для локації |
-| `alert_commands` | `id`, `kind`, `preset_id`, `initiated_by_user_id`, `created_at` | Створені команди та ініціатор |
-| `command_targets` | `command_id`, `location_id`, `sequence`, `state` | Намір і порядковий номер команди в кожній локації |
-| `location_command_sequences` | `location_id`, `next_sequence` | Транзакційний лічильник наступного номера команди для локації |
-| `command_receipts` | `id`, `command_id`, `device_id`, `status`, `occurred_at` | Підтвердження отримання, запуску та завершення |
-| `audit_events` | `id`, `event_type`, `actor_type`, `actor_id`, `payload`, `occurred_at` | Історія дій користувачів і системи |
-| `outbox_messages` | `id`, `command_id`, `event_type`, `payload`, `created_at_utc`, `processed_at_utc`, `attempts` | Надійна черга подій для подальшої доставки |
-| `device_sessions` | `id`, `device_id`, `connected_at`, `last_seen_at` | Історія технічних з’єднань |
+| Таблиця                      | Основні поля                                                                                  | Призначення                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `users`                      | `id`, `external_subject`, `email`, `is_active`                                                | Облікові записи з довіреного постачальника входу              |
+| `roles`                      | `id`, `code`                                                                                  | Ролі `admin`, `sound_engineer`, `notificator`, `auditor`      |
+| `user_roles`                 | `user_id`, `role_id`, `location_id?`                                                          | Глобальні права або права в конкретній локації                |
+| `locations`                  | `id`, `code`, `name`, `is_active`                                                             | Корпус або окрема зона трансляції                             |
+| `devices`                    | `id`, `location_id`, `certificate_thumbprint`, `status`                                       | Зареєстровані вузли та стан сертифіката                       |
+| `sound_presets`              | `id`, `code`, `priority`, `manifest_hash`, `status`                                           | Погоджені сценарії відтворення                                |
+| `location_presets`           | `location_id`, `preset_id`, `is_enabled`                                                      | Сценарії, дозволені для локації                               |
+| `alert_commands`             | `id`, `kind`, `preset_id`, `initiated_by_user_id`, `created_at`                               | Створені команди та ініціатор                                 |
+| `command_targets`            | `command_id`, `location_id`, `sequence`, `state`                                              | Намір і порядковий номер команди в кожній локації             |
+| `location_command_sequences` | `location_id`, `next_sequence`                                                                | Транзакційний лічильник наступного номера команди для локації |
+| `command_receipts`           | `id`, `command_id`, `device_id`, `status`, `occurred_at`                                      | Підтвердження отримання, запуску та завершення                |
+| `audit_events`               | `id`, `event_type`, `actor_type`, `actor_id`, `payload`, `occurred_at`                        | Історія дій користувачів і системи                            |
+| `outbox_messages`            | `id`, `command_id`, `event_type`, `payload`, `created_at_utc`, `processed_at_utc`, `attempts` | Надійна черга подій для подальшої доставки                    |
+| `device_sessions`            | `id`, `device_id`, `connected_at`, `last_seen_at`                                             | Історія технічних з’єднань                                    |
 
 Фізичну схему підтримують EF Core migrations. Кожне повідомлення outbox посилається на одну команду; унікальний індекс не дозволяє створити для неї дубльовану подію. Непроцесовані записи читаються за індексом стану й часу створення.
 
-Outbox фіксує намір доставки в тій самій транзакції, що команду, цілі та аудит. API повертає `202 Accepted` після успішного commit. Фоновий worker періодично матеріалізує непроцесовані події `alert_command.created` у записи `command_deliveries`; він не надсилає команди вузлам і не змінює політику повторів. Параметри `CommandOutboxWorker:Enabled`, `PollInterval` і `BatchSize` керують роботою; допустимий інтервал — від 100 мс до 5 хвилин, пакет — від 1 до 500 подій. За замовчуванням worker увімкнений, інтервал становить 10 секунд, пакет — 50 подій.
+Outbox фіксує намір доставки в тій самій транзакції, що команду, цілі та аудит. API повертає `202 Accepted` після успішного commit. Worker матеріалізує непроцесовані події `alert_command.created` у записи `command_deliveries`. Окремий transport worker надсилає ці доставки активним mTLS-підключенням пристрою через WebSocket. Доставки захоплюються через `FOR UPDATE SKIP LOCKED`; мережевий виклик відбувається після commit, а тайм-аут квитанції планує повтор із тим самим `command_id`. Параметри `DeviceCommandTransport:Enabled`, `PollInterval`, `AcknowledgementTimeout`, `InitialRetryDelay`, `MaximumRetryDelay` і `BatchSize` керують роботою. За замовчуванням transport увімкнений, опитує кожні 250 мс, очікує квитанцію 10 секунд, повторює з backoff від 1 до 15 секунд і бере до 50 записів за цикл. Сесії WebSocket локальні для процесу; репліки обробляють лише пристрої, підключені до відповідної репліки.
 
 Worker використовує нову DI scope для кожного циклу та обробляє події послідовно. Матеріалізатор блокує рядок outbox у PostgreSQL, тому кілька реплік можуть безпечно побачити ту саму подію: одна створює доставки, інші отримують `AlreadyProcessed`. Після помилки обробка поточного пакета зупиняється; подія залишається непроцесованою і буде повторно прочитана в наступному циклі. Лічильник `attempts` не змінюється. Повідомлення самого worker-а містять лише тип помилки та ID outbox-запису: вони не містять текст винятку, payload чи секретів. Події інших типів worker не вибирає.
 
@@ -65,11 +65,11 @@ Worker використовує нову DI scope для кожного цикл
 
 ## Локальна база вузла
 
-| Таблиця | Вміст |
-| --- | --- |
-| `processed_commands` | Ідентифікатори команд і збережений результат дедуплікації |
-| `outbox_events` | Непідтверджені події для надсилання після відновлення зв’язку |
-| `configuration_snapshot` | Остання перевірена версія локальних налаштувань |
-| `asset_manifest` | Дозволені аудіофайли та їхні SHA-256 відбитки |
+| Таблиця                  | Вміст                                                         |
+| ------------------------ | ------------------------------------------------------------- |
+| `processed_commands`     | Ідентифікатори команд і збережений результат дедуплікації     |
+| `outbox_events`          | Непідтверджені події для надсилання після відновлення зв’язку |
+| `configuration_snapshot` | Остання перевірена версія локальних налаштувань               |
+| `asset_manifest`         | Дозволені аудіофайли та їхні SHA-256 відбитки                 |
 
 Аудіофайли зберігаються окремо. Вузол перевіряє їхній відбиток перед публікацією або відтворенням.

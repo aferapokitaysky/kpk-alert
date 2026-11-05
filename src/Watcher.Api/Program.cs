@@ -231,6 +231,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
     builder.Services.AddScoped<ILocationCommandSequenceAllocator, PostgresLocationCommandSequenceAllocator>();
     builder.Services.AddScoped<CommandReceiptProcessor>();
     builder.Services.AddCommandOutboxWorker(builder.Configuration);
+    builder.Services.AddDeviceCommandTransport(builder.Configuration);
     builder.Services.AddMinuteOfSilenceScheduler();
 }
 
@@ -239,6 +240,7 @@ WebApplication app = builder.Build();
 app.UseForwardedHeaders();
 app.UseContentSecurityPolicy();
 app.UseHttpsRedirection();
+app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseDefaultFiles();
