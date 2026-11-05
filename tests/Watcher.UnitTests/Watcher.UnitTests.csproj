@@ -27,6 +27,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Watcher.Contracts\Watcher.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Watcher.Domain\Watcher.Domain.csproj" />
     <ProjectReference Include="..\..\src\Watcher.Infrastructure\Watcher.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Watcher.Api\Watcher.Api.csproj" />
