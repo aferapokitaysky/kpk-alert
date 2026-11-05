@@ -114,7 +114,7 @@ jobs:
       - run: dotnet ef database update --project src/Watcher.Infrastructure --startup-project src/Watcher.Api
       - name: PostgreSQL-тести з покриттям
         id: postgres-tests
-        run: dotnet test tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj -c Release --logger "trx;LogFileName=postgres-integration.trx" --collect:"XPlat Code Coverage" --settings coverlet.postgres.runsettings
+        run: dotnet test tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj -c Release --filter "TestArea=PostgreSQL" --logger "trx;LogFileName=postgres-integration.trx" --collect:"XPlat Code Coverage" --settings coverlet.postgres.runsettings
       - name: Перевірити виконання PostgreSQL-тестів і показати покриття
         if: success() && steps.postgres-tests.outcome == 'success'
         run: >-

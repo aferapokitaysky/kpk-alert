@@ -20,6 +20,8 @@ using Microsoft.Extensions.Options;
 using Npgsql;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
+using Xunit.Abstractions;
+using Xunit.Sdk;
 
 namespace Watcher.Api.IntegrationTests;
 
@@ -967,7 +969,9 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     }
 }
 
-public sealed class PostgresFactAttribute : FactAttribute
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+[TraitDiscoverer("Watcher.Api.IntegrationTests.PostgresTraitDiscoverer", "Watcher.Api.IntegrationTests")]
+public sealed class PostgresFactAttribute : FactAttribute, ITraitAttribute
 {
     public PostgresFactAttribute()
     {
@@ -978,7 +982,9 @@ public sealed class PostgresFactAttribute : FactAttribute
     }
 }
 
-public sealed class PostgresTheoryAttribute : TheoryAttribute
+[AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+[TraitDiscoverer("Watcher.Api.IntegrationTests.PostgresTraitDiscoverer", "Watcher.Api.IntegrationTests")]
+public sealed class PostgresTheoryAttribute : TheoryAttribute, ITraitAttribute
 {
     public PostgresTheoryAttribute()
     {
@@ -986,6 +992,14 @@ public sealed class PostgresTheoryAttribute : TheoryAttribute
         {
             Skip = "Потрібен локальний PostgreSQL. У CI інтеграційна база налаштована автоматично.";
         }
+    }
+}
+
+public sealed class PostgresTraitDiscoverer : ITraitDiscoverer
+{
+    public IEnumerable<KeyValuePair<string, string>> GetTraits(IAttributeInfo traitAttribute)
+    {
+        yield return new KeyValuePair<string, string>("TestArea", "PostgreSQL");
     }
 }
 

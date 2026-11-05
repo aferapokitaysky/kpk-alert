@@ -65,31 +65,11 @@ def read_coverage(file_path: str) -> list[ModuleCoverage]:
 
 
 def read_postgres_results(file_path: str) -> PostgresTestResults:
+    """Читає результати з TRX окремого запуску тестів із фільтром PostgreSQL."""
     root = ET.parse(file_path).getroot()
-    class_by_id: dict[str, str] = {}
-    for unit_test in root.iter():
-        if _xml_name(unit_test.tag) != "UnitTest":
-            continue
-        test_id = unit_test.get("id")
-        if test_id is None:
-            continue
-        test_method = next(
-            (child for child in unit_test.iter() if _xml_name(child.tag) == "TestMethod"),
-            None,
-        )
-        if test_method is not None:
-            class_by_id[test_id] = test_method.get("className", "")
-
     passed = skipped = failed = 0
     for result in root.iter():
         if _xml_name(result.tag) != "UnitTestResult":
-            continue
-        class_name = class_by_id.get(result.get("testId", ""), "")
-        test_name = result.get("testName", "")
-        is_postgres_test = class_name.endswith(".PostgresAlertCommandApiTests") or (
-            class_name == "PostgresAlertCommandApiTests"
-        ) or "PostgresAlertCommandApiTests" in test_name
-        if not is_postgres_test:
             continue
 
         outcome = result.get("outcome", "").lower()
@@ -153,11 +133,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--label", required=True)
     parser.add_argument("--coverage-glob", action="append", required=True)
-    parser.add_argument("--trx-glob", action="append", default=[])
-    parser.add_argument("--require-postgres", action="store_true")
+    parser.add_argument(
+        "--trx-glob",
+        action="append",
+        default=[],
+        help="TRX з окремого запуску, відфільтрованого за TestArea=PostgreSQL.",
+    )
+    parser.add_argument(
+        "--require-postgres",
+        action="store_true",
+        help="Вимагає непорожній PostgreSQL-набір без пропущених чи невдалих тестів.",
+    )
     args = parser.parse_args(argv)
 
     try:
+        if args.require_postgres and not args.trx_glob:
+            raise ValueError("Для обов’язкової перевірки PostgreSQL потрібно вказати --trx-glob.")
+
         coverage_files = _expand(args.coverage_glob, "Cobertura")
         _publish(_coverage_markdown(args.label, coverage_files))
 
@@ -176,8 +168,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"PostgreSQL tests: passed={results.passed}, skipped={results.skipped}, "
                 f"failed={results.failed}, total={results.total}"
             )
-            if args.require_postgres and (results.total == 0 or results.passed == 0):
-                raise ValueError("TRX не підтверджує виконання жодного PostgreSQL-тесту.")
+            if args.require_postgres and results.total == 0:
+                raise ValueError("TRX не містить результатів PostgreSQL-тестів.")
             if args.require_postgres and (results.skipped > 0 or results.failed > 0):
                 raise ValueError("PostgreSQL-набір має пропущені або невдалі тести.")
     except (ET.ParseError, OSError, ValueError) as error:
