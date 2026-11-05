@@ -17,8 +17,9 @@ public sealed record AutomaticAlertDispatchDecision(
 
 public sealed class AutomaticAlertDispatchPolicy
 {
-    private const string PrimarySource = AlertSourceCatalog.AlertsInUaCode;
+    private const string PrimarySource = AlertSourceCatalog.UkraineAlarmCode;
     private const string FallbackSource = AlertSourceCatalog.NeptunCode;
+    private const string TertiarySource = AlertSourceCatalog.AlertsInUaCode;
     private const string Fresh = "fresh";
     private const string Active = "active";
     private const string Inactive = "inactive";
@@ -40,18 +41,12 @@ public sealed class AutomaticAlertDispatchPolicy
         }
 
         AlertTargetStatus[] targets = status.Targets.ToArray();
-        AlertTargetStatus[] primaryTargets = targets
-            .Where(IsPrimaryGeography)
-            .ToArray();
-        var primaryAvailable = primaryTargets
-            .SelectMany(target => target.Observations)
-            .Any(observation =>
-                string.Equals(observation.Source, PrimarySource, StringComparison.Ordinal) &&
-                IsPrimaryGeography(observation) &&
-                IsFresh(observation) &&
-                !IsState(observation, Unknown));
+        var selectedSource = SelectSource(targets);
+        if (selectedSource is null)
+        {
+            return Hold("no_fresh_observation");
+        }
 
-        var selectedSource = primaryAvailable ? PrimarySource : FallbackSource;
         List<PolicyObservation> observations = GetPolicyObservations(targets, selectedSource);
         if (observations.Count == 0)
         {
@@ -68,7 +63,12 @@ public sealed class AutomaticAlertDispatchPolicy
             {
                 return new(
                     AutomaticAlertDispatchAction.Start,
-                    selectedSource == PrimarySource ? "primary_alert_active" : "fallback_alert_active",
+                    selectedSource switch
+                    {
+                        PrimarySource => "primary_alert_active",
+                        FallbackSource => "fallback_alert_active",
+                        _ => "tertiary_alert_active"
+                    },
                     startCandidate.Observation);
             }
 
@@ -163,8 +163,7 @@ public sealed class AutomaticAlertDispatchPolicy
                     continue;
                 }
 
-                var targetConflicts = IsState(target, Conflict);
-                result.Add(new(observation, precision, targetConflicts));
+                result.Add(new(observation, precision));
             }
         }
 
@@ -173,57 +172,83 @@ public sealed class AutomaticAlertDispatchPolicy
 
     private static bool IsAllowedGeography(
         AlertSourceObservationResponse observation,
-        string selectedSource) =>
-        string.Equals(selectedSource, PrimarySource, StringComparison.Ordinal)
-            ? IsPrimaryGeography(observation)
-            : IsFallbackGeography(observation);
+        string selectedSource) => selectedSource switch
+        {
+            PrimarySource => IsPrimaryGeography(observation),
+            FallbackSource => IsFallbackGeography(observation),
+            TertiarySource => IsTertiaryGeography(observation),
+            _ => false
+        };
+
+    private static string? SelectSource(IEnumerable<AlertTargetStatus> targets)
+    {
+        foreach (var source in new[] { PrimarySource, FallbackSource, TertiarySource })
+        {
+            var available = targets
+                .SelectMany(target => target.Observations)
+                .Any(observation =>
+                    string.Equals(observation.Source, source, StringComparison.Ordinal) &&
+                    IsFresh(observation) &&
+                    !IsState(observation, Unknown) &&
+                    TryGetPrecision(observation.Scope, observation.ScopeId, out _) &&
+                    IsAllowedGeography(observation, source));
+            if (available)
+            {
+                return source;
+            }
+        }
+
+        return null;
+    }
 
     private static bool IsStartEvidence(PolicyObservation item)
     {
-        if ((item.TargetConflicts && !IsAuthoritativePrimaryRed(item.Observation)) ||
-            !IsState(item.Observation, Active))
+        if (!IsState(item.Observation, Active))
         {
             return false;
         }
 
         if (string.Equals(item.Observation.Source, PrimarySource, StringComparison.Ordinal))
         {
-            return IsPrimaryGeography(item.Observation) && IsLevel(item.Observation, Red);
+            return IsPrimaryGeography(item.Observation) && item.Observation.AlertLevel is null;
         }
 
-        return string.Equals(item.Observation.Source, FallbackSource, StringComparison.Ordinal) &&
-               IsFallbackGeography(item.Observation) &&
-               item.Observation.AlertLevel is null;
+        return IsActiveWithoutColor(item.Observation) ||
+               (string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
+                IsTertiaryGeography(item.Observation) && IsLevel(item.Observation, Red));
     }
 
     private static bool IsMaintainingActiveEpisode(PolicyObservation item)
     {
-        if ((item.TargetConflicts && !IsAuthoritativePrimaryRed(item.Observation)) ||
-            !IsState(item.Observation, Active))
+        if (!IsState(item.Observation, Active))
         {
             return false;
         }
 
         if (string.Equals(item.Observation.Source, PrimarySource, StringComparison.Ordinal))
         {
-            return IsPrimaryGeography(item.Observation) && IsLevel(item.Observation, Red);
+            return IsPrimaryGeography(item.Observation) && item.Observation.AlertLevel is null;
         }
 
-        return string.Equals(item.Observation.Source, FallbackSource, StringComparison.Ordinal) &&
-               IsFallbackGeography(item.Observation) &&
-               item.Observation.AlertLevel is null;
+        return IsActiveWithoutColor(item.Observation) ||
+               (string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
+                IsTertiaryGeography(item.Observation) && IsLevel(item.Observation, Red));
     }
 
     private static bool IsAmbiguous(PolicyObservation item) =>
-        (item.TargetConflicts && !IsAuthoritativePrimaryRed(item.Observation)) ||
         IsState(item.Observation, Partial) ||
         IsState(item.Observation, Conflict) ||
         IsState(item.Observation, Unknown) ||
         IsLevel(item.Observation, Yellow) ||
         HasUnexpectedAlertLevel(item) ||
         (IsState(item.Observation, Active) &&
-         string.Equals(item.Observation.Source, PrimarySource, StringComparison.Ordinal) &&
+         string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
          !IsLevel(item.Observation, Red));
+
+    private static bool IsActiveWithoutColor(AlertSourceObservationResponse observation) =>
+        (string.Equals(observation.Source, PrimarySource, StringComparison.Ordinal) ||
+         string.Equals(observation.Source, FallbackSource, StringComparison.Ordinal)) &&
+        observation.AlertLevel is null;
 
     private static bool HasUnexpectedAlertLevel(PolicyObservation item)
     {
@@ -232,7 +257,7 @@ public sealed class AutomaticAlertDispatchPolicy
             return false;
         }
 
-        return !string.Equals(item.Observation.Source, PrimarySource, StringComparison.Ordinal) ||
+        return !string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) ||
                !IsState(item.Observation, Active) ||
                (!IsLevel(item.Observation, Red) && !IsLevel(item.Observation, Yellow));
     }
@@ -240,26 +265,11 @@ public sealed class AutomaticAlertDispatchPolicy
     private static bool IsFresh(AlertSourceObservationResponse observation) =>
         string.Equals(observation.Freshness, Fresh, StringComparison.Ordinal);
 
-    private static bool IsAuthoritativePrimaryRed(AlertSourceObservationResponse observation) =>
-        string.Equals(observation.Source, PrimarySource, StringComparison.Ordinal) &&
-        IsPrimaryGeography(observation) &&
-        IsState(observation, Active) &&
-        IsLevel(observation, Red);
-
     private static bool IsState(AlertSourceObservationResponse observation, string value) =>
         string.Equals(observation.Level, value, StringComparison.Ordinal);
 
-    private static bool IsState(AlertTargetStatus target, string value) =>
-        string.Equals(target.Level, value, StringComparison.Ordinal);
-
     private static bool IsLevel(AlertSourceObservationResponse observation, string value) =>
         string.Equals(observation.AlertLevel, value, StringComparison.Ordinal);
-
-    private static bool IsPrimaryGeography(AlertTargetStatus target) =>
-        (string.Equals(target.Scope, "hromada", StringComparison.Ordinal) &&
-         string.Equals(target.ScopeId, AlertSourceCatalog.KremenchukHromadaId, StringComparison.Ordinal)) ||
-        (string.Equals(target.Scope, "oblast", StringComparison.Ordinal) &&
-         string.Equals(target.ScopeId, AlertSourceCatalog.PoltavaOblastId, StringComparison.Ordinal));
 
     private static bool IsPrimaryGeography(AlertSourceObservationResponse observation) =>
         IsPrimaryGeography(observation.Scope, observation.ScopeId);
@@ -275,6 +285,9 @@ public sealed class AutomaticAlertDispatchPolicy
          string.Equals(observation.ScopeId, AlertSourceCatalog.PoltavaOblastId, StringComparison.Ordinal)) ||
         (string.Equals(observation.Scope, "raion", StringComparison.Ordinal) &&
          string.Equals(observation.ScopeId, AlertSourceCatalog.KremenchukRaionId, StringComparison.Ordinal));
+
+    private static bool IsTertiaryGeography(AlertSourceObservationResponse observation) =>
+        IsPrimaryGeography(observation) || IsFallbackGeography(observation);
 
     private static bool CoversKremenchuk(string scope, string scopeId) =>
         IsPrimaryGeography(scope, scopeId) ||
@@ -327,6 +340,5 @@ public sealed class AutomaticAlertDispatchPolicy
 
     private sealed record PolicyObservation(
         AlertSourceObservationResponse Observation,
-        int Precision,
-        bool TargetConflicts);
+        int Precision);
 }

@@ -206,13 +206,19 @@ public sealed class NeptunRealtimeMonitorTests
         public Task<INeptunRealtimeConnection> ConnectAsync(Uri streamUri, CancellationToken cancellationToken)
         {
             var number = Interlocked.Increment(ref _connectionCount);
-            FakeConnection connection = new(number == 1 && !blockAfterAlerts, number == 1 && sendMalformedFrame);
+            FakeConnection connection = new(
+                number == 1 && !blockAfterAlerts,
+                number == 1,
+                number == 1 && sendMalformedFrame);
             FirstConnection ??= connection;
             return Task.FromResult<INeptunRealtimeConnection>(connection);
         }
     }
 
-    private sealed class FakeConnection(bool closeAfterDelay, bool sendMalformedFrame) : INeptunRealtimeConnection
+    private sealed class FakeConnection(
+        bool closeAfterDelay,
+        bool sendAlertFrame,
+        bool sendMalformedFrame) : INeptunRealtimeConnection
     {
         private int _received;
         public TaskCompletionSource AlertApplied { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -235,6 +241,11 @@ public sealed class NeptunRealtimeMonitorTests
 
             if (_received == 2)
             {
+                if (!sendAlertFrame)
+                {
+                    return new(WebSocketMessageType.Text, Encoding.UTF8.GetBytes("""{"type":"heartbeat"}"""));
+                }
+
                 NeptunRealtimeMessage message = new(WebSocketMessageType.Text, Encoding.UTF8.GetBytes("""
                     {"type":"alerts","data":{"oblasts":[{"key":"poltavska","name":"Полтавська область","oblast":""}],"raions":[{"key":"poltavska:kremenchutskyi","name":"Кременчуцький район","oblast":"Полтавська область"}]}}
                     """));

@@ -17,7 +17,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null);
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("primary_alert_active", decision.ReasonCode);
+        Assert.Equal("tertiary_alert_active", decision.ReasonCode);
         Assert.Equal(observation, decision.Observation);
     }
 
@@ -32,6 +32,98 @@ public sealed class AutomaticAlertDispatchPolicyTests
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
         Assert.Equal(observation, decision.Observation);
+    }
+
+    [Fact]
+    public void Fresh_ukrainealarm_active_starts_without_inventing_a_color()
+    {
+        AlertSourceObservationResponse observation = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            "active");
+        AlertSourceObservationResponse fallback = Observation(
+            AlertSourceCatalog.NeptunCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            "inactive");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(observation, fallback, aggregateLevel: "conflict")), null);
+
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal("primary_alert_active", decision.ReasonCode);
+        Assert.Equal(observation, decision.Observation);
+        Assert.Null(decision.Observation?.AlertLevel);
+    }
+
+    [Fact]
+    public void Ukrainealarm_active_with_unexpected_color_is_held()
+    {
+        AlertSourceObservationResponse observation = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            "active", "red");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null);
+
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal("observation_not_actionable", decision.ReasonCode);
+    }
+
+    [Fact]
+    public void Fresh_ukrainealarm_inactive_stops_even_when_lower_priority_source_is_active()
+    {
+        AlertSourceObservationResponse observation = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
+            "inactive");
+        AlertSourceObservationResponse fallback = Observation(
+            AlertSourceCatalog.NeptunCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
+            "active");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(observation, fallback, aggregateLevel: "conflict")),
+            new OpenAlertEpisode(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId));
+
+        Assert.Equal(AutomaticAlertDispatchAction.Stop, decision.Action);
+        Assert.Equal(observation, decision.Observation);
+    }
+
+    [Theory]
+    [InlineData("unknown", "fresh")]
+    [InlineData("active", "stale")]
+    public void Unknown_or_stale_ukrainealarm_falls_back_to_fresh_neptun(
+        string state,
+        string freshness)
+    {
+        AlertSourceObservationResponse primary = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
+            state, freshness: freshness);
+        AlertSourceObservationResponse fallback = Observation(
+            AlertSourceCatalog.NeptunCode, "raion", AlertSourceCatalog.KremenchukRaionId,
+            "active");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(primary), Target(fallback)), null);
+
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal(fallback, decision.Observation);
+    }
+
+    [Fact]
+    public void Unknown_ukrainealarm_and_neptun_fall_back_to_red_alerts_in_ua()
+    {
+        AlertSourceObservationResponse primary = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
+            "unknown");
+        AlertSourceObservationResponse fallback = Observation(
+            AlertSourceCatalog.NeptunCode, "raion", AlertSourceCatalog.KremenchukRaionId,
+            "unknown");
+        AlertSourceObservationResponse tertiary = Observation(
+            AlertSourceCatalog.AlertsInUaCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            "active", "red");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(primary), Target(fallback), Target(tertiary)), null);
+
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal("tertiary_alert_active", decision.ReasonCode);
+        Assert.Equal(tertiary, decision.Observation);
     }
 
     [Fact]
@@ -92,7 +184,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
     [InlineData("partial", null, "fresh")]
     [InlineData("active", "red", "stale")]
     [InlineData("unknown", null, "fresh")]
-    public void Non_actionable_primary_state_does_not_start_or_use_fallback(
+    public void Higher_priority_neptun_is_selected_before_tertiary_alerts_in_ua(
         string state,
         string? alertLevel,
         string freshness)
@@ -103,15 +195,15 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AlertSourceObservationResponse fallback = Observation(
             AlertSourceCatalog.NeptunCode, "raion", AlertSourceCatalog.KremenchukRaionId,
             "active");
-        AlertTargetStatus target = Target(primary, fallback, aggregateLevel: "conflict");
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(primary, aggregateLevel: "conflict"), Target(fallback)), null);
 
-        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(target), null);
-
-        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal(fallback, decision.Observation);
     }
 
     [Fact]
-    public void Fresh_primary_partial_status_blocks_neptun_fallback()
+    public void Fresh_neptun_active_takes_precedence_over_tertiary_partial_status()
     {
         AlertSourceObservationResponse primary = Observation(
             AlertSourceCatalog.AlertsInUaCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
@@ -123,7 +215,8 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary), Target(fallback)), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal(fallback, decision.Observation);
     }
 
     [Theory]
@@ -149,20 +242,21 @@ public sealed class AutomaticAlertDispatchPolicyTests
     }
 
     [Fact]
-    public void Conflicting_target_does_not_clear_an_open_episode()
+    public void Higher_priority_fresh_inactive_can_clear_despite_lower_priority_active()
     {
         AlertSourceObservationResponse primary = Observation(
-            AlertSourceCatalog.AlertsInUaCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            AlertSourceCatalog.UkraineAlarmCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
             "inactive");
         AlertSourceObservationResponse fallback = Observation(
-            AlertSourceCatalog.NeptunCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            AlertSourceCatalog.NeptunCode, "raion", AlertSourceCatalog.KremenchukRaionId,
             "active");
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(primary, fallback, aggregateLevel: "conflict")),
+            Status(Target(primary, aggregateLevel: "conflict"), Target(fallback)),
             new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId));
 
-        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal(AutomaticAlertDispatchAction.Stop, decision.Action);
+        Assert.Equal(primary, decision.Observation);
     }
 
     [Fact]
@@ -180,7 +274,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
     }
 
     [Fact]
-    public void Primary_red_alert_starts_despite_inactive_neptun_fallback()
+    public void Inactive_neptun_prevents_lower_priority_alerts_in_ua_start()
     {
         AlertSourceObservationResponse primary = Observation(
             AlertSourceCatalog.AlertsInUaCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
@@ -192,13 +286,12 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary, fallback, aggregateLevel: "conflict")), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("primary_alert_active", decision.ReasonCode);
-        Assert.Equal(primary, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.NoChange, decision.Action);
+        Assert.Null(decision.Observation);
     }
 
     [Fact]
-    public void Primary_inactive_conflict_does_not_fall_through_to_active_neptun()
+    public void Active_neptun_takes_precedence_over_lower_priority_inactive_alerts_in_ua()
     {
         AlertSourceObservationResponse primary = Observation(
             AlertSourceCatalog.AlertsInUaCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
@@ -210,7 +303,8 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary, fallback, aggregateLevel: "conflict")), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
+        Assert.Equal(fallback, decision.Observation);
     }
 
     [Fact]

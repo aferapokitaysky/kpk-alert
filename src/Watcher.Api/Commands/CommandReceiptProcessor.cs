@@ -171,8 +171,14 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         existing.CommandId == receipt.CommandId &&
         existing.Sequence == receipt.Sequence &&
         existing.State == receipt.State.ToString() &&
-        existing.OccurredAtUtc == receipt.OccurredAtUtc &&
+        HasSameStoredTimestampPrecision(existing.OccurredAtUtc, receipt.OccurredAtUtc) &&
         existing.DiagnosticCode == receipt.DiagnosticCode;
+
+    private static bool HasSameStoredTimestampPrecision(DateTimeOffset stored, DateTimeOffset received)
+    {
+        // PostgreSQL зберігає timestamptz з точністю до мікросекунд.
+        return stored.UtcDateTime.Ticks / 10 == received.UtcDateTime.Ticks / 10;
+    }
 
     private static bool CanTransition(CommandDeliveryState current, DeviceCommandState next) =>
         (current is CommandDeliveryState.Pending or CommandDeliveryState.InFlight &&

@@ -6,6 +6,8 @@ namespace Watcher.Api.AlertSources;
 
 public static class AlertSourcesServiceCollectionExtensions
 {
+    private static readonly TimeSpan UkraineAlarmConnectionLifetime = TimeSpan.FromMinutes(5);
+
     public static IServiceCollection AddAlertSources(
         this IServiceCollection services,
         IConfiguration configuration)
@@ -17,11 +19,41 @@ public static class AlertSourcesServiceCollectionExtensions
         services.AddSingleton<AlertStatusAggregator>();
         services.AddSingleton<AlertsInUaProvider>();
         services.AddSingleton<NeptunProvider>();
+        services.Configure<UkraineAlarmOptions>(configuration.GetSection("UkraineAlarm"));
+        if (configuration.GetValue<bool>("AlertSources:Neptun:Realtime:Enabled"))
+        {
+            NeptunRealtimeOptions realtimeOptions = new();
+            configuration.GetSection("AlertSources:Neptun:Realtime").Bind(realtimeOptions);
+            services.AddNeptunRealtimeMonitor(realtimeOptions);
+        }
+
+        services.TryAddSingleton<IUkraineAlarmRefreshSignal, UkraineAlarmRefreshSignal>();
+        services.AddHttpClient(AlertSourceCatalog.UkraineAlarmCode, client =>
+        {
+            client.BaseAddress = new Uri(AlertSourceCatalog.UkraineAlarmBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(5);
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = UkraineAlarmConnectionLifetime
+        });
+        services.AddSingleton(serviceProvider => new UkraineAlarmApiClient(
+            serviceProvider.GetRequiredService<IHttpClientFactory>()
+                .CreateClient(AlertSourceCatalog.UkraineAlarmCode),
+            serviceProvider.GetRequiredService<IOptions<UkraineAlarmOptions>>()));
+        services.AddSingleton<UkraineAlarmProvider>();
         services.AddSingleton<IAlertSourceProvider>(serviceProvider =>
             serviceProvider.GetRequiredService<AlertsInUaProvider>());
         services.AddSingleton<IAlertSourceProvider>(serviceProvider =>
             serviceProvider.GetRequiredService<NeptunProvider>());
+        services.AddSingleton<IAlertSourceProvider>(serviceProvider =>
+            serviceProvider.GetRequiredService<UkraineAlarmProvider>());
         services.AddSingleton<AlertSourcesStatusService>();
+        services.AddSingleton<UkraineAlarmWebhookRegistrationService>();
+        if (!string.IsNullOrWhiteSpace(configuration["UkraineAlarm:Token"]))
+        {
+            services.AddHostedService<UkraineAlarmPollingBackgroundService>();
+        }
 
         services.AddHttpClient(AlertsInUaProvider.ClientName, client =>
         {

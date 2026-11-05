@@ -23,7 +23,6 @@ namespace Watcher.Api.IntegrationTests;
 
 public sealed class DeviceCommandReceiptsEndpointTests : IClassFixture<DeviceReceiptApiFixture>
 {
-    private static readonly DateTimeOffset OccurredAtUtc = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
     private readonly DeviceReceiptApiFixture _fixture;
 
     public DeviceCommandReceiptsEndpointTests(DeviceReceiptApiFixture fixture) => _fixture = fixture;
@@ -136,7 +135,7 @@ public sealed class DeviceCommandReceiptsEndpointTests : IClassFixture<DeviceRec
         commandId,
         sequence,
         DeviceCommandState.Accepted,
-        OccurredAtUtc,
+        DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()).AddTicks(7),
         null);
 }
 
@@ -189,7 +188,7 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
             Code = $"r-{_locationId:N}",
             Name = "Тестова локація",
             IsActive = true,
-            CreatedAtUtc = OccurredAtUtc
+            CreatedAtUtc = DateTimeOffset.UtcNow
         });
         db.Devices.Add(new Device
         {
@@ -212,6 +211,7 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
 
         var commandId = Guid.NewGuid();
         var sequence = Interlocked.Increment(ref _nextSequence);
+        DateTimeOffset createdAtUtc = DateTimeOffset.UtcNow;
         using IServiceScope scope = _factory.Services.CreateScope();
         WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
         db.AlertCommands.Add(new AlertCommand
@@ -220,8 +220,8 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
             IdempotencyKey = Guid.NewGuid(),
             Action = "start",
             PresetCode = "evacuation",
-            CreatedAtUtc = OccurredAtUtc,
-            ExpiresAtUtc = OccurredAtUtc.AddMinutes(5),
+            CreatedAtUtc = createdAtUtc,
+            ExpiresAtUtc = createdAtUtc.AddMinutes(5),
             Targets =
             [
                 new CommandTarget
@@ -238,8 +238,8 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
             CommandId = commandId,
             DeviceId = _deviceId,
             State = CommandDeliveryState.Pending,
-            CreatedAtUtc = OccurredAtUtc,
-            ExpiresAtUtc = OccurredAtUtc.AddMinutes(5)
+            CreatedAtUtc = createdAtUtc,
+            ExpiresAtUtc = createdAtUtc.AddMinutes(5)
         });
         await db.SaveChangesAsync();
         return new ReceiptCommandSeed(commandId, sequence);
@@ -262,7 +262,6 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
         await dropSchema.ExecuteNonQueryAsync();
     }
 
-    private static readonly DateTimeOffset OccurredAtUtc = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
 }
 
 internal sealed record ReceiptCommandSeed(Guid CommandId, long Sequence);

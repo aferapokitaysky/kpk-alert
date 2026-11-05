@@ -74,9 +74,10 @@ public sealed class AlertStatusAggregator
 
     private static int SourcePriority(string source) => source switch
     {
-        AlertSourceCatalog.AlertsInUaCode => 0,
+        AlertSourceCatalog.UkraineAlarmCode => 0,
         AlertSourceCatalog.NeptunCode => 1,
-        _ => 2
+        AlertSourceCatalog.AlertsInUaCode => 2,
+        _ => 3
     };
 
     private static AlertSourceObservationResponse ToResponse(AlertSourceObservation item) =>

@@ -4,6 +4,10 @@ public sealed record AlertsInUaOptions(string? Token);
 
 public static class AlertSourceCatalog
 {
+    public const string UkraineAlarmCode = "ukrainealarm";
+    public const string UkraineAlarmName = "UkraineAlarm";
+    public const string UkraineAlarmAttributionUrl = "https://api.ukrainealarm.com/";
+    public const string UkraineAlarmBaseUrl = "https://api.ukrainealarm.com/";
     public const string AlertsInUaCode = "alerts.in.ua";
     public const string AlertsInUaName = "alerts.in.ua";
     public const string AlertsInUaAttributionUrl = "https://alerts.in.ua/";

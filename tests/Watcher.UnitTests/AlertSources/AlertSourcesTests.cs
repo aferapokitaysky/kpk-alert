@@ -369,7 +369,7 @@ public sealed class AlertStatusAggregatorTests
     }
 
     [Fact]
-    public void Aggregate_keeps_alerts_primary_selection_when_fallback_disagrees()
+    public void Aggregate_prefers_neptun_over_alerts_in_ua_when_both_are_fresh()
     {
         AlertSourcesStatusResponse result = _aggregator.Aggregate(Now,
         [
@@ -381,9 +381,27 @@ public sealed class AlertStatusAggregatorTests
 
         AlertTargetStatus oblast = Assert.Single(result.Targets, item => item.Scope == "oblast");
         Assert.Equal("conflict", oblast.Level);
+        Assert.Equal("inactive", oblast.AuthoritativeObservation?.Level);
+        Assert.Equal(AlertSourceCatalog.NeptunCode, oblast.AuthoritativeObservation?.Source);
+    }
+
+    [Fact]
+    public void Aggregate_prefers_ukrainealarm_over_neptun_and_alerts_in_ua()
+    {
+        AlertSourcesStatusResponse result = _aggregator.Aggregate(Now,
+        [
+            Observation(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId,
+                AlertSourceCatalog.AlertsInUaCode, AlertState.Inactive),
+            Observation(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId,
+                AlertSourceCatalog.NeptunCode, AlertState.Inactive),
+            Observation(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId,
+                AlertSourceCatalog.UkraineAlarmCode, AlertState.Active)
+        ]);
+
+        AlertTargetStatus oblast = Assert.Single(result.Targets, item => item.Scope == "oblast");
+        Assert.Equal("conflict", oblast.Level);
         Assert.Equal("active", oblast.AuthoritativeObservation?.Level);
-        Assert.Equal("red", oblast.AuthoritativeObservation?.AlertLevel);
-        Assert.Equal(AlertSourceCatalog.AlertsInUaCode, oblast.AuthoritativeObservation?.Source);
+        Assert.Equal(AlertSourceCatalog.UkraineAlarmCode, oblast.AuthoritativeObservation?.Source);
     }
 
     [Fact]
