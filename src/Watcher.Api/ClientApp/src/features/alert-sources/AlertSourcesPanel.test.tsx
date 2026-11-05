@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AlertSourcesPanel } from './AlertSourcesPanel';
 
@@ -52,8 +52,20 @@ const statusResponse = {
   ],
 };
 
+const originalHiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
+
+function setDocumentHidden(hidden: boolean) {
+  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+}
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  if (originalHiddenDescriptor) {
+    Object.defineProperty(document, 'hidden', originalHiddenDescriptor);
+  } else {
+    Reflect.deleteProperty(document, 'hidden');
+  }
   vi.unstubAllGlobals();
 });
 
@@ -156,5 +168,88 @@ describe('панель джерел тривог', () => {
     await waitFor(() => expect(screen.getByText('Поточний статус невідомий')).toBeInTheDocument());
     expect(screen.getByText(/Останній відомий статус: Тривога активна/)).toBeInTheDocument();
     expect(screen.queryByText('Тривоги немає')).not.toBeInTheDocument();
+  });
+
+  it('призупиняє опитування у прихованій вкладці та оновлює дані після повернення', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(true);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(statusResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AlertSourcesPanel />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      setDocumentHidden(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Дані: alerts.in.ua' })).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('скасовує поточний запит при приховуванні вкладки й прибирає таймер та слухач після unmount', async () => {
+    vi.useFakeTimers();
+    setDocumentHidden(false);
+    const requestSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+      const signal = init?.signal;
+      if (signal) requestSignals.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Запит скасовано', 'AbortError')),
+          { once: true },
+        );
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { unmount } = render(<AlertSourcesPanel />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setDocumentHidden(true);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(requestSignals[0]?.aborted).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setDocumentHidden(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    unmount();
+    expect(requestSignals[1]?.aborted).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

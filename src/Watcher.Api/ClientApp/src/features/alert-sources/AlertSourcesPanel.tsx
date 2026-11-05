@@ -162,12 +162,36 @@ export function AlertSourcesPanel() {
   }, []);
 
   useEffect(() => {
-    const initialRequest = window.setTimeout(() => void load(), 0);
-    const timer = window.setInterval(() => void load(), 60_000);
-    return () => {
-      window.clearTimeout(initialRequest);
-      window.clearInterval(timer);
+    let timer: number | null = null;
+
+    const pausePolling = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
       activeRequest.current?.abort();
+    };
+
+    const resumePolling = () => {
+      if (document.hidden || timer !== null) return;
+
+      void load();
+      timer = window.setInterval(() => {
+        if (!document.hidden) void load();
+      }, 60_000);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) pausePolling();
+      else resumePolling();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resumePolling();
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      pausePolling();
     };
   }, [load]);
 
