@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Watcher.Api.Security;
 
 namespace Watcher.Api.IntegrationTests;
 
@@ -59,9 +60,32 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         using HttpResponseMessage response = await _client.GetAsync("/");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(ContentSecurityPolicyExtensions.Policy,
+            response.Headers.GetValues("Content-Security-Policy").Single());
         var html = await response.Content.ReadAsStringAsync();
         Assert.Contains("lang=\"uk\"", html);
         Assert.Contains("Пульт керування", html);
+    }
+
+    [Fact]
+    public async Task Content_security_policy_is_fixed_for_csrf_api_and_ignores_forwarded_host()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/auth/csrf-token");
+        request.Headers.Add("X-Forwarded-Host", "attacker.example");
+
+        using HttpResponseMessage response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var policy = response.Headers.GetValues("Content-Security-Policy").Single();
+        Assert.Equal(ContentSecurityPolicyExtensions.Policy, policy);
+        Assert.DoesNotContain("attacker.example", policy);
+        Assert.Contains("script-src 'self'", policy);
+        Assert.Contains("style-src 'self'", policy);
+        Assert.Contains("img-src 'self' data:", policy);
+        Assert.DoesNotContain("'unsafe-inline'", policy);
+        Assert.DoesNotContain("'unsafe-eval'", policy);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.False(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("token").GetString()));
     }
 
     [Fact]

@@ -237,6 +237,7 @@ if (!string.IsNullOrWhiteSpace(connectionString))
 WebApplication app = builder.Build();
 
 app.UseForwardedHeaders();
+app.UseContentSecurityPolicy();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
