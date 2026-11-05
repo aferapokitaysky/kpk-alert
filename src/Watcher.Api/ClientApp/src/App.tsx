@@ -12,6 +12,7 @@ import {
   type Preset,
 } from './api';
 import { AuditPage } from './features/audit/AuditPage';
+import { GoogleLoginLink } from './features/auth/GoogleLoginLink';
 import { Dashboard } from './features/dashboard/Dashboard';
 import { CommandDialog } from './features/dashboard/CommandDialog';
 import {
@@ -340,6 +341,9 @@ function App() {
             </svg>
             <span className="visually-hidden">{menuOpen ? 'Закрити меню' : 'Відкрити меню'}</span>
           </button>
+          <a className="topbar-brand" href="#dashboard" aria-label="На пульт керування">
+            <img src="/images/kpk-logo.png" alt="" />
+          </a>
           <div className="breadcrumb">{activeTitle}</div>
           <div className="topbar-actions">
             <span className={`server-status status-${readiness}`} role="status" aria-live="polite">
@@ -356,9 +360,7 @@ function App() {
                 {logoutPending ? 'Завершення…' : 'Вийти'}
               </button>
             ) : (
-              <a className="login-link" href="/api/v1/auth/login">
-                Увійти через Google
-              </a>
+              <GoogleLoginLink className="login-link">Увійти через Google</GoogleLoginLink>
             )}
           </div>
         </header>
@@ -379,9 +381,9 @@ function App() {
                   адміністратором.
                 </p>
               </div>
-              <a className="button button-primary" href="/api/v1/auth/login">
+              <GoogleLoginLink className="button button-primary">
                 Увійти через Google
-              </a>
+              </GoogleLoginLink>
             </section>
           )}
           {session.status === 'error' && (

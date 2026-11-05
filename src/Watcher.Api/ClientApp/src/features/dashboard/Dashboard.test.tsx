@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionState } from '../../state';
 import { Dashboard } from './Dashboard';
@@ -53,5 +54,42 @@ describe('права на пульті', () => {
     });
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+});
+
+describe('робоча панель оператора', () => {
+  it('показує вибір корпусу перед сценаріями та передає вибір до підтвердження', async () => {
+    const user = userEvent.setup();
+    const onRun = vi.fn();
+    const location = { id: 'main', name: 'Головний корпус', code: 'main' };
+    const preset = { code: 'evacuation', name: 'Евакуація' };
+    const { container } = render(
+      <Dashboard
+        session={{
+          status: 'authenticated',
+          roles: ['notificator'],
+          capabilities: { canOperate: true, canViewAudit: false },
+        }}
+        locations={{ status: 'ready', data: [location] }}
+        presets={{ status: 'ready', data: [preset] }}
+        lastCommand={null}
+        commandLocations={[]}
+        onRefresh={vi.fn()}
+        onRun={onRun}
+      />,
+    );
+
+    const workspace = container.querySelector('.dispatch-grid');
+    expect(workspace).not.toBeNull();
+    expect(
+      within(workspace as HTMLElement)
+        .getAllByRole('heading', { level: 2 })
+        .map((heading) => heading.textContent),
+    ).toEqual(['Корпуси', 'Сценарії']);
+
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: /Евакуація/ }));
+
+    expect(onRun).toHaveBeenCalledWith(preset, ['main']);
   });
 });

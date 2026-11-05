@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { ApiError, getAuditEvents, type AuditPage as AuditPageData } from '../../api';
+import { GoogleLoginLink } from '../auth/GoogleLoginLink';
 import { pageCount, type SessionState } from '../../state';
 
 type AuditState =
@@ -37,7 +38,9 @@ function AuditStateMessage({ state, onRetry }: { state: AuditState; onRetry: () 
   if (state.status === 'unauthenticated')
     return (
       <div className="state-card state-denied">
-        Сесію завершено. <a href="/api/v1/auth/login">Увійдіть через Google</a>, щоб продовжити.
+        Сесію завершено.{' '}
+        <GoogleLoginLink className="audit-login-link">Увійдіть через Google</GoogleLoginLink>, щоб
+        продовжити.
       </div>
     );
   if (state.status === 'forbidden')

@@ -153,8 +153,9 @@ export function Dashboard({
           </p>
         </div>
         <div className="page-heading-mark" aria-hidden="true">
-          <span>К</span>
-          <i />
+          <svg viewBox="0 0 48 48">
+            <path d="M9 40V15l15-8 15 8v25M5 40h38M15 19h5m8 0h5M15 26h5m8 0h5M21 40V32h6v8" />
+          </svg>
         </div>
       </section>
 
@@ -168,7 +169,10 @@ export function Dashboard({
 
       <section className="notice" aria-label="Перед запуском">
         <span className="notice-icon" aria-hidden="true">
-          i
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5M12 8h.01" />
+          </svg>
         </span>
         <p>
           <strong>Перевірте вибрані корпуси.</strong> Сервер прийме команду в чергу, але це не
@@ -178,79 +182,89 @@ export function Dashboard({
 
       <AlertSourcesPanel />
 
-      <section className="work-section" aria-labelledby="locations-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">01 · ЦІЛЬ</p>
-            <h2 id="locations-title">Корпуси</h2>
+      <div className="dispatch-grid">
+        <section className="work-section target-panel" aria-labelledby="locations-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">
+                <span className="step-number">01</span> · ЦІЛЬ
+              </p>
+              <h2 id="locations-title">Корпуси</h2>
+            </div>
+            {locations.status === 'ready' && (
+              <span className="selection-count">Обрано: {selectedLocations.length}</span>
+            )}
           </div>
-          {locations.status === 'ready' && (
-            <span className="selection-count">Обрано: {selectedLocations.length}</span>
-          )}
-        </div>
-        <LocationChoices
-          state={locations}
-          selected={selectedLocationIds}
-          onChange={setSelectedLocationIds}
-          onRefresh={onRefresh}
-        />
-      </section>
+          <LocationChoices
+            state={locations}
+            selected={selectedLocationIds}
+            onChange={setSelectedLocationIds}
+            onRefresh={onRefresh}
+          />
+        </section>
 
-      <section className="work-section" aria-labelledby="presets-title">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">02 · ДІЯ</p>
-            <h2 id="presets-title">Швидкий запуск</h2>
+        <section className="work-section action-panel" aria-labelledby="presets-title">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">
+                <span className="step-number">02</span> · ДІЯ
+              </p>
+              <h2 id="presets-title">Сценарії</h2>
+            </div>
+            <button
+              className="text-button"
+              type="button"
+              onClick={onRefresh}
+              disabled={session.status === 'loading'}
+            >
+              Оновити дані
+            </button>
           </div>
-          <button
-            className="text-button"
-            type="button"
-            onClick={onRefresh}
-            disabled={session.status === 'loading'}
-          >
-            Оновити дані
-          </button>
-        </div>
-        {canOperate &&
-          locations.status === 'ready' &&
-          selectedLocations.length === 0 &&
-          presets.status === 'ready' && (
-            <p className="selection-hint">Оберіть хоча б один корпус, щоб продовжити.</p>
+          {canOperate &&
+            locations.status === 'ready' &&
+            selectedLocations.length === 0 &&
+            presets.status === 'ready' && (
+              <p className="selection-hint">Оберіть хоча б один корпус, щоб продовжити.</p>
+            )}
+          <PresetState state={presets} onRefresh={onRefresh} />
+          {presets.status === 'ready' && (
+            <div className="preset-grid">
+              {presets.data.map((preset, index) => (
+                <button
+                  className="preset-card"
+                  key={preset.code}
+                  type="button"
+                  disabled={!canChooseScenario}
+                  onClick={() =>
+                    onRun(
+                      preset,
+                      selectedLocations.map((location) => location.id),
+                    )
+                  }
+                >
+                  <span className="preset-index">{String(index + 1).padStart(2, '0')}</span>
+                  <span className="preset-copy">
+                    <strong>{preset.name}</strong>
+                    <small>Перевірте корпуси перед підтвердженням</small>
+                  </span>
+                  <span className="preset-arrow" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M5 12h14M13 6l6 6-6 6" />
+                    </svg>
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
-        <PresetState state={presets} onRefresh={onRefresh} />
-        {presets.status === 'ready' && (
-          <div className="preset-grid">
-            {presets.data.map((preset, index) => (
-              <button
-                className="preset-card"
-                key={preset.code}
-                type="button"
-                disabled={!canChooseScenario}
-                onClick={() =>
-                  onRun(
-                    preset,
-                    selectedLocations.map((location) => location.id),
-                  )
-                }
-              >
-                <span className="preset-index">{String(index + 1).padStart(2, '0')}</span>
-                <span className="preset-copy">
-                  <strong>{preset.name}</strong>
-                  <small>Опублікований сценарій</small>
-                </span>
-                <span className="preset-arrow" aria-hidden="true">
-                  →
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+        </section>
+      </div>
 
       {lastCommand && (
         <section className="command-result" aria-labelledby="result-title" role="status">
           <span className="result-mark" aria-hidden="true">
-            ✓
+            <svg viewBox="0 0 24 24">
+              <path d="m5 12 4 4L19 6" />
+            </svg>
           </span>
           <div>
             <p className="eyebrow">КОМАНДА ЗБЕРЕЖЕНА</p>
@@ -274,7 +288,10 @@ export function Dashboard({
         </div>
         <div className="unknown-state">
           <span className="unknown-mark" aria-hidden="true">
-            ?
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.5 9a2.5 2.5 0 1 1 4.5 1.5c-1.2 1.2-2 1.5-2 3M12 17h.01" />
+            </svg>
           </span>
           <div>
             <strong>Стан вузлів невідомий</strong>
