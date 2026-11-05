@@ -1,0 +1,76 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Watcher.Domain.Entities;
+using Watcher.Infrastructure.Persistence;
+
+namespace Watcher.Api.Controllers;
+
+[ApiController]
+[Authorize]
+[Route("api/v1/alert-commands/{commandId:guid}/deliveries")]
+public sealed class CommandDeliveriesController(WatcherDbContext db) : ControllerBase
+{
+    private const int DefaultPageSize = 50;
+    private const int MaximumPageSize = 100;
+
+    [HttpGet]
+    public async Task<IActionResult> List(
+        Guid commandId,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = DefaultPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        Response.Headers.CacheControl = "no-store";
+
+        AlertCommand? command = await db.AlertCommands.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == commandId, cancellationToken);
+        if (command is null)
+        {
+            return NotFound();
+        }
+
+        if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId) ||
+            (command.InitiatedByUserId != userId && !User.IsInRole("admin") && !User.IsInRole("auditor")))
+        {
+            return Forbid();
+        }
+
+        if (page < 1 || pageSize is < 1 or > MaximumPageSize)
+        {
+            return Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "Перевірте номер сторінки та її розмір.");
+        }
+
+        var offset = ((long)page - 1) * pageSize;
+        if (offset > int.MaxValue)
+        {
+            return Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "Запитана сторінка виходить за межі списку доставок.");
+        }
+
+        IQueryable<CommandDelivery> deliveriesQuery = db.CommandDeliveries.AsNoTracking()
+            .Where(delivery => delivery.CommandId == commandId);
+        var totalCount = await deliveriesQuery.CountAsync(cancellationToken);
+        var items = await (
+            from delivery in deliveriesQuery
+            join device in db.Devices.AsNoTracking() on delivery.DeviceId equals device.Id
+            orderby delivery.DeviceId
+            select new
+            {
+                DeviceId = device.Id,
+                DeviceName = device.Name,
+                State = delivery.State.ToString(),
+                delivery.CreatedAtUtc,
+                delivery.ExpiresAtUtc,
+                delivery.LastAttemptAtUtc,
+                delivery.AttemptCount
+            })
+            .Skip((int)offset)
+            .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { items, page, pageSize, totalCount });
+    }
+}
