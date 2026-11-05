@@ -3,7 +3,10 @@
 .env.*
 !.env.example
 *.pfx
+*.p12
 *.pem
+*.crt
+*.cer
 *.key
 
 # .NET

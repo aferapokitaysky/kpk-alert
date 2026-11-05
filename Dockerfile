@@ -24,6 +24,7 @@ RUN mkdir -p /var/lib/kgta-alert/data-protection-keys \
     && chown -R $APP_UID:$APP_UID /var/lib/kgta-alert \
     && chmod 700 /var/lib/kgta-alert/data-protection-keys
 EXPOSE 8080
+EXPOSE 8443
 COPY --from=build /app/publish .
 USER $APP_UID
 ENTRYPOINT ["dotnet", "Watcher.Api.dll"]

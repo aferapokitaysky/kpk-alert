@@ -56,6 +56,27 @@ if (builder.Environment.IsProduction())
 {
     dataProtection.ProtectKeysWithCertificate(dataProtectionCertificate!);
 }
+
+DeviceListenerCertificates? deviceListenerCertificates = DeviceListenerConfiguration.ValidateAndLoad(
+    builder.Configuration, builder.Environment);
+X509Certificate2? deviceClientCaCertificate = deviceListenerCertificates?.ClientCaCertificate;
+if (deviceListenerCertificates is not null)
+{
+    builder.Services.AddSingleton(deviceListenerCertificates);
+    X509Certificate2 trustedRoot = deviceListenerCertificates.ClientCaCertificate;
+    var httpPort = builder.Configuration.GetValue<int>("DeviceListener:HttpPort");
+    var devicePort = builder.Configuration.GetValue<int>("DeviceListener:Port");
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        options.ListenAnyIP(httpPort);
+        options.ListenAnyIP(devicePort, listenOptions => listenOptions.UseHttps(httpsOptions =>
+            DeviceClientCertificateTrust.ConfigureHttps(
+                httpsOptions, deviceListenerCertificates.ServerCertificate, trustedRoot)));
+    });
+}
+
+builder.Services.AddDeviceCertificateAuthentication(deviceClientCaCertificate);
+
 builder.Services.AddAntiforgery(options =>
 {
     options.HeaderName = "X-CSRF-TOKEN";
@@ -204,6 +225,7 @@ var connectionString = builder.Configuration.GetConnectionString("Watcher");
 if (!string.IsNullOrWhiteSpace(connectionString))
 {
     builder.Services.AddDbContext<WatcherDbContext>(options => options.UseNpgsql(connectionString));
+    builder.Services.AddScoped<DeviceCertificateAuthenticator>();
     builder.Services.AddScoped<ILocationCommandSequenceAllocator, PostgresLocationCommandSequenceAllocator>();
     builder.Services.AddMinuteOfSilenceScheduler();
 }

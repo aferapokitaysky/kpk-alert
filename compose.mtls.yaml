@@ -1,0 +1,15 @@
+services:
+  watcher:
+    environment:
+      DeviceListener__Enabled: 'true'
+      DeviceListener__HttpPort: '8080'
+      DeviceListener__Port: '8443'
+      DeviceListener__ClientCaCertificatePath: /run/secrets/device-ca.crt
+      DeviceListener__ServerCertificatePath: /run/secrets/device-server.pfx
+      DeviceListener__ServerCertificatePasswordFile: /run/secrets/device-server-password
+    ports:
+      - '${DEVICE_MTLS_BIND_ADDRESS:-127.0.0.1}:8443:8443'
+    volumes:
+      - ${DEVICE_SERVER_CERTIFICATE_FILE:?Set DEVICE_SERVER_CERTIFICATE_FILE}:/run/secrets/device-server.pfx:ro
+      - ${DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE:?Set DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE}:/run/secrets/device-server-password:ro
+      - ${DEVICE_CLIENT_CA_CERTIFICATE_FILE:?Set DEVICE_CLIENT_CA_CERTIFICATE_FILE}:/run/secrets/device-ca.crt:ro

@@ -61,6 +61,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Перевірити синтаксис Compose
         run: docker compose --env-file .env.example config --quiet
+      - name: Перевірити Compose із mTLS listener
+        env:
+          DEVICE_SERVER_CERTIFICATE_FILE: /tmp/device-server.pfx
+          DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE: /tmp/device-server-password
+          DEVICE_CLIENT_CA_CERTIFICATE_FILE: /tmp/device-ca.crt
+        run: docker compose --env-file .env.example -f compose.yaml -f compose.mtls.yaml config --quiet
 
   documentation:
     name: Перевірка посилань у документації

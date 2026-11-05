@@ -1,11 +1,16 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Certificate;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -15,6 +20,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -64,6 +70,107 @@ public sealed class AuthEndpointTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, invalidIdentityResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Device_identity_rejects_a_cookie_authenticated_user_without_a_client_certificate()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/device/identity");
+        request.Headers.Add("X-Test-User-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("X-Test-Role", "admin");
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Device_identity_returns_server_registered_identity_for_a_trusted_certificate()
+    {
+        using TestCertificateAuthority authority = new();
+        using X509Certificate2 certificate = authority.IssueClientCertificate("registered-device");
+        Assert.True(DeviceClientCertificateTrust.IsTrusted(
+            certificate, authority.Root, X509RevocationMode.NoCheck));
+        using WebApplicationFactory<Program> factory = CreateDeviceCertificateFactory(certificate, authority.Root);
+        var deviceId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        await SeedDeviceAsync(factory, deviceId, locationId, certificate);
+        using HttpClient client = CreateSecureClient(factory);
+
+        using HttpResponseMessage response = await client.GetAsync("/api/v1/device/identity");
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(deviceId, body.RootElement.GetProperty("deviceId").GetGuid());
+        Assert.Equal(locationId, body.RootElement.GetProperty("locationId").GetGuid());
+    }
+
+    [Fact]
+    public async Task Device_identity_rejects_a_trusted_but_unregistered_certificate()
+    {
+        using TestCertificateAuthority authority = new();
+        using X509Certificate2 certificate = authority.IssueClientCertificate("unknown-device");
+        using WebApplicationFactory<Program> factory = CreateDeviceCertificateFactory(certificate, authority.Root);
+        using HttpClient client = CreateSecureClient(factory);
+
+        using HttpResponseMessage response = await client.GetAsync("/api/v1/device/identity");
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Device_identity_rejects_a_certificate_from_an_untrusted_authority()
+    {
+        using TestCertificateAuthority trustedAuthority = new();
+        using TestCertificateAuthority untrustedAuthority = new();
+        using X509Certificate2 certificate = untrustedAuthority.IssueClientCertificate("untrusted-device");
+        Assert.False(DeviceClientCertificateTrust.IsTrusted(
+            certificate, trustedAuthority.Root, X509RevocationMode.NoCheck));
+        using WebApplicationFactory<Program> factory =
+            CreateDeviceCertificateFactory(certificate, trustedAuthority.Root);
+        using HttpClient client = CreateSecureClient(factory);
+
+        using HttpResponseMessage response = await client.GetAsync("/api/v1/device/identity");
+
+        Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    private static WebApplicationFactory<Program> CreateDeviceCertificateFactory(
+        X509Certificate2 certificate,
+        X509Certificate2 trustedRoot) =>
+        new AuthTestWebApplicationFactory(
+            googleEnabled: false,
+            useInMemoryDatabase: true,
+            clientCertificate: certificate,
+            trustedRoot: trustedRoot);
+
+    private static async Task SeedDeviceAsync(
+        WebApplicationFactory<Program> factory,
+        Guid deviceId,
+        Guid locationId,
+        X509Certificate2 certificate)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        db.Locations.Add(new Location
+        {
+            Id = locationId,
+            Code = $"device-test-{locationId:N}",
+            Name = "Тестовий корпус",
+            IsActive = true,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        });
+        db.Devices.Add(new Device
+        {
+            Id = deviceId,
+            LocationId = locationId,
+            Name = "Тестовий вузол",
+            CertificateThumbprint = Convert.ToHexString(SHA256.HashData(certificate.RawData))
+        });
+        await db.SaveChangesAsync();
     }
 
     [Fact]
@@ -446,15 +553,21 @@ internal sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Prog
     private readonly bool _googleCredentialsConfigured;
     private readonly bool _useInMemoryDatabase;
     private readonly string _inMemoryDatabaseName = Guid.NewGuid().ToString();
+    private readonly X509Certificate2? _clientCertificate;
+    private readonly X509Certificate2? _trustedRoot;
 
     public AuthTestWebApplicationFactory(
         bool googleEnabled,
         bool googleCredentialsConfigured = true,
-        bool useInMemoryDatabase = false)
+        bool useInMemoryDatabase = false,
+        X509Certificate2? clientCertificate = null,
+        X509Certificate2? trustedRoot = null)
     {
         _googleEnabled = googleEnabled;
         _googleCredentialsConfigured = googleCredentialsConfigured;
         _useInMemoryDatabase = useInMemoryDatabase;
+        _clientCertificate = clientCertificate;
+        _trustedRoot = trustedRoot;
     }
 
     protected override IHost CreateHost(IHostBuilder builder)
@@ -500,6 +613,83 @@ internal sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Prog
                 services.AddDbContext<WatcherDbContext>(options =>
                     options.UseInMemoryDatabase(_inMemoryDatabaseName));
             }
+
+            if (_clientCertificate is not null && _trustedRoot is not null)
+            {
+                services.AddScoped<Watcher.Api.Security.DeviceCertificateAuthenticator>();
+                services.AddSingleton<IStartupFilter>(new ClientCertificateStartupFilter(_clientCertificate));
+                services.PostConfigure<CertificateAuthenticationOptions>(
+                    Watcher.Api.Security.DeviceCertificateAuthentication.Scheme,
+                    options =>
+                    {
+                        options.ChainTrustValidationMode = X509ChainTrustMode.CustomRootTrust;
+                        options.RevocationMode = X509RevocationMode.NoCheck;
+                        options.CustomTrustStore.Add(_trustedRoot);
+                    });
+            }
         });
     }
+}
+
+internal sealed class TestCertificateAuthority : IDisposable
+{
+    private readonly RSA _rootKey = RSA.Create(2048);
+
+    public TestCertificateAuthority()
+    {
+        var request = new CertificateRequest(
+            "CN=KGTA Integration Test CA",
+            _rootKey,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        Root = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+    }
+
+    public X509Certificate2 Root { get; }
+
+    public X509Certificate2 IssueClientCertificate(string commonName)
+    {
+        using var clientKey = RSA.Create(2048);
+        var request = new CertificateRequest(
+            $"CN={commonName}", clientKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        var enhancedKeyUsage = new OidCollection { new("1.3.6.1.5.5.7.3.2") };
+        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(enhancedKeyUsage, true));
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        var serialNumber = RandomNumberGenerator.GetBytes(16);
+        using X509Certificate2 issued = request.Create(
+            Root,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(7),
+            serialNumber);
+        return issued.CopyWithPrivateKey(clientKey);
+    }
+
+    public void Dispose() => Root.Dispose();
+}
+
+internal sealed class ClientCertificateStartupFilter(X509Certificate2 certificate) : IStartupFilter
+{
+    public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+    {
+        app.Use(async (context, nextRequest) =>
+        {
+            context.Features.Set<ITlsConnectionFeature>(new TestTlsConnectionFeature(certificate));
+            await nextRequest();
+        });
+        next(app);
+    };
+}
+
+internal sealed class TestTlsConnectionFeature(X509Certificate2 certificate) : ITlsConnectionFeature
+{
+    public X509Certificate2? ClientCertificate { get; set; } = certificate;
+
+    public Task<X509Certificate2?> GetClientCertificateAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(ClientCertificate);
 }
