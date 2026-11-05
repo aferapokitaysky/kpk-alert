@@ -19,6 +19,8 @@ public sealed class AuthController(IConfiguration configuration) : ControllerBas
     [HttpGet("csrf-token")]
     public IActionResult CsrfToken([FromServices] IAntiforgery antiforgery)
     {
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.Pragma = "no-cache";
         AntiforgeryTokenSet tokens = antiforgery.GetAndStoreTokens(HttpContext);
         return Ok(new { token = tokens.RequestToken });
     }
