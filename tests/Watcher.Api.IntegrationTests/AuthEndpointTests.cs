@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Hosting;
@@ -20,6 +21,45 @@ namespace Watcher.Api.IntegrationTests;
 
 public sealed class AuthEndpointTests
 {
+    [Fact]
+    public async Task Session_returns_only_allowlisted_roles_for_an_authenticated_user()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/auth/session");
+        request.Headers.Add("X-Test-User-Id", Guid.NewGuid().ToString());
+        request.Headers.Add("X-Test-Role", ["notificator", "auditor", "sound_engineer", "admin", "internal_role"]);
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.True(body.RootElement.GetProperty("authenticated").GetBoolean());
+        Assert.Equal(new[] { "admin", "auditor", "notificator", "sound_engineer" },
+            body.RootElement.GetProperty("roles").EnumerateArray().Select(role => role.GetString()));
+        Assert.Equal(new[] { "authenticated", "roles" },
+            body.RootElement.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Session_requires_authentication_and_a_valid_local_user_id()
+    {
+        using WebApplicationFactory<Program> factory = new AuthTestWebApplicationFactory(
+            googleEnabled: false, useInMemoryDatabase: true);
+        using HttpClient client = CreateSecureClient(factory);
+        using HttpResponseMessage anonymous = await client.GetAsync("/api/v1/auth/session");
+        using HttpRequestMessage invalidIdentity = new(HttpMethod.Get, "/api/v1/auth/session");
+        invalidIdentity.Headers.Add("X-Test-User-Id", "not-a-user-id");
+        invalidIdentity.Headers.Add("X-Test-Role", "admin");
+
+        using HttpResponseMessage invalidIdentityResponse = await client.SendAsync(invalidIdentity);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, invalidIdentityResponse.StatusCode);
+    }
+
     [Fact]
     public async Task Logout_requires_an_authenticated_user()
     {

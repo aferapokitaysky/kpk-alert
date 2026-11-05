@@ -18,7 +18,7 @@
 | `GET` | `/api/v1/alert-commands/{id}` | `auditor` | Перегляд стану доставки |
 | `GET` | `/api/v1/audit-events` | `auditor` | Перегляд журналу дій |
 
-Маршрути входу: `GET /api/v1/auth/login` (перехід до Google OAuth), `GET /api/v1/auth/csrf-token` (видача парного request token і cookie) і `POST /api/v1/auth/logout` (завершення локальної сесії). Для logout та створення команди браузер передає request token у заголовку `X-CSRF-TOKEN`; cookie `__Host-KgtaAlert.AntiForgery` має прапорці Secure, HttpOnly і SameSite=Strict. Google OAuth увімкнений лише за наявності `Authentication:Google:Enabled`, Client ID та Client Secret. Увійти можуть лише активні користувачі, яких адміністратор попередньо зареєстрував у базі за зовнішнім Google subject.
+Маршрути входу: `GET /api/v1/auth/login` (перехід до Google OAuth), `GET /api/v1/auth/csrf-token` (видача парного request token і cookie), `GET /api/v1/auth/session` (поточний стан сесії та дозволені для UI ролі) і `POST /api/v1/auth/logout` (завершення локальної сесії). Session endpoint повертає лише `authenticated` і allowlist ролей; він не розкриває email, Google subject чи токени. Для logout та створення команди браузер передає request token у заголовку `X-CSRF-TOKEN`; cookie `__Host-KgtaAlert.AntiForgery` має прапорці Secure, HttpOnly і SameSite=Strict. Google OAuth увімкнений лише за наявності `Authentication:Google:Enabled`, Client ID та Client Secret. Увійти можуть лише активні користувачі, яких адміністратор попередньо зареєстрував у базі за зовнішнім Google subject.
 
 `GET /api/v1/locations` повертає лише активні корпуси, доступні ролі користувача. Глобальний адміністратор або оператор бачить усі активні корпуси; локальне призначення ролі відкриває лише закріплені корпуси.
 
