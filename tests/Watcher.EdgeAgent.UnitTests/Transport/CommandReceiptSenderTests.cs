@@ -63,12 +63,13 @@ public sealed class CommandReceiptSenderTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest)]
-    [InlineData(HttpStatusCode.Unauthorized)]
-    [InlineData(HttpStatusCode.Forbidden)]
-    [InlineData(HttpStatusCode.NotFound)]
-    [InlineData(HttpStatusCode.Conflict)]
-    public async Task SendOnceAsync_PermanentStatusIsNotRetried(HttpStatusCode status)
+    [InlineData(HttpStatusCode.BadRequest, "receipt_contract_rejected")]
+    [InlineData(HttpStatusCode.Unauthorized, "device_certificate_rejected")]
+    [InlineData(HttpStatusCode.Forbidden, "device_certificate_rejected")]
+    [InlineData(HttpStatusCode.NotFound, "receipt_device_or_command_unknown")]
+    [InlineData(HttpStatusCode.Conflict, "receipt_state_conflict")]
+    [InlineData(HttpStatusCode.UnprocessableEntity, "receipt_request_rejected")]
+    public async Task SendOnceAsync_PermanentStatusIsNotRetried(HttpStatusCode status, string diagnosticCode)
     {
         using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(status)));
         CommandReceiptSender sender = CreateSender(client);
@@ -76,6 +77,8 @@ public sealed class CommandReceiptSenderTests
         ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
 
         Assert.Equal(ReceiptSendDisposition.PermanentFailure, result.Disposition);
+        Assert.Equal(diagnosticCode, result.DiagnosticCode);
+        Assert.Null(result.RetryAfter);
     }
 
     [Fact]
@@ -92,6 +95,74 @@ public sealed class CommandReceiptSenderTests
         ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
 
         Assert.Equal(TimeSpan.FromSeconds(17), result.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendOnceAsync_PreservesRetryAfterHttpDate()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T18:00:00Z");
+        using HttpClient client = new(new StubHandler(_ =>
+        {
+            HttpResponseMessage response = new(HttpStatusCode.ServiceUnavailable);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(
+                now.AddSeconds(17));
+            return response;
+        }));
+        CommandReceiptSender sender = CreateSender(client, new FixedClock(now));
+
+        ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
+
+        Assert.Equal(ReceiptSendDisposition.Retry, result.Disposition);
+        Assert.Equal("receipt_transport_retry", result.DiagnosticCode);
+        Assert.Equal(TimeSpan.FromSeconds(17), result.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendOnceAsync_NetworkFailureIsRetryable()
+    {
+        using HttpClient client = new(new StubHandler(
+            (Func<HttpRequestMessage, HttpResponseMessage>)(_ =>
+                throw new HttpRequestException("connection refused"))));
+        CommandReceiptSender sender = CreateSender(client);
+
+        ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
+
+        Assert.Equal(ReceiptSendDisposition.Retry, result.Disposition);
+        Assert.Equal("receipt_transport_unavailable", result.DiagnosticCode);
+        Assert.Null(result.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SendOnceAsync_CallerCancellationPropagates()
+    {
+        TaskCompletionSource requestStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using HttpClient client = new(new StubHandler(async (_, cancellationToken) =>
+        {
+            requestStarted.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.Accepted);
+        }));
+        CommandReceiptSender sender = CreateSender(client);
+        using CancellationTokenSource cancellation = new();
+
+        Task<ReceiptSendResult> pending = sender.SendOnceAsync(CreateReceipt(), cancellation.Token);
+        await requestStarted.Task;
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+    }
+
+    [Fact]
+    public void GetRetryDelay_UsesAndCapsServerRetryAfter()
+    {
+        TimeSpan delay = CommandReceiptSender.GetRetryDelay(
+            attempt: 10,
+            initial: TimeSpan.FromSeconds(1),
+            maximum: TimeSpan.FromSeconds(30),
+            retryAfter: TimeSpan.FromSeconds(45),
+            jitterFactor: 0.75);
+
+        Assert.Equal(TimeSpan.FromSeconds(30), delay);
     }
 
     [Fact]
@@ -116,7 +187,7 @@ public sealed class CommandReceiptSenderTests
         Assert.Equal(receipt.OccurredAtUtc, sent.RootElement.GetProperty("occurredAtUtc").GetDateTimeOffset());
     }
 
-    private static CommandReceiptSender CreateSender(HttpClient client)
+    private static CommandReceiptSender CreateSender(HttpClient client, IEdgeAgentClock? clock = null)
     {
         client.BaseAddress = new Uri("https://watcher.example.test");
         return new CommandReceiptSender(
@@ -131,7 +202,7 @@ public sealed class CommandReceiptSenderTests
         },
         new StubStore(),
         client,
-        new FixedClock());
+        clock ?? new FixedClock());
     }
 
     private static PendingCommandReceipt CreateReceipt() => new(
@@ -140,13 +211,21 @@ public sealed class CommandReceiptSenderTests
         DateTimeOffset.Parse("2026-11-05T18:00:00Z"), null, 0,
         DateTimeOffset.Parse("2026-11-05T18:00:00Z"));
 
-    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
+    private sealed class StubHandler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(handler(request));
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;
+
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+            : this((request, _) => Task.FromResult(handler(request))) { }
 
         public StubHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
-            : this(request => handler(request).GetAwaiter().GetResult()) { }
+            : this((request, _) => handler(request)) { }
+
+        public StubHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) =>
+            _handler = handler;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            _handler(request, cancellationToken);
     }
 
     private sealed class StubStore : IEdgeAgentStore
@@ -166,9 +245,9 @@ public sealed class CommandReceiptSenderTests
         public Task ScheduleReceiptRetryAsync(Guid eventId, DateTimeOffset nextAttemptAtUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 
-    private sealed class FixedClock : IEdgeAgentClock
+    private sealed class FixedClock(DateTimeOffset? now = null) : IEdgeAgentClock
     {
-        public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+        public DateTimeOffset UtcNow { get; } = now ?? DateTimeOffset.UtcNow;
         public long GetTimestamp() => 0;
         public TimeSpan GetElapsedTime(long startingTimestamp) => TimeSpan.Zero;
     }
