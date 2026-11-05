@@ -72,6 +72,17 @@ namespace Watcher.Infrastructure.Persistence.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.Sql("""
+                DO $migration$
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM user_roles WHERE "LocationId" IS NULL) THEN
+                        RAISE EXCEPTION 'Відкат неможливий, поки існують глобальні призначення ролей. Збережіть поточну схему або відновіть резервну копію.'
+                            USING ERRCODE = '55000';
+                    END IF;
+                END
+                $migration$;
+                """);
+
             migrationBuilder.DropForeignKey(
                 name: "FK_user_roles_locations_LocationId",
                 table: "user_roles");
@@ -101,7 +112,6 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                 table: "user_roles",
                 type: "uuid",
                 nullable: false,
-                defaultValue: new Guid("00000000-0000-0000-0000-000000000000"),
                 oldClrType: typeof(Guid),
                 oldType: "uuid",
                 oldNullable: true);
