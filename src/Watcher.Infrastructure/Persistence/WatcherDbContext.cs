@@ -20,6 +20,8 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<MinuteOfSilenceOccurrence> MinuteOfSilenceOccurrences => Set<MinuteOfSilenceOccurrence>();
     public DbSet<CommandDelivery> CommandDeliveries => Set<CommandDelivery>();
     public DbSet<DeviceCommandReceipt> DeviceCommandReceipts => Set<DeviceCommandReceipt>();
+    public DbSet<UkraineAlarmWebhookOperation> UkraineAlarmWebhookOperations => Set<UkraineAlarmWebhookOperation>();
+    public DbSet<ExternalIntegrationState> ExternalIntegrationStates => Set<ExternalIntegrationState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -197,6 +199,47 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.CommandId, x.DeviceId, x.ReceivedAtUtc });
+        });
+
+        modelBuilder.Entity<UkraineAlarmWebhookOperation>(entity =>
+        {
+            entity.ToTable("ukrainealarm_webhook_operations", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_ukrainealarm_webhook_operations_action",
+                    "\"Action\" IN ('register', 'update')");
+                table.HasCheckConstraint(
+                    "CK_ukrainealarm_webhook_operations_state",
+                    "\"State\" IN ('Pending', 'Running', 'Succeeded', 'Rejected', 'Unknown', 'Resolved')");
+            });
+            entity.HasKey(item => item.Id);
+            entity.HasIndex(item => item.IdempotencyKey).IsUnique();
+            entity.HasIndex(item => new { item.ActorUserId, item.CreatedAtUtc });
+            entity.HasIndex(item => item.IntegrationCode)
+                .IsUnique()
+                .HasFilter("\"State\" IN ('Pending', 'Running', 'Unknown')");
+            entity.Property(item => item.IntegrationCode)
+                .HasDefaultValue(UkraineAlarmWebhookOperation.DefaultIntegrationCode)
+                .HasMaxLength(80)
+                .IsRequired();
+            entity.Property(item => item.Action).HasMaxLength(20).IsRequired();
+            entity.Property(item => item.State).HasMaxLength(20).IsRequired();
+            entity.Property(item => item.CallbackUrl).HasMaxLength(2048).IsRequired();
+            entity.Property(item => item.OutcomeCode).HasMaxLength(80);
+            entity.HasOne<UserAccount>().WithMany().HasForeignKey(item => item.ActorUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<ExternalIntegrationState>().WithMany()
+                .HasForeignKey(item => item.IntegrationCode)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<ExternalIntegrationState>(entity =>
+        {
+            entity.ToTable("external_integration_states", table => table.HasCheckConstraint(
+                "CK_external_integration_states_integration_code",
+                "\"IntegrationCode\" = 'ukrainealarm_webhook'"));
+            entity.HasKey(item => item.IntegrationCode);
+            entity.Property(item => item.IntegrationCode).HasMaxLength(80).IsRequired();
         });
     }
 }

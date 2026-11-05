@@ -3,14 +3,22 @@ using Microsoft.Extensions.Options;
 namespace Watcher.Api.AlertSources;
 
 public sealed class UkraineAlarmWebhookRegistrationService(
-    UkraineAlarmApiClient client,
+    IUkraineAlarmWebhookRegistrar client,
     IOptions<UkraineAlarmOptions> options)
 {
+    public Uri GetCallbackUrl() => CreateCallbackUrl(options.Value);
+
     public Task RegisterAsync(CancellationToken cancellationToken) =>
-        client.RegisterWebhookAsync(CreateCallbackUrl(options.Value), cancellationToken);
+        RegisterAsync(GetCallbackUrl(), cancellationToken);
+
+    public Task RegisterAsync(Uri callbackUrl, CancellationToken cancellationToken) =>
+        client.RegisterWebhookAsync(callbackUrl, cancellationToken);
 
     public Task UpdateAsync(CancellationToken cancellationToken) =>
-        client.UpdateWebhookAsync(CreateCallbackUrl(options.Value), cancellationToken);
+        UpdateAsync(GetCallbackUrl(), cancellationToken);
+
+    public Task UpdateAsync(Uri callbackUrl, CancellationToken cancellationToken) =>
+        client.UpdateWebhookAsync(callbackUrl, cancellationToken);
 
     private static Uri CreateCallbackUrl(UkraineAlarmOptions settings)
     {

@@ -41,6 +41,8 @@ public static class AlertSourcesServiceCollectionExtensions
             serviceProvider.GetRequiredService<IHttpClientFactory>()
                 .CreateClient(AlertSourceCatalog.UkraineAlarmCode),
             serviceProvider.GetRequiredService<IOptions<UkraineAlarmOptions>>()));
+        services.AddSingleton<IUkraineAlarmWebhookRegistrar>(serviceProvider =>
+            serviceProvider.GetRequiredService<UkraineAlarmApiClient>());
         services.AddSingleton<UkraineAlarmProvider>();
         services.AddSingleton<IAlertSourceProvider>(serviceProvider =>
             serviceProvider.GetRequiredService<AlertsInUaProvider>());

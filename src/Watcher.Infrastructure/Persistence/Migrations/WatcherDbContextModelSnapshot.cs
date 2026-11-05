@@ -288,6 +288,26 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.ToTable("device_sessions", (string)null);
                 });
 
+            modelBuilder.Entity("Watcher.Domain.Entities.ExternalIntegrationState", b =>
+                {
+                    b.Property<string>("IntegrationCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<bool?>("IsRegistered")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("IntegrationCode");
+
+                    b.ToTable("external_integration_states", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_external_integration_states_integration_code", "\"IntegrationCode\" = 'ukrainealarm_webhook'");
+                        });
+                });
+
             modelBuilder.Entity("Watcher.Domain.Entities.Location", b =>
                 {
                     b.Property<Guid>("Id")
@@ -459,6 +479,69 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.ToTable("sound_presets", (string)null);
                 });
 
+            modelBuilder.Entity("Watcher.Domain.Entities.UkraineAlarmWebhookOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CallbackUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("IdempotencyKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("IntegrationCode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasDefaultValue("ukrainealarm_webhook");
+
+                    b.Property<string>("OutcomeCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("IntegrationCode")
+                        .IsUnique()
+                        .HasFilter("\"State\" IN ('Pending', 'Running', 'Unknown')");
+
+                    b.HasIndex("ActorUserId", "CreatedAtUtc");
+
+                    b.ToTable("ukrainealarm_webhook_operations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ukrainealarm_webhook_operations_action", "\"Action\" IN ('register', 'update')");
+
+                            t.HasCheckConstraint("CK_ukrainealarm_webhook_operations_state", "\"State\" IN ('Pending', 'Running', 'Succeeded', 'Rejected', 'Unknown', 'Resolved')");
+                        });
+                });
+
             modelBuilder.Entity("Watcher.Domain.Entities.UserAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -604,6 +687,21 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("CommandId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Watcher.Domain.Entities.UkraineAlarmWebhookOperation", b =>
+                {
+                    b.HasOne("Watcher.Domain.Entities.UserAccount", null)
+                        .WithMany()
+                        .HasForeignKey("ActorUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Watcher.Domain.Entities.ExternalIntegrationState", null)
+                        .WithMany()
+                        .HasForeignKey("IntegrationCode")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

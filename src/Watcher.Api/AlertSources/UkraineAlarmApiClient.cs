@@ -6,7 +6,13 @@ using Microsoft.Extensions.Options;
 
 namespace Watcher.Api.AlertSources;
 
-public sealed class UkraineAlarmApiClient
+public interface IUkraineAlarmWebhookRegistrar
+{
+    Task RegisterWebhookAsync(Uri webhookUrl, CancellationToken cancellationToken);
+    Task UpdateWebhookAsync(Uri webhookUrl, CancellationToken cancellationToken);
+}
+
+public sealed class UkraineAlarmApiClient : IUkraineAlarmWebhookRegistrar
 {
     public const string BaseAddress = "https://api.ukrainealarm.com/";
     private const int MaximumJsonResponseBytes = 4 * 1024 * 1024;

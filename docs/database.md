@@ -22,6 +22,8 @@ erDiagram
   alert_commands ||--o{ command_receipts : має
   devices ||--o{ command_receipts : підтверджує
   users ||--o{ audit_events : виконує
+  users ||--o{ ukrainealarm_webhook_operations : ініціює
+  external_integration_states ||--o{ ukrainealarm_webhook_operations : керує
 ```
 
 | Таблиця                      | Основні поля                                                                                  | Призначення                                                   |
@@ -40,6 +42,10 @@ erDiagram
 | `audit_events`               | `id`, `event_type`, `actor_type`, `actor_id`, `payload`, `occurred_at`                        | Історія дій користувачів і системи                            |
 | `outbox_messages`            | `id`, `command_id`, `event_type`, `payload`, `created_at_utc`, `processed_at_utc`, `attempts` | Надійна черга подій для подальшої доставки                    |
 | `device_sessions`            | `id`, `device_id`, `connected_at`, `last_seen_at`                                             | Історія технічних з’єднань                                    |
+| `ukrainealarm_webhook_operations` | `id`, `idempotency_key`, `actor_user_id`, `action`, `state`, `callback_url`, `outcome_code`, timestamps | Довговічний стан ручних змін callback UkraineAlarm; активна або невизначена операція блокує наступну |
+| `external_integration_states` | `integration_code`, `is_registered?`, `updated_at_utc`                                      | Останній підтверджений стан реєстрації webhook; `NULL` означає невідомий стан |
+
+Для `ukrainealarm_webhook_operations` унікальний індекс гарантує одну активну операцію зі станом `Pending`, `Running` або `Unknown`; окремий унікальний індекс захищає `Idempotency-Key`. Таблиця стану містить один рядок `ukrainealarm_webhook`, який блокується `FOR UPDATE` під час запуску, завершення й ручної звірки. Намір і аудит фіксуються перед зовнішнім HTTP-запитом. `Unknown` не очищається автоматично: адміністратор звіряє стан у кабінеті UkraineAlarm і додає окремий аудований перехід. Відкат міграції заборонений, якщо збереглася історія операцій або стан інтеграції.
 
 Фізичну схему підтримують EF Core migrations. Кожне повідомлення outbox посилається на одну команду; унікальний індекс не дозволяє створити для неї дубльовану подію. Непроцесовані записи читаються за індексом стану й часу створення.
 

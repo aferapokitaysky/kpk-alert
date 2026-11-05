@@ -81,6 +81,8 @@ public sealed class AlertSourcesServiceCollectionExtensionsTests
         Assert.DoesNotContain(services, descriptor =>
             descriptor.ServiceType == typeof(IHostedService) &&
             descriptor.ImplementationType == typeof(NeptunRealtimeMonitor));
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(UkraineAlarmWebhookOperationsService));
     }
 
     [Fact]
