@@ -6,6 +6,41 @@ from coverage_summary import read_coverage, read_postgres_results
 
 
 class CoverageSummaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def workflow_step(self, name: str) -> str:
+        lines = self.workflow.splitlines()
+        start = next(
+            index for index, line in enumerate(lines) if line == f"      - name: {name}"
+        )
+        end = next(
+            (
+                index
+                for index in range(start + 1, len(lines))
+                if lines[index].startswith("      - ")
+            ),
+            len(lines),
+        )
+        return "\n".join(lines[start:end])
+
+    def test_unit_coverage_summary_requires_successful_unit_tests(self) -> None:
+        test_step = self.workflow_step("Unit-тести з покриттям")
+        summary_step = self.workflow_step("Показати покриття модулів")
+
+        self.assertIn("id: unit-tests", test_step)
+        self.assertIn("if: success() && steps.unit-tests.outcome == 'success'", summary_step)
+
+    def test_postgres_coverage_summary_requires_successful_postgres_tests(self) -> None:
+        test_step = self.workflow_step("PostgreSQL-тести з покриттям")
+        summary_step = self.workflow_step("Перевірити виконання PostgreSQL-тестів і показати покриття")
+
+        self.assertIn("id: postgres-tests", test_step)
+        self.assertIn("if: success() && steps.postgres-tests.outcome == 'success'", summary_step)
+
     def write_xml(self, content: str) -> str:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

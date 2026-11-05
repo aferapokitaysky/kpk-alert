@@ -36,9 +36,11 @@ jobs:
       - run: dotnet build KgtaAlert.slnx -c Release --no-restore
       - run: dotnet test KgtaAlert.slnx -c Release --no-build --logger "trx;LogFileName=tests.trx"
       - run: node --test tests/ui/*.test.js
-      - run: dotnet test tests/Watcher.UnitTests/Watcher.UnitTests.csproj -c Release --no-build --logger "trx;LogFileName=unit-coverage.trx" --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+      - name: Unit-тести з покриттям
+        id: unit-tests
+        run: dotnet test tests/Watcher.UnitTests/Watcher.UnitTests.csproj -c Release --no-build --logger "trx;LogFileName=unit-coverage.trx" --collect:"XPlat Code Coverage" --settings coverlet.runsettings
       - name: Показати покриття модулів
-        if: always()
+        if: success() && steps.unit-tests.outcome == 'success'
         run: >-
           python3 scripts/ci/coverage_summary.py
           --label "Unit-тести"
@@ -110,9 +112,11 @@ jobs:
       - run: dotnet tool install --global dotnet-ef --version 10.0.4
       - run: dotnet restore KgtaAlert.slnx
       - run: dotnet ef database update --project src/Watcher.Infrastructure --startup-project src/Watcher.Api
-      - run: dotnet test tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj -c Release --logger "trx;LogFileName=postgres-integration.trx" --collect:"XPlat Code Coverage" --settings coverlet.postgres.runsettings
+      - name: PostgreSQL-тести з покриттям
+        id: postgres-tests
+        run: dotnet test tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj -c Release --logger "trx;LogFileName=postgres-integration.trx" --collect:"XPlat Code Coverage" --settings coverlet.postgres.runsettings
       - name: Перевірити виконання PostgreSQL-тестів і показати покриття
-        if: always()
+        if: success() && steps.postgres-tests.outcome == 'success'
         run: >-
           python3 scripts/ci/coverage_summary.py
           --label "PostgreSQL integration"
