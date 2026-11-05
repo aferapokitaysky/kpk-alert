@@ -1,39 +1,19 @@
 <!doctype html>
 <html lang="uk">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0e62d6">
-  <title>Оповіщення · КГТА</title>
-  <link rel="stylesheet" href="/css/app.css">
-  <link rel="stylesheet" href="/css/overrides.css">
-</head>
-<body>
-  <div class="layout">
-    <aside class="sidebar" id="sidebar" aria-label="Головне меню">
-      <a class="brand" href="/" aria-label="КГТА — головна">
-        <img src="/images/kpk-logo.png" alt="">
-        <span>Система оповіщення<small>Кременчуцький коледж</small></span>
-      </a>
-      <nav><a class="nav-link active" href="/" aria-current="page">Пульт оповіщення</a></nav>
-      <div class="sidebar-note">Система допомагає виконувати затверджені процедури закладу.</div>
-    </aside>
-    <main>
-      <header class="topbar"><button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="sidebar">Меню</button><span class="crumb">Пульт оповіщення</span><span class="topbar-actions"><span class="connection" id="server-health" role="status" aria-live="polite" data-state="loading"><i aria-hidden="true"></i><span>Перевірка сервера…</span></span><a class="login-link" href="/api/v1/auth/login">Увійти через Google</a></span></header>
-      <button class="nav-backdrop" id="nav-backdrop" type="button" aria-label="Закрити меню" hidden></button>
-      <section class="content">
-        <div class="page-heading"><div><p class="eyebrow">КГТА · ОПОВІЩЕННЯ</p><h1>Пульт керування</h1><p class="lead">Оберіть сценарій і корпуси для запуску.</p></div><label class="location-select">Корпус<select aria-label="Оберіть корпус" id="location-select" disabled aria-busy="true"><option value="">Завантаження корпусів…</option></select></label></div>
-        <div class="notice"><span class="notice-mark">i</span><span><strong>Перевірте цільові корпуси перед запуском.</strong><br>Після підтвердження команда буде надіслана вибраним вузлам.</span></div>
-        <h2>Швидкий запуск</h2>
-        <div class="actions" id="preset-actions" aria-live="polite"></div>
-        <div class="empty" id="presets-empty" aria-live="polite" aria-busy="true"><strong>Завантаження сценаріїв…</strong></div>
-        <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
-        <section class="panel"><div class="panel-heading"><div><h2>Стан вузлів</h2><p>Підтвердження від пристроїв у корпусах</p></div></div><div class="empty"><span class="empty-icon" aria-hidden="true">?</span><strong>Стан вузлів невідомий</strong><p>У цій версії немає доступного джерела стану пристроїв.</p></div></section>
-        <footer>КГТА · Система оповіщення</footer>
-      </section>
-    </main>
-  </div>
-  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog"><p class="eyebrow">ПІДТВЕРДЖЕННЯ</p><h2 id="confirm-title">Запустити сценарій?</h2><p id="confirm-copy">Команда буде надіслана вибраним корпусам.</p><p class="dialog-feedback" id="dialog-feedback" role="alert" aria-live="assertive" hidden></p><div class="dialog-actions"><button class="button button-secondary" value="cancel">Скасувати</button><button class="button button-primary" id="confirm-send" value="confirm">Підтвердити запуск</button></div></form></dialog>
-  <script src="/js/app.js" type="module"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0e62d6" />
+    <meta name="description" content="Пульт керування системою оповіщення Кременчуцького коледжу." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/images/kpk-logo.png" />
+    <link rel="stylesheet" href="/dist/operator.css" />
+    <title>Оповіщення · КГТА</title>
+  </head>
+  <body>
+    <div id="root">
+      <main class="boot-message" aria-live="polite">Завантаження пульта керування…</main>
+    </div>
+    <script type="module" src="/dist/operator.js"></script>
+  </body>
 </html>

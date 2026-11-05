@@ -15,6 +15,11 @@ TestResults/
 # Node.js
 node_modules/
 dist/
+src/Watcher.Api/wwwroot/service-worker.js
+
+# Python
+**/__pycache__/
+*.py[cod]
 
 # Локальные данные Edge Agent
 *.db

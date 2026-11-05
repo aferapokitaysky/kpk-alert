@@ -1,11 +1,20 @@
+FROM node:24-alpine AS frontend
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY vite.config.ts vite.sw.config.ts tsconfig.json tsconfig.worker.json ./
+COPY src/Watcher.Api/ClientApp src/Watcher.Api/ClientApp
+RUN npm run build
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
-COPY KgtaAlert.slnx ./
 COPY src/Watcher.Api/Watcher.Api.csproj src/Watcher.Api/
 COPY src/Watcher.Domain/Watcher.Domain.csproj src/Watcher.Domain/
 COPY src/Watcher.Infrastructure/Watcher.Infrastructure.csproj src/Watcher.Infrastructure/
-RUN dotnet restore KgtaAlert.slnx
+RUN dotnet restore src/Watcher.Api/Watcher.Api.csproj
 COPY . .
+COPY --from=frontend /workspace/src/Watcher.Api/wwwroot/dist src/Watcher.Api/wwwroot/dist
+COPY --from=frontend /workspace/src/Watcher.Api/wwwroot/service-worker.js src/Watcher.Api/wwwroot/service-worker.js
 RUN dotnet publish src/Watcher.Api/Watcher.Api.csproj -c Release -o /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime

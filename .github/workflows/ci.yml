@@ -17,6 +17,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Перевірити Docker-образ
+        run: docker build -t kgta-alert:ci .
       - name: Перевірити звіт CI
         run: python3 -m unittest discover -s scripts/ci -p 'test_*.py'
       - uses: actions/setup-dotnet@v4
