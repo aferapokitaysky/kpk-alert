@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
 $installerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\install-service.ps1'
+$uninstallerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\uninstall-service.ps1'
 Import-Module -Name $modulePath -Force
 
 function Assert-Equal {
@@ -60,6 +61,13 @@ try {
         $installerText -notmatch '&\s*sc\.exe\s+config\s+\$serviceName\s+start=\s+\$startupType' -or
         $failureFlagCommands.Count -ne 1) {
         throw 'Інсталятор має застосовувати автозапуск і відновлення після помилок служби.'
+    }
+    $uninstallerText = Get-Content -LiteralPath $uninstallerPath -Raw
+    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
+    $removeStartupPosition = $uninstallerText.IndexOf('Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $interactiveUserSid', [StringComparison]::Ordinal)
+    $removeFilesPosition = $uninstallerText.IndexOf('Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force', [StringComparison]::Ordinal)
+    if ($deleteServicePosition -lt 0 -or $removeStartupPosition -le $deleteServicePosition -or $removeFilesPosition -le $removeStartupPosition) {
+        throw 'Видалення має прибирати запис автозапуску й файли лише після успішного видалення служби.'
     }
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Default)
