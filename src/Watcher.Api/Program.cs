@@ -242,6 +242,8 @@ app.UseForwardedHeaders();
 app.UseContentSecurityPolicy();
 app.UseHttpsRedirection();
 app.UseWebSockets();
+app.UseRouting();
+app.UseMiddleware<NoStoreResponseMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseDefaultFiles();

@@ -48,6 +48,12 @@ export interface AuditPage {
   totalCount: number;
 }
 
+export interface AuditEventFilters {
+  actorId?: string;
+  fromUtc?: string;
+  toUtc?: string;
+}
+
 export class ApiError extends Error {
   constructor(readonly status: number) {
     super(`API request failed with status ${status}`);
@@ -309,9 +315,13 @@ export async function getAuditEvents(
   page: number,
   pageSize: number,
   eventType: string,
+  filters: AuditEventFilters = {},
 ): Promise<AuditPage> {
   const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (eventType.length > 0) query.set('eventType', eventType);
+  if (filters.actorId) query.set('actorId', filters.actorId);
+  if (filters.fromUtc) query.set('fromUtc', filters.fromUtc);
+  if (filters.toUtc) query.set('toUtc', filters.toUtc);
   const result = await getJson(`/api/v1/audit-events?${query.toString()}`);
   if (
     !isRecord(result) ||

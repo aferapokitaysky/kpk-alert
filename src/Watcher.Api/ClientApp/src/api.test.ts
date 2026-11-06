@@ -185,6 +185,24 @@ describe('контракти клієнта', () => {
     );
   });
 
+  it('передає actor і UTC-межі до API журналу', async () => {
+    const page = { items: [], page: 1, pageSize: 25, totalCount: 0 };
+    fetchMock.mockResolvedValueOnce(response(200, page));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      getAuditEvents(1, 25, '', {
+        actorId: 'c6b2f302-0675-4a4d-88eb-cf18c9022920',
+        fromUtc: '2026-11-05T07:00:00.000Z',
+        toUtc: '2026-11-05T08:00:00.000Z',
+      }),
+    ).resolves.toEqual(page);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/audit-events?page=1&pageSize=25&actorId=c6b2f302-0675-4a4d-88eb-cf18c9022920&fromUtc=2026-11-05T07%3A00%3A00.000Z&toUtc=2026-11-05T08%3A00%3A00.000Z',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
   it('не приховує відмову сервера під час завершення сесії', async () => {
     fetchMock
       .mockResolvedValueOnce(response(200, { token: 'request-token' }))

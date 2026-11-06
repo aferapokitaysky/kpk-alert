@@ -399,9 +399,9 @@ describe('пульт оператора', () => {
     expect(screen.getByRole('combobox', { name: 'На сторінці' })).toHaveClass('form-control-sm');
     await user.type(screen.getByRole('textbox', { name: 'Тип події' }), 'auth.logout');
     await user.click(screen.getByRole('button', { name: 'Застосувати фільтр' }));
-    await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith(1, 25, 'auth.logout'));
+    await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith(1, 25, 'auth.logout', {}));
     await user.click(screen.getByRole('button', { name: 'Наступна' }));
-    await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith(2, 25, 'auth.logout'));
+    await waitFor(() => expect(getAuditEvents).toHaveBeenLastCalledWith(2, 25, 'auth.logout', {}));
   });
 
   it('зберігає компактний select журнала шириною Academica та SVG-стрілкою', () => {
@@ -427,7 +427,7 @@ describe('пульт оператора', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Журнал дій' })).toBeInTheDocument();
-    await waitFor(() => expect(getAuditEvents).toHaveBeenCalledWith(1, 25, ''));
+    await waitFor(() => expect(getAuditEvents).toHaveBeenCalledWith(1, 25, '', {}));
     expect(screen.getByRole('link', { name: 'Журнал дій' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Пульт керування' })).not.toBeInTheDocument();
   });
