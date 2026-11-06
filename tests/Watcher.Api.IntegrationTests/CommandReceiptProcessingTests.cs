@@ -62,7 +62,7 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
     }
 
     [PostgresFact]
-    public async Task Completing_stop_command_cancels_a_start_that_has_not_been_delivered()
+    public async Task Stopped_stop_command_cancels_a_start_that_has_not_been_delivered()
     {
         ReceiptSeed seed = await CreateReceiptSeedAsync();
         var stopCommandId = Guid.NewGuid();
@@ -110,7 +110,7 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
         Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
             CreateReceipt(stopCommandId, 2, DeviceCommandState.Accepted)));
         Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
-            CreateReceipt(stopCommandId, 2, DeviceCommandState.Completed)));
+            CreateReceipt(stopCommandId, 2, DeviceCommandState.Stopped)));
         Assert.Equal(CommandReceiptOutcome.Recorded, await ProcessAsync(seed.DeviceId,
             CreateReceipt(seed.CommandId, 1, DeviceCommandState.Rejected) with
             {
@@ -120,7 +120,7 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
         using WatcherDbContext result = _fixture.CreateDbContext();
         Assert.Equal(CommandDeliveryState.Stopped, await result.CommandDeliveries
             .Where(item => item.CommandId == seed.CommandId).Select(item => item.State).SingleAsync());
-        Assert.Equal(CommandDeliveryState.Completed, await result.CommandDeliveries
+        Assert.Equal(CommandDeliveryState.Stopped, await result.CommandDeliveries
             .Where(item => item.CommandId == stopCommandId).Select(item => item.State).SingleAsync());
         Assert.Single(await result.AuditEvents
             .Where(item => item.EventType == "alert_command.delivery_stopped").ToArrayAsync());

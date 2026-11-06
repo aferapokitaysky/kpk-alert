@@ -109,6 +109,20 @@ def _coverage_markdown(label: str, files: list[str]) -> str:
     return "\n".join(rows)
 
 
+def _total_line_rate(files: list[str]) -> float:
+    covered = valid = 0
+    for file_path in files:
+        root = ET.parse(file_path).getroot()
+        try:
+            covered += int(root.attrib["lines-covered"])
+            valid += int(root.attrib["lines-valid"])
+        except (KeyError, ValueError) as error:
+            raise ValueError(f"Некоректні підсумкові рядки покриття у {file_path}.") from error
+    if valid == 0:
+        raise ValueError("Звіт покриття не містить виконуваних рядків.")
+    return covered / valid
+
+
 def _postgres_markdown(label: str, results: PostgresTestResults) -> str:
     return "\n".join(
         [
@@ -134,6 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--label", required=True)
     parser.add_argument("--coverage-glob", action="append", required=True)
     parser.add_argument(
+        "--minimum-line-coverage",
+        type=float,
+        help="Мінімальне сумарне покриття рядків у відсотках.",
+    )
+    parser.add_argument(
         "--trx-glob",
         action="append",
         default=[],
@@ -152,6 +171,13 @@ def main(argv: list[str] | None = None) -> int:
 
         coverage_files = _expand(args.coverage_glob, "Cobertura")
         _publish(_coverage_markdown(args.label, coverage_files))
+        if args.minimum_line_coverage is not None:
+            if not 0 <= args.minimum_line_coverage <= 100:
+                raise ValueError("Мінімальне покриття має бути від 0 до 100 відсотків.")
+            actual_coverage = _total_line_rate(coverage_files) * 100
+            print(f"Загальне покриття рядків: {actual_coverage:.1f}% (потрібно {args.minimum_line_coverage:.1f}%).")
+            if actual_coverage < args.minimum_line_coverage:
+                raise ValueError("Покриття рядків нижче встановленого порога.")
 
         if args.trx_glob:
             trx_files = _expand(args.trx_glob, "TRX")

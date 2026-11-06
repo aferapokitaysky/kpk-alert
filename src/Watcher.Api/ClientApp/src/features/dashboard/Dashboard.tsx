@@ -14,6 +14,7 @@ interface Props {
   lastCommandRestoreStatus: 'idle' | 'loading' | 'error';
   onRefresh: () => void;
   onRun: (preset: Preset, locationIds: string[]) => void;
+  onStop: (commandId: string, locations: Location[]) => void;
 }
 
 function LocationChoices({
@@ -136,6 +137,7 @@ export function Dashboard({
   lastCommandRestoreStatus,
   onRefresh,
   onRun,
+  onStop,
 }: Props) {
   const [selectedLocationIds, setSelectedLocationIds] = useState<string[]>([]);
   const selectedLocations =
@@ -145,6 +147,20 @@ export function Dashboard({
   const canOperate = session.status === 'authenticated' && session.capabilities.canOperate;
   const canViewAudit = session.status === 'authenticated' && session.capabilities.canViewAudit;
   const canChooseScenario = selectedLocations.length > 0 && canOperate;
+  const stopLocations =
+    lastCommand?.action === 'start' && lastCommand.targets.length > 0
+      ? lastCommand.targets.map((target) =>
+          commandLocations.find((location) => location.id === target.locationId),
+        )
+      : [];
+  const matchedStopLocations = stopLocations.filter(
+    (location): location is Location => location !== undefined,
+  );
+  const resolvedStopLocations =
+    matchedStopLocations.length === stopLocations.length &&
+    new Set(matchedStopLocations.map((location) => location.id)).size === stopLocations.length
+      ? matchedStopLocations
+      : [];
 
   return (
     <>
@@ -274,8 +290,14 @@ export function Dashboard({
               </svg>
             </span>
             <div>
-              <p className="eyebrow">КОМАНДА ЗБЕРЕЖЕНА</p>
-              <h2 id="result-title">Команду прийнято до черги</h2>
+              <p className="eyebrow">
+                {lastCommand.action === 'stop' ? 'КОМАНДУ ЗУПИНКИ ЗБЕРЕЖЕНО' : 'КОМАНДА ЗБЕРЕЖЕНА'}
+              </p>
+              <h2 id="result-title">
+                {lastCommand.action === 'stop'
+                  ? 'Команду відбою прийнято до черги'
+                  : 'Команду прийнято до черги'}
+              </h2>
               <p>
                 {commandLocations.length === lastCommand.targets.length
                   ? commandLocations.map((location) => location.name).join(', ')
@@ -283,11 +305,20 @@ export function Dashboard({
                 · {new Date(lastCommand.createdAtUtc).toLocaleString('uk-UA')}
               </p>
               <small>
-                Це не є підтвердженням відтворення звуку. Ідентифікатор: {lastCommand.id}
+                {lastCommand.action === 'stop'
+                  ? 'Це не є підтвердженням зупинки звуку.'
+                  : 'Це не є підтвердженням відтворення звуку.'}{' '}
+                Ідентифікатор: {lastCommand.id}
               </small>
             </div>
           </section>
-          <CommandDeliveriesPanel key={lastCommand.id} commandId={lastCommand.id} />
+          <CommandDeliveriesPanel
+            key={lastCommand.id}
+            commandId={lastCommand.id}
+            canOperate={canOperate && lastCommand.action === 'start'}
+            targetLocations={resolvedStopLocations}
+            onRequestStop={onStop}
+          />
         </>
       )}
 

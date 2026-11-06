@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAlertCommand, getAlertCommand, getAuditEvents, getSession, logout } from './api';
+import {
+  createAlertCommand,
+  createStopCommand,
+  getAlertCommand,
+  getAuditEvents,
+  getSession,
+  logout,
+} from './api';
 
 function response(status: number, body?: unknown): Response {
   return {
@@ -46,6 +53,7 @@ describe('контракти клієнта', () => {
       id: 'command-id',
       action: 'start',
       presetCode: 'evacuation',
+      targetCommandId: null,
       createdAtUtc: '2026-11-05T12:00:00Z',
       targets: [{ locationId: 'location-id', state: 'Created' }],
     };
@@ -73,6 +81,31 @@ describe('контракти клієнта', () => {
     });
   });
 
+  it('передає id цільового запуску та корпуси для команди відбою', async () => {
+    const command = {
+      id: 'stop-id',
+      action: 'stop',
+      presetCode: null,
+      targetCommandId: 'start-id',
+      createdAtUtc: '2026-11-05T12:01:00Z',
+      targets: [{ locationId: 'location-id', state: 'Created' }],
+    };
+    fetchMock
+      .mockResolvedValueOnce(response(200, { token: 'request-token' }))
+      .mockResolvedValueOnce(response(202, command));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createStopCommand('start-id', ['location-id'], 'stop-key')).resolves.toEqual(
+      command,
+    );
+    const [url, init] = fetchMock.mock.calls[1] ?? [];
+    expect(url).toBe('/api/v1/alert-commands/start-id/stop');
+    expect(init?.headers).toMatchObject({ 'Idempotency-Key': 'stop-key' });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      locationIds: ['location-id'],
+    });
+  });
+
   it('відновлює команду лише з повної серверної відповіді', async () => {
     const commandId = '11111111-1111-4111-8111-111111111111';
     const command = {
@@ -91,6 +124,7 @@ describe('контракти клієнта', () => {
       id: commandId,
       action: 'start',
       presetCode: 'evacuation',
+      targetCommandId: null,
       createdAtUtc: command.createdAtUtc,
       targets: command.targets,
     });
@@ -100,11 +134,33 @@ describe('контракти клієнта', () => {
     );
   });
 
-  it('не принимает серверную команду другого типа при восстановлении панели запуска', async () => {
+  it('відновлює команду зупинки з повної серверної відповіді', async () => {
+    const commandId = '22222222-2222-4222-8222-222222222222';
+    const command = {
+      id: commandId,
+      action: 'stop',
+      presetCode: null,
+      targetCommandId: '11111111-1111-4111-8111-111111111111',
+      createdAtUtc: '2026-11-05T12:01:00Z',
+      expiresAtUtc: '2026-11-05T12:06:00Z',
+      targets: [{ locationId: 'location-id', state: 'Created' }],
+    };
+    fetchMock.mockResolvedValueOnce(response(200, command));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getAlertCommand(commandId)).resolves.toMatchObject({
+      id: commandId,
+      action: 'stop',
+      presetCode: null,
+      targetCommandId: command.targetCommandId,
+    });
+  });
+
+  it('відхиляє невідому дію у відповіді сервера', async () => {
     fetchMock.mockResolvedValueOnce(
       response(200, {
         id: '11111111-1111-4111-8111-111111111111',
-        action: 'stop',
+        action: 'pause',
         presetCode: null,
         createdAtUtc: '2026-11-05T12:00:00Z',
         targets: [],

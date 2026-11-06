@@ -66,6 +66,7 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         Assert.Equal(2, root.GetProperty("page").GetInt32());
         Assert.Equal(2, root.GetProperty("pageSize").GetInt32());
         Assert.Equal(5, root.GetProperty("totalCount").GetInt32());
+        Assert.True(root.GetProperty("hasUnfinishedDeliveries").GetBoolean());
         Assert.Equal(2, items.Length);
         Assert.Equal(Guid.Parse("00000000-0000-0000-0000-000000000003"), item.GetProperty("deviceId").GetGuid());
         Assert.Equal("device-3", item.GetProperty("deviceName").GetString());
@@ -98,6 +99,56 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         Assert.Equal(1, root.GetProperty("page").GetInt32());
         Assert.Equal(50, root.GetProperty("pageSize").GetInt32());
         Assert.Equal(0, root.GetProperty("totalCount").GetInt32());
+        Assert.False(root.GetProperty("hasUnfinishedDeliveries").GetBoolean());
+    }
+
+    [PostgresFact]
+    public async Task Delivery_list_reports_unfinished_deliveries_across_all_pages()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        Guid commandId = await SeedCommandAsync(
+            seed.OperatorId,
+            seed.FirstLocationId,
+            DateTimeOffset.UtcNow,
+            deliveryCount: 5,
+            state: CommandDeliveryState.Completed);
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            var activeDeviceId = Guid.Parse("00000000-0000-0000-0000-000000000003");
+            CommandDelivery delivery = await db.CommandDeliveries.SingleAsync(
+                item => item.CommandId == commandId && item.DeviceId == activeDeviceId);
+            delivery.State = CommandDeliveryState.Playing;
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage response = await SendGetAsync(
+            _fixture.Client, commandId, seed.OperatorId, query: "?page=1&pageSize=2");
+        using JsonDocument document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        JsonElement root = document.RootElement;
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.All(root.GetProperty("items").EnumerateArray(), item =>
+            Assert.Equal("Completed", item.GetProperty("state").GetString()));
+        Assert.True(root.GetProperty("hasUnfinishedDeliveries").GetBoolean());
+
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            List<CommandDelivery> deliveries = await db.CommandDeliveries
+                .Where(item => item.CommandId == commandId)
+                .ToListAsync();
+            foreach (CommandDelivery delivery in deliveries)
+            {
+                delivery.State = CommandDeliveryState.Completed;
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage completedResponse = await SendGetAsync(
+            _fixture.Client, commandId, seed.OperatorId, query: "?page=1&pageSize=2");
+        using JsonDocument completedDocument = await JsonDocument.ParseAsync(
+            await completedResponse.Content.ReadAsStreamAsync());
+        Assert.False(completedDocument.RootElement.GetProperty("hasUnfinishedDeliveries").GetBoolean());
     }
 
     [PostgresTheory]
@@ -121,7 +172,8 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         Guid? initiatedByUserId,
         Guid locationId,
         DateTimeOffset createdAtUtc,
-        int deliveryCount)
+        int deliveryCount,
+        CommandDeliveryState state = CommandDeliveryState.Pending)
     {
         var commandId = Guid.NewGuid();
         using WatcherDbContext db = _fixture.CreateDbContext();
@@ -151,7 +203,7 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
                 Id = Guid.NewGuid(),
                 CommandId = commandId,
                 DeviceId = deviceId,
-                State = CommandDeliveryState.Pending,
+                State = state,
                 CreatedAtUtc = createdAtUtc,
                 ExpiresAtUtc = createdAtUtc.AddMinutes(5),
                 LastAttemptAtUtc = createdAtUtc.AddSeconds(index),

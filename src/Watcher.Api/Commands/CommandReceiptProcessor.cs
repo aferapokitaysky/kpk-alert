@@ -82,7 +82,8 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         CommandDelivery? stoppedDelivery = null;
         var targetWasStopped = false;
         var preserveStoppedState = command.Action == "start" && delivery.State == CommandDeliveryState.Stopped;
-        if (command.Action == "stop" && receipt.State == DeviceCommandState.Completed)
+        if (command.Action == "stop" && receipt.State is (
+                DeviceCommandState.Completed or DeviceCommandState.Stopped))
         {
             if (command.TargetCommandId is not { } targetCommandId)
             {
@@ -210,11 +211,13 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         if (current is CommandDeliveryState.Pending or CommandDeliveryState.InFlight)
         {
             return next is DeviceCommandState.Accepted or DeviceCommandState.Completed or
-                DeviceCommandState.Rejected or DeviceCommandState.Failed or DeviceCommandState.Expired;
+                DeviceCommandState.Stopped or DeviceCommandState.Rejected or
+                DeviceCommandState.Failed or DeviceCommandState.Expired;
         }
 
         return current == CommandDeliveryState.Accepted &&
-            next is DeviceCommandState.Completed or DeviceCommandState.Failed or DeviceCommandState.Expired;
+            next is DeviceCommandState.Completed or DeviceCommandState.Stopped or
+                DeviceCommandState.Failed or DeviceCommandState.Expired;
     }
 
     private static CommandDeliveryState ToDeliveryState(DeviceCommandState state) => state switch

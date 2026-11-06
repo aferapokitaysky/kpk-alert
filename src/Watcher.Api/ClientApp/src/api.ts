@@ -25,8 +25,9 @@ export interface CommandTarget {
 
 export interface AlertCommand {
   id: string;
-  action: 'start';
-  presetCode: string;
+  action: 'start' | 'stop';
+  presetCode: string | null;
+  targetCommandId: string | null;
   createdAtUtc: string;
   targets: CommandTarget[];
 }
@@ -193,6 +194,59 @@ export async function createAlertCommand(
     id: body.id,
     action: 'start',
     presetCode: body.presetCode,
+    targetCommandId: typeof body.targetCommandId === 'string' ? body.targetCommandId : null,
+    createdAtUtc: body.createdAtUtc,
+    targets,
+  };
+}
+
+export async function createStopCommand(
+  targetCommandId: string,
+  locationIds: string[],
+  idempotencyKey: string,
+): Promise<AlertCommand> {
+  if (!targetCommandId || locationIds.length === 0) throw new Error('invalid-stop-command');
+  const token = await getCsrfToken();
+  const response = await request(
+    `/api/v1/alert-commands/${encodeURIComponent(targetCommandId)}/stop`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-TOKEN': token,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({ locationIds }),
+    },
+  );
+  if (response.status !== 202) throw new ApiError(response.status);
+
+  const body: unknown = await response.json();
+  if (
+    !isRecord(body) ||
+    typeof body.id !== 'string' ||
+    body.action !== 'stop' ||
+    body.presetCode !== null ||
+    body.targetCommandId !== targetCommandId ||
+    typeof body.createdAtUtc !== 'string' ||
+    !Array.isArray(body.targets) ||
+    !body.targets.every(isRecord)
+  ) {
+    throw new Error('invalid-command-response');
+  }
+
+  const targets = body.targets.map((target) => {
+    if (typeof target.locationId !== 'string' || typeof target.state !== 'string') {
+      throw new Error('invalid-command-response');
+    }
+    return { locationId: target.locationId, state: target.state };
+  });
+
+  return {
+    id: body.id,
+    action: 'stop',
+    presetCode: null,
+    targetCommandId,
     createdAtUtc: body.createdAtUtc,
     targets,
   };
@@ -204,12 +258,33 @@ export async function getAlertCommand(commandId: string): Promise<AlertCommand> 
     !isRecord(result) ||
     typeof result.id !== 'string' ||
     result.id !== commandId ||
-    result.action !== 'start' ||
-    typeof result.presetCode !== 'string' ||
     typeof result.createdAtUtc !== 'string' ||
     !Array.isArray(result.targets) ||
     !result.targets.every(isRecord)
   ) {
+    throw new Error('invalid-command-response');
+  }
+
+  let action: AlertCommand['action'];
+  let presetCode: string | null;
+  let targetCommandId: string | null;
+  if (
+    result.action === 'start' &&
+    typeof result.presetCode === 'string' &&
+    result.targetCommandId === null
+  ) {
+    action = result.action;
+    presetCode = result.presetCode;
+    targetCommandId = null;
+  } else if (
+    result.action === 'stop' &&
+    result.presetCode === null &&
+    typeof result.targetCommandId === 'string'
+  ) {
+    action = result.action;
+    presetCode = null;
+    targetCommandId = result.targetCommandId;
+  } else {
     throw new Error('invalid-command-response');
   }
 
@@ -222,8 +297,9 @@ export async function getAlertCommand(commandId: string): Promise<AlertCommand> 
 
   return {
     id: result.id,
-    action: 'start',
-    presetCode: result.presetCode,
+    action,
+    presetCode,
+    targetCommandId,
     createdAtUtc: result.createdAtUtc,
     targets,
   };

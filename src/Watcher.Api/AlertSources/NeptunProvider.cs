@@ -9,7 +9,7 @@ public sealed class NeptunProvider(
     ILogger<NeptunProvider> logger) : IAlertSourceProvider
 {
     public const string ClientName = "Neptun";
-    internal const int MaximumRestResponseBytes = 1024 * 1024;
+    internal const int MaximumRestResponseBytes = 64 * 1024;
 
     private readonly object _stateLock = new();
     private NeptunAlertSnapshot? _lastSuccessfulSnapshot;
@@ -112,17 +112,15 @@ public sealed class NeptunProvider(
                 return false;
             }
 
-            if (response.Content.Headers.ContentLength is > MaximumRestResponseBytes)
+            byte[] body;
+            try
             {
-                logger.LogWarning("Джерело {Source} перевищило максимальний розмір відповіді.",
-                    AlertSourceCatalog.NeptunCode);
-                SetFailure("invalid_response", checkedAt, allowRealtimeStateUpdate);
-                return false;
+                body = await BoundedHttpContentReader.ReadAsync(
+                    response.Content,
+                    MaximumRestResponseBytes,
+                    cancellationToken);
             }
-
-            await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            var body = await ReadBoundedBodyAsync(contentStream, cancellationToken);
-            if (body is null)
+            catch (BoundedHttpContentReader.ResponseTooLargeException)
             {
                 logger.LogWarning("Джерело {Source} перевищило максимальний розмір відповіді.",
                     AlertSourceCatalog.NeptunCode);
@@ -131,7 +129,7 @@ public sealed class NeptunProvider(
             }
 
             if (!NeptunAlertSnapshotParser.TryParseRest(
-                    body,
+                    Encoding.UTF8.GetString(body),
                     out NeptunAlertSnapshot snapshot))
             {
                 logger.LogWarning("Джерело {Source} повернуло невідомий формат статусу.",
@@ -189,29 +187,6 @@ public sealed class NeptunProvider(
 
             _checkedAtUtc = checkedAtUtc;
             _errorCode = errorCode;
-        }
-    }
-
-    private static async Task<string?> ReadBoundedBodyAsync(
-        Stream contentStream,
-        CancellationToken cancellationToken)
-    {
-        using MemoryStream body = new();
-        var buffer = new byte[8192];
-        while (true)
-        {
-            var bytesRead = await contentStream.ReadAsync(buffer, cancellationToken);
-            if (bytesRead == 0)
-            {
-                return Encoding.UTF8.GetString(body.ToArray());
-            }
-
-            if (body.Length + bytesRead > MaximumRestResponseBytes)
-            {
-                return null;
-            }
-
-            await body.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
         }
     }
 

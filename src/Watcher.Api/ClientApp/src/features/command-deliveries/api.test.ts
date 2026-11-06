@@ -29,7 +29,13 @@ afterEach(() => {
 describe('клієнт доставлення команд', () => {
   it('запитує поточну сторінку без кешування та повертає перевірені дані', async () => {
     fetchMock.mockResolvedValueOnce(
-      response(200, { items: [delivery], page: 2, pageSize: 25, totalCount: 26 }),
+      response(200, {
+        items: [delivery],
+        page: 2,
+        pageSize: 25,
+        totalCount: 26,
+        hasUnfinishedDeliveries: true,
+      }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -38,6 +44,7 @@ describe('клієнт доставлення команд', () => {
       page: 2,
       pageSize: 25,
       totalCount: 26,
+      hasUnfinishedDeliveries: true,
     });
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/alert-commands/command-1/deliveries?page=2&pageSize=25',
@@ -57,6 +64,7 @@ describe('клієнт доставлення команд', () => {
         page: 1,
         pageSize: 25,
         totalCount: 1,
+        hasUnfinishedDeliveries: false,
       }),
     );
     vi.stubGlobal('fetch', fetchMock);

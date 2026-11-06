@@ -19,6 +19,7 @@ function renderDashboard(session: SessionState) {
       lastCommandRestoreStatus="idle"
       onRefresh={vi.fn()}
       onRun={vi.fn()}
+      onStop={vi.fn()}
     />,
   );
 }
@@ -108,6 +109,7 @@ describe('робоча панель оператора', () => {
         lastCommandRestoreStatus="idle"
         onRefresh={vi.fn()}
         onRun={onRun}
+        onStop={vi.fn()}
       />,
     );
 

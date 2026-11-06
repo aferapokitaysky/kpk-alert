@@ -6,6 +6,7 @@ import {
   type CommandDeliveryState,
   type CommandDeliveriesPage,
 } from './api';
+import type { Location } from '../../api';
 
 type PanelStatus = 'loading' | 'ready' | 'error';
 
@@ -90,7 +91,19 @@ function DeliveryItem({ delivery }: { delivery: CommandDelivery }) {
   );
 }
 
-export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
+interface Props {
+  commandId: string;
+  canOperate?: boolean;
+  targetLocations?: Location[];
+  onRequestStop?: (commandId: string, locations: Location[]) => void;
+}
+
+export function CommandDeliveriesPanel({
+  commandId,
+  canOperate = false,
+  targetLocations = [],
+  onRequestStop,
+}: Props) {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState<PanelStatus>('loading');
   const [data, setData] = useState<CommandDeliveriesPage | null>(null);
@@ -161,6 +174,9 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
   }, [load]);
 
   const pageCount = data ? Math.max(1, Math.ceil(data.totalCount / data.pageSize)) : 1;
+  const hasStopCandidate = status === 'ready' && data !== null && data.hasUnfinishedDeliveries;
+  const canStop =
+    canOperate && hasStopCandidate && targetLocations.length > 0 && onRequestStop !== undefined;
 
   return (
     <section
@@ -246,6 +262,25 @@ export function CommandDeliveriesPanel({ commandId }: { commandId: string }) {
             )}
           </footer>
         </>
+      )}
+      {canOperate && targetLocations.length > 0 && onRequestStop && (
+        <div className="delivery-actions">
+          {canStop ? (
+            <button
+              className="button button-danger"
+              type="button"
+              onClick={() => onRequestStop(commandId, targetLocations)}
+            >
+              Відбій для цієї команди
+            </button>
+          ) : (
+            <p className="delivery-action-note">
+              {status === 'ready' && data && !data.hasUnfinishedDeliveries
+                ? 'Для цієї команди немає незавершених доставок.'
+                : 'Оновіть статуси доставки, щоб перевірити доступність відбою.'}
+            </p>
+          )}
+        </div>
       )}
     </section>
   );

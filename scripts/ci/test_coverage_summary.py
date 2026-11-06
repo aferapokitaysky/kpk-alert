@@ -154,6 +154,36 @@ class CoverageSummaryTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("потрібно вказати --trx-glob", stderr.getvalue())
 
+    def test_minimum_line_coverage_passes_at_threshold(self) -> None:
+        path = self.write_xml(
+            '<coverage lines-covered="75" lines-valid="100">'
+            '<package name="Watcher.EdgeAgent.Core" line-rate="0.75" branch-rate="0.5" />'
+            '</coverage>'
+        )
+
+        self.assertEqual(0, self.run_coverage_threshold(path, 75))
+
+    def test_minimum_line_coverage_rejects_a_report_below_threshold(self) -> None:
+        path = self.write_xml(
+            '<coverage lines-covered="74" lines-valid="100">'
+            '<package name="Watcher.EdgeAgent.Core" line-rate="0.74" branch-rate="0.5" />'
+            '</coverage>'
+        )
+
+        self.assertEqual(1, self.run_coverage_threshold(path, 75))
+
+    def run_coverage_threshold(self, path: str, minimum: float) -> int:
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Edge Agent",
+                "--coverage-glob", path,
+                "--minimum-line-coverage", str(minimum),
+            ])
+        if exit_code:
+            self.assertIn("Покриття рядків нижче", stderr.getvalue())
+        return exit_code
+
     def run_report(self, coverage_path: str, trx_path: str) -> int:
         stderr = io.StringIO()
         stdout = io.StringIO()

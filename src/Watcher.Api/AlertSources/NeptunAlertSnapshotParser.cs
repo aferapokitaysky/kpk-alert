@@ -21,6 +21,8 @@ internal readonly record struct NeptunRealtimeFrame(
 
 internal static class NeptunAlertSnapshotParser
 {
+    private const int MaximumLocationsPerScope = 256;
+
     public static bool TryParseRest(string body, out NeptunAlertSnapshot snapshot)
     {
         snapshot = default;
@@ -118,7 +120,8 @@ internal static class NeptunAlertSnapshotParser
         HashSet<string> keys = new(StringComparer.Ordinal);
         foreach (JsonElement item in array.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.Object ||
+            if (found.Count >= MaximumLocationsPerScope ||
+                item.ValueKind != JsonValueKind.Object ||
                 !item.TryGetProperty("key", out JsonElement key) || key.ValueKind != JsonValueKind.String ||
                 !item.TryGetProperty("name", out JsonElement name) || name.ValueKind != JsonValueKind.String ||
                 !item.TryGetProperty("oblast", out JsonElement oblast) || oblast.ValueKind != JsonValueKind.String ||

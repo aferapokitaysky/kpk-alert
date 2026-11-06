@@ -64,7 +64,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.Property(x => x.Action).HasMaxLength(20).IsRequired();
             entity.Property(x => x.PresetCode).HasMaxLength(80);
             entity.Property(x => x.MaximumPlaybackDurationSeconds)
-                .HasDefaultValue(900)
+                .HasDefaultValue(AlertCommand.DefaultMaximumPlaybackDurationSeconds)
                 .HasSentinel(-1)
                 .IsRequired();
             entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.TargetCommandId)

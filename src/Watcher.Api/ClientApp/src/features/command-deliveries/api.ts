@@ -24,6 +24,7 @@ export interface CommandDeliveriesPage {
   page: number;
   pageSize: number;
   totalCount: number;
+  hasUnfinishedDeliveries: boolean;
 }
 
 export class CommandDeliveriesApiError extends Error {
@@ -125,7 +126,8 @@ export async function getCommandDeliveries(
     value.page !== page ||
     !isPositiveSafeInteger(value.pageSize) ||
     value.pageSize !== pageSize ||
-    !isNonNegativeSafeInteger(value.totalCount)
+    !isNonNegativeSafeInteger(value.totalCount) ||
+    typeof value.hasUnfinishedDeliveries !== 'boolean'
   ) {
     throw new Error('invalid-command-deliveries-response');
   }
@@ -145,5 +147,6 @@ export async function getCommandDeliveries(
     page: value.page,
     pageSize: value.pageSize,
     totalCount: value.totalCount,
+    hasUnfinishedDeliveries: value.hasUnfinishedDeliveries,
   };
 }

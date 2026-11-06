@@ -57,6 +57,11 @@ public sealed class CommandDeliveriesController(WatcherDbContext db) : Controlle
         IQueryable<CommandDelivery> deliveriesQuery = db.CommandDeliveries.AsNoTracking()
             .Where(delivery => delivery.CommandId == commandId);
         var totalCount = await deliveriesQuery.CountAsync(cancellationToken);
+        var hasUnfinishedDeliveries = await deliveriesQuery.AnyAsync(delivery =>
+            delivery.State == CommandDeliveryState.Pending ||
+            delivery.State == CommandDeliveryState.InFlight ||
+            delivery.State == CommandDeliveryState.Accepted ||
+            delivery.State == CommandDeliveryState.Playing, cancellationToken);
         var items = await (
             from delivery in deliveriesQuery
             join device in db.Devices.AsNoTracking() on delivery.DeviceId equals device.Id
@@ -75,6 +80,6 @@ public sealed class CommandDeliveriesController(WatcherDbContext db) : Controlle
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
-        return Ok(new { items, page, pageSize, totalCount });
+        return Ok(new { items, page, pageSize, totalCount, hasUnfinishedDeliveries });
     }
 }

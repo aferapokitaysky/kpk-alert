@@ -1,0 +1,18 @@
+{
+  "EdgeAgent": {
+    "BaseAddress": "https://watcher.example.invalid",
+    "IdentityPath": "/api/v1/device/identity",
+    "WebSocketPath": "/api/v1/device/commands/stream",
+    "ReceiptPath": "/api/v1/device/command-receipts",
+    "DatabasePath": "C:/ProgramData/KGTA/Alert/data/edge-agent.db",
+    "AudioRootDirectory": "C:/ProgramData/KGTA/Alert/audio",
+    "ClientCertificateThumbprint": "REPLACE_WITH_DEVICE_CERTIFICATE_THUMBPRINT",
+    "AudioEndpointId": "REPLACE_WITH_WINDOWS_AUDIO_ENDPOINT_ID",
+    "MaximumClockSkewSeconds": 120,
+    "MaximumWebSocketMessageBytes": 32768,
+    "MaximumReceiptQueue": 10000,
+    "ReconnectInitialDelaySeconds": 1,
+    "ReconnectMaximumDelaySeconds": 30,
+    "ReceiptRetryMaximumDelaySeconds": 60
+  }
+}

@@ -7,6 +7,7 @@ import App from './App';
 import {
   ApiError,
   createAlertCommand,
+  createStopCommand,
   getAlertCommand,
   getAuditEvents,
   getLocations,
@@ -22,6 +23,7 @@ vi.mock('./api', async (importOriginal) => {
   return {
     ...actual,
     createAlertCommand: vi.fn(),
+    createStopCommand: vi.fn(),
     getAlertCommand: vi.fn(),
     getAuditEvents: vi.fn(),
     getLocations: vi.fn(),
@@ -53,6 +55,15 @@ const command = {
   action: 'start' as const,
   presetCode: preset.code,
   createdAtUtc: '2026-11-05T12:00:00Z',
+  targets: [{ locationId: location.id, state: 'Created' }],
+  targetCommandId: null,
+};
+const stoppedCommand = {
+  id: '22222222-2222-4222-8222-222222222222',
+  action: 'stop' as const,
+  presetCode: null,
+  targetCommandId: command.id,
+  createdAtUtc: '2026-11-05T12:02:00Z',
   targets: [{ locationId: location.id, state: 'Created' }],
 };
 
@@ -89,9 +100,11 @@ beforeEach(() => {
     page: 1,
     pageSize: 25,
     totalCount: 0,
+    hasUnfinishedDeliveries: false,
   });
   vi.mocked(getAuditEvents).mockResolvedValue({ items: [], page: 1, pageSize: 25, totalCount: 0 });
   vi.mocked(createAlertCommand).mockResolvedValue(command);
+  vi.mocked(createStopCommand).mockResolvedValue(stoppedCommand);
   vi.mocked(getAlertCommand).mockResolvedValue(command);
   vi.mocked(logout).mockResolvedValue(undefined);
 });
@@ -197,6 +210,18 @@ describe('пульт оператора', () => {
     expect(getCommandDeliveries).toHaveBeenCalledWith(commandId, 1, expect.any(AbortSignal));
   });
 
+  it('зберігає й відновлює команду відбою після перезавантаження вкладки', async () => {
+    vi.mocked(getAlertCommand).mockResolvedValueOnce(stoppedCommand);
+    window.sessionStorage.setItem('kgta-alert:last-command-id', stoppedCommand.id);
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Команду відбою прийнято до черги' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/не є підтвердженням зупинки звуку/i)).toBeInTheDocument();
+    expect(getAlertCommand).toHaveBeenCalledWith(stoppedCommand.id);
+  });
+
   it('очищає посилання на команду, яку сервер не дозволяє переглядати', async () => {
     window.sessionStorage.setItem('kgta-alert:last-command-id', commandId);
     vi.mocked(getAlertCommand).mockRejectedValueOnce(new ApiError(404));
@@ -223,6 +248,60 @@ describe('пульт оператора', () => {
     expect(
       await screen.findByRole('heading', { name: 'Команду прийнято до черги' }),
     ).toBeInTheDocument();
+  });
+
+  it('показує відбій лише для активної команди, підтверджує його та пояснює серверну відмову', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getCommandDeliveries).mockResolvedValue({
+      items: [
+        {
+          deviceId: 'device-1',
+          deviceName: 'Вузол головного корпусу',
+          state: 'Playing',
+          createdAtUtc: '2026-11-05T12:00:00Z',
+          expiresAtUtc: '2026-11-05T12:15:00Z',
+          lastAttemptAtUtc: '2026-11-05T12:00:10Z',
+          attemptCount: 1,
+        },
+      ],
+      page: 1,
+      pageSize: 25,
+      totalCount: 1,
+      hasUnfinishedDeliveries: true,
+    });
+    vi.mocked(createStopCommand)
+      .mockRejectedValueOnce(new ApiError(409))
+      .mockResolvedValueOnce(stoppedCommand);
+    render(<App />);
+
+    await user.click(await screen.findByRole('checkbox', { name: /Головний корпус/ }));
+    await user.click(screen.getByRole('button', { name: /Евакуація/ }));
+    await user.click(screen.getByRole('button', { name: 'Підтвердити запуск' }));
+    await screen.findByRole('heading', { name: 'Команду прийнято до черги' });
+
+    await user.click(await screen.findByRole('button', { name: 'Відбій для цієї команди' }));
+    const dialog = screen.getByRole('dialog', { name: 'Надіслати команду «Відбій»?' });
+    expect(dialog).toHaveTextContent('Головний корпус');
+    await user.click(screen.getByRole('button', { name: 'Підтвердити відбій' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Сигнал уже завершився або ще не надійшов до всіх вузлів.',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Підтвердити відбій' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Команду відбою прийнято до черги' }),
+    ).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('kgta-alert:last-command-id')).toBe(stoppedCommand.id);
+    expect(createStopCommand).toHaveBeenCalledTimes(2);
+    expect(createStopCommand).toHaveBeenNthCalledWith(
+      1,
+      commandId,
+      ['location-1'],
+      expect.any(String),
+    );
+    expect(vi.mocked(createStopCommand).mock.calls[1]?.[2]).toBe(
+      vi.mocked(createStopCommand).mock.calls[0]?.[2],
+    );
   });
 
   it('керує мобільним меню клавіатурою та прибирає закриту панель із фокусу', async () => {

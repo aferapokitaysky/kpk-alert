@@ -14,6 +14,7 @@ public sealed class AlertsInUaProvider(
     ILogger<AlertsInUaProvider> logger) : IAlertSourceProvider
 {
     public const string ClientName = "AlertsInUa";
+    private const int MaximumResponseBytes = 64 * 1024;
 
     private readonly ConcurrentDictionary<string, CachedStatus> _lastSuccessfulStatuses = new();
 
@@ -112,7 +113,10 @@ public sealed class AlertsInUaProvider(
                 return Failure(scope, scopeId, scopeName, "source_unavailable", previous, checkedAt);
             }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var body = await BoundedHttpContentReader.ReadAsync(
+                response.Content,
+                MaximumResponseBytes,
+                cancellationToken);
             if (!TryParseStatus(body, out AlertState state, out var alertLevel))
             {
                 logger.LogWarning("Джерело {Source} повернуло невідомий формат статусу.",
@@ -161,9 +165,16 @@ public sealed class AlertsInUaProvider(
             return Failure(scope, scopeId, scopeName, "invalid_response", previous,
                 timeProvider.GetUtcNow());
         }
+        catch (BoundedHttpContentReader.ResponseTooLargeException)
+        {
+            logger.LogWarning("Джерело {Source} перевищило допустимий розмір відповіді.",
+                AlertSourceCatalog.AlertsInUaCode);
+            return Failure(scope, scopeId, scopeName, "invalid_response", previous,
+                timeProvider.GetUtcNow());
+        }
     }
 
-    private static bool TryParseStatus(string body, out AlertState state, out string? alertLevel)
+    private static bool TryParseStatus(ReadOnlyMemory<byte> body, out AlertState state, out string? alertLevel)
     {
         state = AlertState.Unknown;
         alertLevel = null;

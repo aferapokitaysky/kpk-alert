@@ -1,11 +1,18 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Watcher.EdgeAgent.Contracts/Watcher.EdgeAgent.Contracts.csproj" />
+    <Project Path="src/Watcher.EdgeAgent.Core/Watcher.EdgeAgent.Core.csproj" />
+    <Project Path="src/Watcher.EdgeAgent.Infrastructure/Watcher.EdgeAgent.Infrastructure.csproj" />
+    <Project Path="src/Watcher.EdgeAgent.Service/Watcher.EdgeAgent.Service.csproj" />
+    <Project Path="src/Watcher.EdgeAgent.Desktop/Watcher.EdgeAgent.Desktop.csproj" />
     <Project Path="src/Watcher.Api/Watcher.Api.csproj" />
     <Project Path="src/Watcher.Contracts/Watcher.Contracts.csproj" />
     <Project Path="src/Watcher.Domain/Watcher.Domain.csproj" />
     <Project Path="src/Watcher.Infrastructure/Watcher.Infrastructure.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Watcher.EdgeAgent.UnitTests/Watcher.EdgeAgent.UnitTests.csproj" />
+    <Project Path="tests/Watcher.EdgeAgent.Service.IntegrationTests/Watcher.EdgeAgent.Service.IntegrationTests.csproj" />
     <Project Path="tests/Watcher.Api.IntegrationTests/Watcher.Api.IntegrationTests.csproj" />
     <Project Path="tests/Watcher.UnitTests/Watcher.UnitTests.csproj" />
   </Folder>

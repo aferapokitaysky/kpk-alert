@@ -1,0 +1,10 @@
+<Application x:Class="Watcher.EdgeAgent.Desktop.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <SolidColorBrush x:Key="AccentBrush" Color="#2368D1" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="MutedBrush" Color="#657184" />
+  </Application.Resources>
+</Application>

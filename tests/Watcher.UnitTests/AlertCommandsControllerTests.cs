@@ -97,6 +97,111 @@ public sealed class AlertCommandsControllerTests : IDisposable
             .Select(target => target.Sequence));
     }
 
+    [Fact]
+    public async Task Create_stop_targets_an_active_start_for_authorized_locations()
+    {
+        var targetCommandId = Guid.NewGuid();
+        await _sequenceAllocator.AllocateAsync(_locationId, CancellationToken.None);
+        Device device = new()
+        {
+            Id = Guid.NewGuid(),
+            LocationId = _locationId,
+            Name = "Вузол корпусу",
+            CertificateThumbprint = new string('a', 64)
+        };
+        _db.Devices.Add(device);
+        _db.AlertCommands.Add(new AlertCommand
+        {
+            Id = targetCommandId,
+            IdempotencyKey = Guid.NewGuid(),
+            Action = "start",
+            PresetCode = "evacuation",
+            InitiatedByUserId = _userId,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            Targets = [new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                LocationId = _locationId,
+                Sequence = 1,
+                State = "Playing"
+            }]
+        });
+        _db.CommandDeliveries.Add(new CommandDelivery
+        {
+            Id = Guid.NewGuid(),
+            CommandId = targetCommandId,
+            DeviceId = device.Id,
+            State = CommandDeliveryState.Playing,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
+        await _db.SaveChangesAsync();
+
+        IActionResult result = await CreateController(_userId).Create(
+            new CreateAlertCommandRequest("stop", null, [_locationId], targetCommandId),
+            _idempotencyKey,
+            CancellationToken.None);
+
+        Assert.IsType<AcceptedAtActionResult>(result);
+        AlertCommand stopCommand = Assert.Single(_db.AlertCommands.Where(item => item.Action == "stop"));
+        Assert.Equal(targetCommandId, stopCommand.TargetCommandId);
+        Assert.Null(stopCommand.PresetCode);
+        Assert.Equal(0, stopCommand.MaximumPlaybackDurationSeconds);
+        Assert.Equal(2, Assert.Single(stopCommand.Targets).Sequence);
+        Assert.Contains(targetCommandId.ToString(), Assert.Single(_db.OutboxMessages
+            .Where(item => item.CommandId == stopCommand.Id)).Payload);
+    }
+
+    [Fact]
+    public async Task Create_stop_rejects_a_target_that_is_not_playing_at_the_requested_location()
+    {
+        var targetCommandId = Guid.NewGuid();
+        Device device = new()
+        {
+            Id = Guid.NewGuid(),
+            LocationId = _locationId,
+            Name = "Вузол корпусу",
+            CertificateThumbprint = new string('b', 64)
+        };
+        _db.Devices.Add(device);
+        _db.AlertCommands.Add(new AlertCommand
+        {
+            Id = targetCommandId,
+            IdempotencyKey = Guid.NewGuid(),
+            Action = "start",
+            PresetCode = "evacuation",
+            InitiatedByUserId = _userId,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            Targets = [new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                LocationId = _locationId,
+                Sequence = 1,
+                State = "Completed"
+            }]
+        });
+        _db.CommandDeliveries.Add(new CommandDelivery
+        {
+            Id = Guid.NewGuid(),
+            CommandId = targetCommandId,
+            DeviceId = device.Id,
+            State = CommandDeliveryState.Completed,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+        });
+        await _db.SaveChangesAsync();
+
+        IActionResult result = await CreateController(_userId).Create(
+            new CreateAlertCommandRequest("stop", null, [_locationId], targetCommandId),
+            _idempotencyKey,
+            CancellationToken.None);
+
+        AssertProblem(result, StatusCodes.Status409Conflict);
+        Assert.DoesNotContain(_db.AlertCommands, item => item.Action == "stop");
+    }
+
     [Theory]
     [InlineData("stop", "evacuation")]
     [InlineData("start", " ")]

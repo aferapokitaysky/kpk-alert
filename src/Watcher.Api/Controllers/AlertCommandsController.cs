@@ -50,8 +50,14 @@ public sealed class AlertCommandsController(
             return ReplayOrConflict(existing, userId, request);
         }
 
-        if (request.Action != "start" || string.IsNullOrWhiteSpace(request.PresetCode) ||
-            request.PresetCode.Length > 80 || request.LocationIds is null ||
+        var isStart = request.Action == "start";
+        var isStop = request.Action == "stop";
+        if ((!isStart && !isStop) ||
+            (isStart && (string.IsNullOrWhiteSpace(request.PresetCode) ||
+                         request.PresetCode.Length > 80 || request.TargetCommandId is not null)) ||
+            (isStop && (request.PresetCode is not null || request.TargetCommandId is null ||
+                        request.TargetCommandId == Guid.Empty)) ||
+            request.LocationIds is null ||
             request.LocationIds.Count is 0 or > 50 ||
             request.LocationIds.Any(id => id == Guid.Empty) ||
             request.LocationIds.Distinct().Count() != request.LocationIds.Count)
@@ -60,10 +66,12 @@ public sealed class AlertCommandsController(
                 title: "Перевірте дію, сценарій і список корпусів.");
         }
 
-        SoundPreset? preset = await db.SoundPresets.AsNoTracking().SingleOrDefaultAsync(
-            item => item.Code == request.PresetCode && item.IsPublished,
-            cancellationToken);
-        if (preset is null || !SoundPreset.HasValidManifestHash(preset.ManifestHash))
+        SoundPreset? preset = isStart
+            ? await db.SoundPresets.AsNoTracking().SingleOrDefaultAsync(
+                item => item.Code == request.PresetCode && item.IsPublished,
+                cancellationToken)
+            : null;
+        if (isStart && (preset is null || !SoundPreset.HasValidManifestHash(preset.ManifestHash)))
         {
             return Problem(statusCode: StatusCodes.Status422UnprocessableEntity,
                 title: "Обраний сценарій не опублікований або має некоректний manifest hash.");
@@ -93,6 +101,40 @@ public sealed class AlertCommandsController(
             return Forbid();
         }
 
+        if (isStop)
+        {
+            AlertCommand? targetCommand = await db.AlertCommands.AsNoTracking()
+                .Include(item => item.Targets)
+                .SingleOrDefaultAsync(item => item.Id == request.TargetCommandId, cancellationToken);
+            var requestedLocations = request.LocationIds.ToHashSet();
+            if (targetCommand is null || targetCommand.Action != "start" ||
+                !targetCommand.Targets.Select(target => target.LocationId).ToHashSet()
+                    .IsSupersetOf(requestedLocations))
+            {
+                return Problem(statusCode: StatusCodes.Status422UnprocessableEntity,
+                    title: "Команду можна зупинити лише в корпусах, для яких її було створено.");
+            }
+
+            var devices = await db.Devices.AsNoTracking()
+                .Where(device => requestedLocations.Contains(device.LocationId) && device.RevokedAtUtc == null)
+                .Select(device => new { device.Id, device.LocationId })
+                .ToListAsync(cancellationToken);
+            var deviceIds = devices.Select(device => device.Id).ToList();
+            var configuredLocations = devices.Select(device => device.LocationId).ToHashSet();
+            List<CommandDelivery> targetDeliveries = await db.CommandDeliveries.AsNoTracking()
+                .Where(delivery => delivery.CommandId == targetCommand.Id &&
+                                   deviceIds.Contains(delivery.DeviceId))
+                .ToListAsync(cancellationToken);
+            if (!configuredLocations.SetEquals(requestedLocations) ||
+                targetDeliveries.Count != deviceIds.Count ||
+                targetDeliveries.Any(delivery => delivery.State is not (
+                    CommandDeliveryState.InFlight or CommandDeliveryState.Accepted or CommandDeliveryState.Playing)))
+            {
+                return Problem(statusCode: StatusCodes.Status409Conflict,
+                    title: "Сигнал уже завершено або ще не передано пристрою.");
+            }
+        }
+
         DateTimeOffset createdAtUtc = clock.GetUtcNow();
         await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         try
@@ -113,8 +155,10 @@ public sealed class AlertCommandsController(
             {
                 Id = Guid.NewGuid(),
                 IdempotencyKey = idempotencyKey,
-                Action = request.Action,
+                Action = isStop ? "stop" : "start",
                 PresetCode = request.PresetCode,
+                TargetCommandId = request.TargetCommandId,
+                MaximumPlaybackDurationSeconds = isStop ? 0 : AlertCommand.DefaultMaximumPlaybackDurationSeconds,
                 InitiatedByUserId = userId,
                 CreatedAtUtc = createdAtUtc,
                 ExpiresAtUtc = createdAtUtc.AddMinutes(AlertCommand.DefaultValidityMinutes),
@@ -126,6 +170,7 @@ public sealed class AlertCommandsController(
                 command.Id,
                 command.Action,
                 command.PresetCode,
+                command.TargetCommandId,
                 command.ExpiresAtUtc,
                 LocationIds = command.Targets.Select(target => target.LocationId)
             });
@@ -410,6 +455,7 @@ public sealed class AlertCommandsController(
         if (request.LocationIds is not { } locationIds ||
             !string.Equals(command.Action, request.Action, StringComparison.Ordinal) ||
             !string.Equals(command.PresetCode, request.PresetCode, StringComparison.Ordinal) ||
+            command.TargetCommandId != request.TargetCommandId ||
             command.Targets.Count != locationIds.Count)
         {
             return false;

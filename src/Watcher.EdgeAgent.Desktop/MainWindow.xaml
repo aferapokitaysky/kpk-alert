@@ -1,0 +1,42 @@
+<Window x:Class="Watcher.EdgeAgent.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="KGTA Alert — стан вузла" Height="520" Width="720"
+        MinHeight="440" MinWidth="600" Background="#F3F6FA"
+        FontFamily="Segoe UI" Loaded="Window_Loaded" Closed="Window_Closed">
+  <Grid Margin="28">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <StackPanel>
+      <TextBlock Text="KGTA Alert" FontSize="25" FontWeight="SemiBold" Foreground="#17263B" />
+      <TextBlock Text="Стан локального вузла оповіщення" Margin="0,4,0,22" Foreground="{StaticResource MutedBrush}" />
+    </StackPanel>
+    <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" CornerRadius="10" Padding="24">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <DockPanel>
+          <Ellipse x:Name="StateIndicator" Width="11" Height="11" Fill="#8995A5" Margin="0,0,10,0" VerticalAlignment="Center" />
+          <TextBlock x:Name="ConnectionText" Text="Завантаження стану…" FontSize="19" FontWeight="SemiBold" Foreground="#17263B" />
+        </DockPanel>
+        <TextBlock x:Name="DeviceText" Grid.Row="1" Margin="0,18,0,0" Foreground="#334155" Text="Вузол: —" />
+        <TextBlock x:Name="AudioText" Grid.Row="2" Margin="0,9,0,0" Foreground="#334155" Text="Аудіовихід: —" />
+        <TextBlock x:Name="CommandText" Grid.Row="3" Margin="0,9,0,0" Foreground="#334155" Text="Остання команда: —" />
+        <TextBlock x:Name="QueueText" Grid.Row="4" Margin="0,9,0,0" Foreground="#334155" Text="Квитанцій у черзі: —" />
+        <Border Grid.Row="5" Margin="0,18,0,0" Padding="12" Background="#F5F7FA" CornerRadius="6" VerticalAlignment="Top">
+          <TextBlock x:Name="DiagnosticText" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Text="Діагностика: немає" />
+        </Border>
+      </Grid>
+    </Border>
+    <DockPanel Grid.Row="2" Margin="0,18,0,0">
+      <TextBlock x:Name="UpdatedText" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
+      <Button Content="Оновити" DockPanel.Dock="Right" Padding="18,9" Background="{StaticResource AccentBrush}"
+              Foreground="White" BorderThickness="0" Click="Refresh_Click" />
+    </DockPanel>
+  </Grid>
+</Window>

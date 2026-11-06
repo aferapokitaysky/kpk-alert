@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   createAlertCommand,
+  createStopCommand,
   getAlertCommand,
   getLocations,
   getPresets,
@@ -16,6 +17,7 @@ import { AuditPage } from './features/audit/AuditPage';
 import { GoogleLoginLink } from './features/auth/GoogleLoginLink';
 import { Dashboard } from './features/dashboard/Dashboard';
 import { CommandDialog } from './features/dashboard/CommandDialog';
+import { StopCommandDialog } from './features/dashboard/StopCommandDialog';
 import {
   clearLastCommandId,
   readLastCommandId,
@@ -25,6 +27,7 @@ import {
   commandErrorMessage,
   readinessFromResponse,
   resourceFromResult,
+  stopCommandErrorMessage,
   type ReadinessState,
   type ResourceState,
   type SessionState,
@@ -71,6 +74,10 @@ function App() {
   const [pendingCommand, setPendingCommand] = useState<{
     preset: Preset;
     locationIds: string[];
+  } | null>(null);
+  const [pendingStop, setPendingStop] = useState<{
+    commandId: string;
+    locations: Location[];
   } | null>(null);
   const [commandPending, setCommandPending] = useState(false);
   const [commandError, setCommandError] = useState('');
@@ -332,6 +339,50 @@ function App() {
     }
   };
 
+  const handleStopCommand = async (commandId: string, selectedLocations: Location[]) => {
+    if (
+      !pendingStop ||
+      commandId !== pendingStop.commandId ||
+      selectedLocations.length !== pendingStop.locations.length ||
+      selectedLocations.length === 0
+    ) {
+      return;
+    }
+    const ids = selectedLocations.map((location) => location.id).sort();
+    const fingerprint = JSON.stringify({ action: 'stop', commandId, locationIds: ids });
+    if (!retryKeyRef.current || retryKeyRef.current.fingerprint !== fingerprint) {
+      try {
+        retryKeyRef.current = { fingerprint, key: crypto.randomUUID() };
+      } catch {
+        setCommandError(
+          'Браузер не може створити безпечний ключ запиту. Оновіть сторінку або скористайтеся іншим браузером.',
+        );
+        return;
+      }
+    }
+
+    setCommandPending(true);
+    setCommandError('');
+    try {
+      const command = await createStopCommand(commandId, ids, retryKeyRef.current.key);
+      setLastCommand(command);
+      setLastCommandLocations(selectedLocations);
+      saveLastCommandId(command.id);
+      setLastCommandRestoreStatus('idle');
+      retryKeyRef.current = null;
+      setPendingStop(null);
+    } catch (error) {
+      setCommandError(stopCommandErrorMessage(error));
+      if (error instanceof ApiError && error.status === 401) {
+        setSession({ status: 'unauthenticated' });
+        setLocations({ status: 'unauthenticated' });
+        setPresets({ status: 'unauthenticated' });
+      }
+    } finally {
+      setCommandPending(false);
+    }
+  };
+
   const isAuthenticated = session.status === 'authenticated';
   const canOperate = isAuthenticated && session.capabilities.canOperate;
   const canViewAudit = isAuthenticated && session.capabilities.canViewAudit;
@@ -483,7 +534,13 @@ function App() {
               onRefresh={() => void refreshData()}
               onRun={(preset, locationIds) => {
                 setCommandError('');
+                setPendingStop(null);
                 setPendingCommand({ preset, locationIds });
+              }}
+              onStop={(commandId, selectedLocations) => {
+                setCommandError('');
+                setPendingCommand(null);
+                setPendingStop({ commandId, locations: selectedLocations });
               }}
             />
           ) : (
@@ -527,6 +584,18 @@ function App() {
             if (!commandPending) setPendingCommand(null);
           }}
           onConfirm={handleCommand}
+        />
+      )}
+      {pendingStop && (
+        <StopCommandDialog
+          commandId={pendingStop.commandId}
+          locations={pendingStop.locations}
+          pending={commandPending}
+          error={commandError}
+          onCancel={() => {
+            if (!commandPending) setPendingStop(null);
+          }}
+          onConfirm={handleStopCommand}
         />
       )}
     </div>

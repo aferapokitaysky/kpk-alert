@@ -21,8 +21,13 @@ const playing = {
   attemptCount: 0,
 };
 
-function page(items: unknown[], currentPage = 1, totalCount = items.length) {
-  return { items, page: currentPage, pageSize: 25, totalCount };
+function page(
+  items: unknown[],
+  currentPage = 1,
+  totalCount = items.length,
+  hasUnfinishedDeliveries = false,
+) {
+  return { items, page: currentPage, pageSize: 25, totalCount, hasUnfinishedDeliveries };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -52,6 +57,78 @@ afterEach(() => {
 });
 
 describe('панель доставлення команди', () => {
+  it('дає надіслати відбій, коли відомі стани всіх вузлів команди', async () => {
+    const user = userEvent.setup();
+    const onRequestStop = vi.fn();
+    const targetLocations = [{ id: 'location-1', name: 'Головний корпус', code: 'main' }];
+    fetchMock.mockResolvedValueOnce(jsonResponse(page([playing], 1, 1, true)));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <CommandDeliveriesPanel
+        commandId="command-1"
+        canOperate
+        targetLocations={targetLocations}
+        onRequestStop={onRequestStop}
+      />,
+    );
+
+    const button = await screen.findByRole('button', { name: 'Відбій для цієї команди' });
+    await user.click(button);
+    expect(onRequestStop).toHaveBeenCalledWith('command-1', targetLocations);
+  });
+
+  it('не пропонує відбій для завершеної або неповністю завантаженої команди', async () => {
+    const user = userEvent.setup();
+    const locations = [{ id: 'location-1', name: 'Головний корпус', code: 'main' }];
+    fetchMock.mockResolvedValueOnce(jsonResponse(page([{ ...playing, state: 'Completed' }])));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <CommandDeliveriesPanel
+        commandId="command-1"
+        canOperate
+        targetLocations={locations}
+        onRequestStop={vi.fn()}
+      />,
+    );
+    expect(
+      await screen.findByText('Для цієї команди немає незавершених доставок.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Відбій для цієї команди' }),
+    ).not.toBeInTheDocument();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(page([playing], 1, 26)));
+    await user.click(screen.getByRole('button', { name: 'Оновити' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByRole('button', { name: 'Відбій для цієї команди' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('дозволяє відбій, коли незавершена доставка є поза відкритою сторінкою', async () => {
+    const user = userEvent.setup();
+    const onRequestStop = vi.fn();
+    const targetLocations = [{ id: 'location-1', name: 'Головний корпус', code: 'main' }];
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(page([{ ...playing, state: 'Completed' }], 1, 26, true)),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <CommandDeliveriesPanel
+        commandId="command-1"
+        canOperate
+        targetLocations={targetLocations}
+        onRequestStop={onRequestStop}
+      />,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'Відбій для цієї команди' }));
+    expect(onRequestStop).toHaveBeenCalledWith('command-1', targetLocations);
+  });
+
   it('пояснює різницю між прийняттям команди та відтворенням звуку', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(page([accepted, playing])));
     vi.stubGlobal('fetch', fetchMock);

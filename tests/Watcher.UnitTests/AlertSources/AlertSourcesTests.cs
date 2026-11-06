@@ -144,6 +144,18 @@ public sealed class AlertsInUaProviderTests
         });
     }
 
+    [Fact]
+    public async Task Read_rejects_response_larger_than_provider_limit()
+    {
+        FakeHttpClientFactory factory = new((_, _, _) =>
+            Task.FromResult(JsonResponse($"\"{new string('x', 64 * 1024)}\"")));
+        AlertsInUaProvider provider = CreateProvider(factory, "token");
+
+        IReadOnlyList<AlertSourceObservation> observations = await provider.ReadAsync(CancellationToken.None);
+
+        Assert.All(observations, item => Assert.Equal("invalid_response", item.ErrorCode));
+    }
+
     private static AlertsInUaProvider CreateProvider(
         IHttpClientFactory factory,
         string? token,
@@ -241,6 +253,48 @@ public sealed class NeptunProviderTests
     }
 
     [Fact]
+    public async Task Read_rejects_response_larger_than_provider_limit()
+    {
+        FakeHttpClientFactory factory = new((_, _, _) =>
+            Task.FromResult(JsonResponse($"{{\"padding\":\"{new string('x', 64 * 1024)}\",\"oblasts\":[],\"raions\":[]}}")));
+        NeptunProvider provider = CreateProvider(factory);
+
+        IReadOnlyList<AlertSourceObservation> observations = await provider.ReadAsync(CancellationToken.None);
+
+        Assert.All(observations, item => Assert.Equal("invalid_response", item.ErrorCode));
+    }
+
+    [Fact]
+    public async Task Read_rejects_streaming_response_over_limit_without_content_length()
+    {
+        var payload = $"{{\"padding\":\"{new string('x', 64 * 1024)}\",\"oblasts\":[],\"raions\":[]}}";
+        FakeHttpClientFactory factory = new((_, _, _) =>
+        {
+            StreamContent content = new(new NonSeekableMemoryStream(Encoding.UTF8.GetBytes(payload)));
+            Assert.Null(content.Headers.ContentLength);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+        NeptunProvider provider = CreateProvider(factory);
+
+        IReadOnlyList<AlertSourceObservation> observations = await provider.ReadAsync(CancellationToken.None);
+
+        Assert.All(observations, item => Assert.Equal("invalid_response", item.ErrorCode));
+    }
+
+    [Fact]
+    public async Task Read_rejects_too_many_locations()
+    {
+        const string location = "{\"key\":\"other\",\"name\":\"Other\",\"oblast\":\"\"}";
+        var payload = $"{{\"oblasts\":[{string.Join(',', Enumerable.Repeat(location, 257))}],\"raions\":[]}}";
+        FakeHttpClientFactory factory = new((_, _, _) => Task.FromResult(JsonResponse(payload)));
+        NeptunProvider provider = CreateProvider(factory);
+
+        IReadOnlyList<AlertSourceObservation> observations = await provider.ReadAsync(CancellationToken.None);
+
+        Assert.All(observations, item => Assert.Equal("invalid_response", item.ErrorCode));
+    }
+
+    [Fact]
     public async Task Read_duplicate_stable_key_is_unknown_not_inactive()
     {
         const string payload = """
@@ -303,6 +357,11 @@ public sealed class NeptunProviderTests
     {
         Content = new StringContent(json, Encoding.UTF8, "application/json")
     };
+
+    private sealed class NonSeekableMemoryStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
+    }
 }
 
 public sealed class AlertStatusAggregatorTests
