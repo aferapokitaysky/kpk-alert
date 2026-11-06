@@ -115,6 +115,7 @@ internal sealed class EdgeAgentHostedService(
     EdgeAgentStartupCoordinator startupCoordinator,
     DeviceCommandTransport transport,
     IAudioPlayer audioPlayer,
+    IAudioEndpointAvailabilityMonitor audioEndpointAvailability,
     EdgeAgentOptions options,
     IEdgeAgentClock clock,
     EdgeAgentStatusProvider status,
@@ -165,6 +166,7 @@ internal sealed class EdgeAgentHostedService(
 
     private async Task RefreshStatusAsync(CancellationToken cancellationToken)
     {
+        long? lastAudioEndpointProbeTimestamp = null;
         while (!cancellationToken.IsCancellationRequested)
         {
             var pendingCount = await store.GetPendingReceiptCountAsync(cancellationToken);
@@ -172,9 +174,21 @@ internal sealed class EdgeAgentHostedService(
             ProcessedCommand? activeCommand = activeCommandId is { } commandId
                 ? await store.FindCommandAsync(commandId, cancellationToken)
                 : null;
+            var probeAudioEndpoint = lastAudioEndpointProbeTimestamp is null ||
+                clock.GetElapsedTime(lastAudioEndpointProbeTimestamp.Value) >= TimeSpan.FromSeconds(5);
+            if (probeAudioEndpoint)
+            {
+                lastAudioEndpointProbeTimestamp = clock.GetTimestamp();
+            }
+
+            var endpointAvailable = probeAudioEndpoint && audioEndpointAvailability.IsAvailable(status.Get().AudioEndpointId);
             status.Update(current => current with
             {
-                AudioState = ResolveAudioState(current.AudioEndpointId, activeCommand, current.AudioState),
+                AudioState = activeCommand is not null
+                    ? "playing"
+                    : probeAudioEndpoint
+                        ? ResolveAudioState(current.AudioEndpointId, null, endpointAvailable, current.AudioState)
+                        : current.AudioState,
                 LastCommandId = activeCommand?.CommandId ?? current.LastCommandId,
                 LastSequence = activeCommand?.Sequence ?? current.LastSequence,
                 LastCommandState = activeCommand?.State.ToString() ?? current.LastCommandState
@@ -184,12 +198,14 @@ internal sealed class EdgeAgentHostedService(
         }
     }
 
-    internal static string ResolveAudioState(string? audioEndpointId, ProcessedCommand? activeCommand, string currentState) =>
+    internal static string ResolveAudioState(
+        string? audioEndpointId,
+        ProcessedCommand? activeCommand,
+        bool endpointAvailable,
+        string currentState) =>
         activeCommand is not null
             ? "playing"
-            : currentState == "unavailable"
-                ? "unavailable"
-            : string.IsNullOrWhiteSpace(audioEndpointId)
+            : string.IsNullOrWhiteSpace(audioEndpointId) || !endpointAvailable
                 ? "unavailable"
                 : currentState == "idle" ? "idle" : "ready";
 }
@@ -209,7 +225,7 @@ internal sealed class EdgeAgentStartupCoordinator(
         {
             ConnectionState = EdgeAgentConnectionState.Connecting,
             AudioEndpointId = options.AudioEndpointId,
-            AudioState = string.IsNullOrWhiteSpace(options.AudioEndpointId) ? "unavailable" : "ready"
+            AudioState = "unavailable"
         });
         return recoveredReceipts;
     }

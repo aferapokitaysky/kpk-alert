@@ -105,6 +105,11 @@ public interface IAudioPlayer
     Task<bool> StopAsync(Guid targetCommandId, CancellationToken cancellationToken);
 }
 
+public interface IAudioEndpointAvailabilityMonitor
+{
+    bool IsAvailable(string? endpointId);
+}
+
 public interface IAudioPlaybackEventHandler
 {
     Task OnPlaybackFinishedAsync(
