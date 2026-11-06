@@ -41,7 +41,17 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             }
         }
 
-        Guid[] connectedDeviceIds = sessions.ConnectedDeviceIds.ToArray();
+        (Guid DeviceId, Guid PresenceSessionId)[] localSessions = sessions.ConnectedSessions
+            .Where(session => session.PresenceSessionId != Guid.Empty)
+            .ToArray();
+        Guid[] presenceSessionIds = localSessions.Select(session => session.PresenceSessionId).ToArray();
+        Guid[] connectedDeviceIds = await db.DeviceSessions.AsNoTracking()
+            .Where(session => presenceSessionIds.Contains(session.Id) &&
+                              session.DisconnectedAtUtc == null &&
+                              session.LastSeenAtUtc >= now - DeviceSessionPresenceService.PresenceTimeToLive)
+            .Select(session => session.DeviceId)
+            .Distinct()
+            .ToArrayAsync(cancellationToken);
         if (connectedDeviceIds.Length == 0)
         {
             return processedCount;
@@ -58,7 +68,10 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             }
 
             var sent = await sessions.SendAsync(
-                dispatch.DeviceId, dispatch.Payload, cancellationToken);
+                dispatch.DeviceId,
+                localSessions.Single(session => session.DeviceId == dispatch.DeviceId).PresenceSessionId,
+                dispatch.Payload,
+                cancellationToken);
             if (!sent)
             {
                 await ScheduleRetryAsync(dispatch, clock.GetUtcNow(), cancellationToken);
