@@ -21,20 +21,34 @@ public sealed class DeviceSessionPresenceService(
             ? await db.Database.BeginTransactionAsync(cancellationToken)
             : null;
 
+        Device? device;
         if (db.Database.IsNpgsql())
         {
             List<Device> lockedDevices = await db.Devices
                 .FromSqlInterpolated($"SELECT * FROM devices WHERE \"Id\" = {deviceId} FOR UPDATE")
                 .AsNoTracking()
                 .ToListAsync(cancellationToken);
-            if (lockedDevices.Count == 0)
-            {
-                throw new InvalidOperationException("Не знайдено зареєстрований пристрій для WebSocket-сеансу.");
-            }
+            device = lockedDevices.SingleOrDefault();
         }
-        else if (!await db.Devices.AnyAsync(device => device.Id == deviceId, cancellationToken))
+        else
         {
-            throw new InvalidOperationException("Не знайдено зареєстрований пристрій для WebSocket-сеансу.");
+            device = await db.Devices.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Id == deviceId, cancellationToken);
+        }
+
+        if (device is null)
+        {
+            throw new DeviceSessionUnavailableException(
+                "Не знайдено зареєстрований пристрій для WebSocket-сеансу.");
+        }
+
+        if (device.RevokedAtUtc is not null ||
+            !await db.Locations.AsNoTracking().AnyAsync(
+                location => location.Id == device.LocationId && location.IsActive,
+                cancellationToken))
+        {
+            throw new DeviceSessionUnavailableException(
+                "Пристрій відкликано або його корпус неактивний.");
         }
 
         DateTimeOffset now = timeProvider.GetUtcNow();
@@ -129,9 +143,13 @@ public sealed class DeviceSessionPresenceService(
     {
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
         WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
-        return await db.DeviceSessions.AsNoTracking()
-            .AnyAsync(session => session.Id == sessionId && session.DisconnectedAtUtc == null,
-                cancellationToken);
+        return await (from session in db.DeviceSessions.AsNoTracking()
+                      join device in db.Devices.AsNoTracking() on session.DeviceId equals device.Id
+                      join location in db.Locations.AsNoTracking() on device.LocationId equals location.Id
+                      where session.Id == sessionId && session.DisconnectedAtUtc == null &&
+                            device.RevokedAtUtc == null && location.IsActive
+                      select session.Id)
+            .AnyAsync(cancellationToken);
     }
 
     public static IQueryable<Guid> ConnectedDeviceIds(WatcherDbContext db, DateTimeOffset now) =>
@@ -167,3 +185,5 @@ public sealed class DeviceSessionPresenceService(
         return true;
     }
 }
+
+public sealed class DeviceSessionUnavailableException(string message) : InvalidOperationException(message);
