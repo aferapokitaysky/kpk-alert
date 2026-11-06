@@ -121,7 +121,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         bool sent;
         using (var sendTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
-            sendTimeout.CancelAfter(options.Value.AcknowledgementTimeout);
+            sendTimeout.CancelAfter(options.Value.SendTimeout);
             try
             {
                 sent = await sessions.SendAsync(
