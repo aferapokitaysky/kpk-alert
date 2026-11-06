@@ -1,0 +1,127 @@
+.minute-history {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.minute-history__heading,
+.minute-history__entry-heading,
+.minute-history__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.minute-history__heading h2,
+.minute-history__entry h3 {
+  margin: 0;
+}
+
+.minute-history__heading p:not(.eyebrow),
+.minute-history__entry p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted, #64748b);
+}
+
+.minute-history__filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 0.9rem;
+}
+
+.minute-history__submit {
+  min-height: 2.75rem;
+}
+
+.minute-history__empty {
+  padding: 1rem;
+  border: 1px solid var(--border, #dbe3ef);
+  border-radius: var(--radius-md, 0.75rem);
+  color: var(--text-muted, #64748b);
+  background: var(--surface-subtle, #f8fafc);
+}
+
+.minute-history__list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.minute-history__entry {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border, #dbe3ef);
+  border-radius: var(--radius-md, 0.75rem);
+  background: var(--surface, #fff);
+}
+
+.minute-history__entry h3 {
+  font-size: 1rem;
+}
+
+.minute-history__outcome {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.8rem;
+  padding: 0.2rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.minute-history__outcome--queued {
+  color: var(--blue-800, #174a7e);
+  background: var(--blue-100, #e6f1fc);
+}
+
+.minute-history__outcome--skipped {
+  color: #6b4b00;
+  background: #fff4cc;
+}
+
+.minute-history__entry .minute-history__time {
+  font-size: 0.85rem;
+}
+
+.minute-history__pagination {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.minute-history__pagination > span {
+  margin-inline: auto 0;
+  color: var(--text-muted, #64748b);
+}
+
+.minute-history__page-size {
+  width: min(9rem, 100%);
+  margin-right: auto;
+}
+
+@media (max-width: 640px) {
+  .minute-history__heading,
+  .minute-history__entry-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .minute-history__filters {
+    grid-template-columns: 1fr;
+  }
+
+  .minute-history__submit {
+    width: 100%;
+  }
+
+  .minute-history__pagination {
+    justify-content: space-between;
+  }
+
+  .minute-history__pagination > span {
+    flex-basis: 100%;
+    margin: 0;
+    text-align: right;
+  }
+}

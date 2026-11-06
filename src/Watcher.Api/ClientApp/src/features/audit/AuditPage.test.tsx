@@ -19,6 +19,15 @@ const minuteStatus = {
   processedAtUtc: null,
 };
 
+const minuteHistory = {
+  items: [],
+  from: '2026-10-08',
+  to: '2026-11-06',
+  page: 1,
+  pageSize: 25,
+  totalCount: 0,
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -29,7 +38,16 @@ describe('сторінка аудиту', () => {
       const path = String(input);
       const body = path.includes('/minute-of-silence/status/today')
         ? minuteStatus
-        : { items: [], page: 1, pageSize: 25, totalCount: 0 };
+        : path.includes('/minute-of-silence/history')
+          ? {
+              items: [],
+              from: '2026-10-08',
+              to: '2026-11-06',
+              page: 1,
+              pageSize: 25,
+              totalCount: 0,
+            }
+          : { items: [], page: 1, pageSize: 25, totalCount: 0 };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
           status: 200,
@@ -54,9 +72,39 @@ describe('сторінка аудиту', () => {
     expect(await screen.findByRole('region', { name: 'Хвилина мовчання' })).toHaveTextContent(
       'Результат ще не зафіксовано.',
     );
+    expect(await screen.findByRole('region', { name: 'Історія результатів' })).toHaveTextContent(
+      'За цей період збережених результатів немає.',
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/minute-of-silence/status/today',
       expect.objectContaining({ cache: 'no-store' }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/api\/v1\/minute-of-silence\/history\?/),
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('не показує історію хвилини мовчання оператору без доступу до аудиту', () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <AuditPage
+        session={{
+          status: 'authenticated',
+          roles: ['notificator'],
+          capabilities: { canOperate: true, canViewAudit: false },
+        }}
+        onSessionExpired={vi.fn()}
+        onSessionRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('region', { name: 'Історія результатів' })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^\/api\/v1\/minute-of-silence\/history\?/),
+      expect.anything(),
     );
   });
 
@@ -131,7 +179,9 @@ describe('сторінка аудиту', () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const body = String(input).includes('/minute-of-silence/status/today')
         ? minuteStatus
-        : { items: [], page: 1, pageSize: 25, totalCount: 0 };
+        : String(input).includes('/minute-of-silence/history')
+          ? minuteHistory
+          : { items: [], page: 1, pageSize: 25, totalCount: 0 };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
           status: 200,
@@ -193,7 +243,9 @@ describe('сторінка аудиту', () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const body = String(input).includes('/minute-of-silence/status/today')
         ? minuteStatus
-        : { items: [], page: 1, pageSize: 25, totalCount: 0 };
+        : String(input).includes('/minute-of-silence/history')
+          ? minuteHistory
+          : { items: [], page: 1, pageSize: 25, totalCount: 0 };
       return Promise.resolve(
         new Response(JSON.stringify(body), {
           status: 200,

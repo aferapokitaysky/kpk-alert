@@ -17,6 +17,7 @@ import {
   logout,
 } from './api';
 import { getCommandDeliveries } from './features/command-deliveries/api';
+import { getMinuteOfSilenceHistory } from './features/minute-of-silence/history-api';
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
@@ -53,6 +54,11 @@ vi.mock('./features/minute-of-silence/MinuteOfSilenceStatusPanel', () => ({
 vi.mock('./features/command-deliveries/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./features/command-deliveries/api')>();
   return { ...actual, getCommandDeliveries: vi.fn() };
+});
+
+vi.mock('./features/minute-of-silence/history-api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./features/minute-of-silence/history-api')>();
+  return { ...actual, getMinuteOfSilenceHistory: vi.fn() };
 });
 
 const location = { id: 'location-1', name: 'Головний корпус', code: 'main' };
@@ -103,6 +109,14 @@ beforeEach(() => {
   vi.mocked(getLocations).mockResolvedValue([location]);
   vi.mocked(getPresets).mockResolvedValue([preset]);
   vi.mocked(getReadiness).mockResolvedValue({ httpStatus: 200, status: 'ok' });
+  vi.mocked(getMinuteOfSilenceHistory).mockResolvedValue({
+    items: [],
+    from: '2026-10-08',
+    to: '2026-11-06',
+    page: 1,
+    pageSize: 25,
+    totalCount: 0,
+  });
   vi.mocked(getCommandDeliveries).mockResolvedValue({
     items: [],
     page: 1,

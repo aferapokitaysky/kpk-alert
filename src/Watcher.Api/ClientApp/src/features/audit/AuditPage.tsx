@@ -7,6 +7,7 @@ import {
   type AuditPage as AuditPageData,
 } from '../../api';
 import { GoogleLoginLink } from '../auth/GoogleLoginLink';
+import { MinuteOfSilenceHistoryPanel } from '../minute-of-silence/MinuteOfSilenceHistoryPanel';
 import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
 import { pageCount, type SessionState } from '../../state';
 
@@ -322,6 +323,11 @@ export function AuditPage({ session, onSessionExpired, onSessionRetry }: Props) 
         </div>
       </section>
       <MinuteOfSilenceStatusPanel session={session} />
+      <MinuteOfSilenceHistoryPanel
+        session={session}
+        onSessionExpired={onSessionExpired}
+        onSessionRetry={onSessionRetry}
+      />
       <section className="panel audit-panel" aria-labelledby="audit-title">
         <div className="panel-heading">
           <div>
