@@ -18,6 +18,7 @@ import { GoogleLoginLink } from './features/auth/GoogleLoginLink';
 import { Dashboard } from './features/dashboard/Dashboard';
 import { CommandDialog } from './features/dashboard/CommandDialog';
 import { StopCommandDialog } from './features/dashboard/StopCommandDialog';
+import { UserAccessPanel } from './features/user-access/UserAccessPanel';
 import {
   clearLastCommandId,
   readLastCommandId,
@@ -33,10 +34,12 @@ import {
   type SessionState,
 } from './state';
 
-type Page = 'dashboard' | 'audit';
+type Page = 'dashboard' | 'audit' | 'users';
 
 function pageFromHash(): Page {
-  return window.location.hash === '#audit' ? 'audit' : 'dashboard';
+  if (window.location.hash === '#audit') return 'audit';
+  if (window.location.hash === '#users') return 'users';
+  return 'dashboard';
 }
 
 function useMobileViewport(onDesktop: () => void): boolean {
@@ -232,6 +235,10 @@ function App() {
   useEffect(() => {
     if (session.status !== 'authenticated') return;
     const { canOperate, canViewAudit } = session.capabilities;
+    if (page === 'users' && !session.roles.includes('admin')) {
+      window.location.hash = canViewAudit ? 'audit' : 'dashboard';
+      return;
+    }
     if (!canOperate && canViewAudit && page === 'dashboard') window.location.hash = 'audit';
   }, [page, session]);
 
@@ -386,7 +393,9 @@ function App() {
   const isAuthenticated = session.status === 'authenticated';
   const canOperate = isAuthenticated && session.capabilities.canOperate;
   const canViewAudit = isAuthenticated && session.capabilities.canViewAudit;
-  const activeTitle = page === 'audit' ? 'Журнал дій' : 'Пульт оповіщення';
+  const canManageUsers = isAuthenticated && session.roles.includes('admin');
+  const activeTitle =
+    page === 'audit' ? 'Журнал дій' : page === 'users' ? 'Облікові записи' : 'Пульт оповіщення';
 
   return (
     <div className={`app-shell${menuOpen && isMobile ? ' is-menu-open' : ''}`}>
@@ -426,6 +435,21 @@ function App() {
                 </svg>
               </span>
               <span>Журнал дій</span>
+            </a>
+          )}
+          {canManageUsers && (
+            <a
+              className={`nav-link${page === 'users' ? ' active' : ''}`}
+              aria-current={page === 'users' ? 'page' : undefined}
+              href="#users"
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-5A4.5 4.5 0 0 0 2 18.5V20m7-10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm9 0a3.5 3.5 0 0 0 0-7m1 9h.5a4.5 4.5 0 0 1 4.5 4.5V20" />
+                </svg>
+              </span>
+              <span>Облікові записи</span>
             </a>
           )}
         </nav>
@@ -543,7 +567,7 @@ function App() {
                 setPendingStop({ commandId, locations: selectedLocations });
               }}
             />
-          ) : (
+          ) : page === 'audit' ? (
             <AuditPage
               session={session}
               onSessionExpired={() => {
@@ -553,7 +577,9 @@ function App() {
               }}
               onSessionRetry={() => void refreshData()}
             />
-          )}
+          ) : canManageUsers ? (
+            <UserAccessPanel />
+          ) : null}
 
           <footer className="page-footer">
             <span>КГТА · Система оповіщення</span>
