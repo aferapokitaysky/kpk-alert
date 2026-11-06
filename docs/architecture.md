@@ -7,8 +7,8 @@ KGTA Alert передає погоджені команди оповіщення
 ```mermaid
 flowchart LR
   Operator[Панель оператора] -->|HTTPS| Watcher[Watcher]
-  Academica[Academica] -->|одноразовий код входу| Watcher
-  Source[Погоджене джерело тривог] --> Adapter[Адаптер джерела]
+  Google[Google OAuth] -->|підтвердження особи| Watcher
+  Source[Джерела тривог] --> Adapter[Адаптери джерел]
   Adapter --> Watcher
   Watcher -->|WSS + mTLS| Edge1[Вузол: корпус 1]
   Watcher -->|WSS + mTLS| Edge2[Вузол: корпус 2]
@@ -38,17 +38,20 @@ PostgreSQL — основне сховище Watcher. SQLite на вузлі в�
 
 ```text
 src/
-  Watcher.Api/              HTTP API, SignalR, автентифікація
-  Watcher.Application/      сценарії використання та політики
-  Watcher.Domain/            сутності й бізнес-правила
-  Watcher.Infrastructure/   PostgreSQL та зовнішні інтеграції
-  Watcher.Contracts/        версійовані DTO та події
-  Edge.Agent/                Windows-служба
-  Edge.Gui/                  локальний інтерфейс, якщо він буде потрібен
+  Watcher.Api/                    HTTP API, автентифікація, PWA, фонові процеси
+  Watcher.Domain/                 сутності й бізнес-правила
+  Watcher.Infrastructure/         PostgreSQL і міграції
+  Watcher.Contracts/              контракти команд пристроїв
+  Watcher.EdgeAgent.Contracts/    контракт локального стану вузла
+  Watcher.EdgeAgent.Core/         виконання й дедуплікація команд
+  Watcher.EdgeAgent.Infrastructure/ SQLite, аудіо й транспорт
+  Watcher.EdgeAgent.Service/      Windows-служба
+  Watcher.EdgeAgent.Desktop/      локальний інтерфейс стану
 tests/
   Watcher.UnitTests/
-  Watcher.IntegrationTests/
-  Edge.Agent.Tests/
+  Watcher.Api.IntegrationTests/
+  Watcher.EdgeAgent.UnitTests/
+  Watcher.EdgeAgent.Service.IntegrationTests/
 ```
 
 Створювати проєкти й шари слід разом із першою реалізацією відповідної відповідальності. Залежності домену не повинні посилатися на вебінфраструктуру чи базу даних.
@@ -73,12 +76,12 @@ stateDiagram-v2
 
 ## Чернеткова матриця пріоритетів
 
-| Рівень | Тип | Початкова поведінка |
-| --- | --- | --- |
-| 1 | Екстрене оповіщення | зупиняє звуки нижчих рівнів |
-| 2 | Оперативне оголошення | перериває розклад і фонове аудіо |
-| 3 | Дзвінок за розкладом | перериває фонове аудіо |
-| 4 | Фонове аудіо | не перериває інші сценарії |
+| Рівень | Тип                   | Початкова поведінка              |
+| ------ | --------------------- | -------------------------------- |
+| 1      | Екстрене оповіщення   | зупиняє звуки нижчих рівнів      |
+| 2      | Оперативне оголошення | перериває розклад і фонове аудіо |
+| 3      | Дзвінок за розкладом  | перериває фонове аудіо           |
+| 4      | Фонове аудіо          | не перериває інші сценарії       |
 
 Цю таблицю треба погодити з відповідальними за безпеку закладу до реалізації. Команда «Відбій» має бути окремою дією з посиланням на активну подію; вона не повинна непомітно вимикати будь-яке аудіо.
 
