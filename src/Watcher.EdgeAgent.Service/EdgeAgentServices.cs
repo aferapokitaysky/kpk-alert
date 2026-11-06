@@ -166,7 +166,7 @@ internal sealed class EdgeAgentHostedService(
 
     private async Task RefreshStatusAsync(CancellationToken cancellationToken)
     {
-        DateTimeOffset nextAudioEndpointProbeUtc = DateTimeOffset.MinValue;
+        long? lastAudioEndpointProbeTimestamp = null;
         while (!cancellationToken.IsCancellationRequested)
         {
             var pendingCount = await store.GetPendingReceiptCountAsync(cancellationToken);
@@ -174,7 +174,13 @@ internal sealed class EdgeAgentHostedService(
             ProcessedCommand? activeCommand = activeCommandId is { } commandId
                 ? await store.FindCommandAsync(commandId, cancellationToken)
                 : null;
-            var probeAudioEndpoint = clock.UtcNow >= nextAudioEndpointProbeUtc;
+            var probeAudioEndpoint = lastAudioEndpointProbeTimestamp is null ||
+                clock.GetElapsedTime(lastAudioEndpointProbeTimestamp.Value) >= TimeSpan.FromSeconds(5);
+            if (probeAudioEndpoint)
+            {
+                lastAudioEndpointProbeTimestamp = clock.GetTimestamp();
+            }
+
             var endpointAvailable = probeAudioEndpoint && audioEndpointAvailability.IsAvailable(status.Get().AudioEndpointId);
             status.Update(current => current with
             {
@@ -187,10 +193,6 @@ internal sealed class EdgeAgentHostedService(
                 LastSequence = activeCommand?.Sequence ?? current.LastSequence,
                 LastCommandState = activeCommand?.State.ToString() ?? current.LastCommandState
             });
-            if (probeAudioEndpoint)
-            {
-                nextAudioEndpointProbeUtc = clock.UtcNow.AddSeconds(5);
-            }
             status.UpdatePendingReceiptCount(pendingCount, options.MaximumReceiptQueue);
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         }
