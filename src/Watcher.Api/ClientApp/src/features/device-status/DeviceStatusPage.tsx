@@ -176,6 +176,8 @@ export function DeviceStatusPage({
   const [pendingRevocationId, setPendingRevocationId] = useState<string | null>(null);
   const [confirmationId, setConfirmationId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const noticeRef = useRef<HTMLParagraphElement>(null);
+  const focusNoticeAfterLoad = useRef(false);
   const activeRequest = useRef<AbortController | null>(null);
 
   const load = useCallback(
@@ -209,6 +211,13 @@ export function DeviceStatusPage({
     },
     [page],
   );
+
+  useEffect(() => {
+    if (focusNoticeAfterLoad.current && status !== 'loading') {
+      noticeRef.current?.focus();
+      focusNoticeAfterLoad.current = false;
+    }
+  }, [data, status]);
 
   useEffect(() => {
     if (!canManage) return;
@@ -260,6 +269,7 @@ export function DeviceStatusPage({
       await revokeDevice(device.deviceId);
       setConfirmationId(null);
       setNotice({ kind: 'success', text: `Доступ пристрою «${device.name}» заблоковано.` });
+      focusNoticeAfterLoad.current = true;
       await load(true);
     } catch (requestError) {
       if (requestError instanceof DeviceStatusApiError && requestError.status === 401) {
@@ -389,7 +399,7 @@ export function DeviceStatusPage({
                 }
               />
             </label>
-            <span id="device-fingerprint-help">
+            <span id="device-fingerprint-help" className="device-fingerprint-help">
               64 шістнадцяткові символи. Не вставляйте приватний ключ.
             </span>
             {locationsLoading && <p role="status">Завантажуємо корпуси…</p>}
@@ -419,6 +429,8 @@ export function DeviceStatusPage({
 
       {notice && (
         <p
+          ref={noticeRef}
+          tabIndex={-1}
           className={`device-status-notice is-${notice.kind}`}
           role={notice.kind === 'error' ? 'alert' : 'status'}
         >

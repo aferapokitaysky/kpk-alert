@@ -277,7 +277,9 @@ describe('сторінка стану пристроїв', () => {
     fireEvent.click(revokeButton);
     fireEvent.click(screen.getByRole('button', { name: 'Підтвердити блокування' }));
 
-    expect(await screen.findByText('Доступ пристрою «Вузол 01» заблоковано.')).toBeInTheDocument();
+    const successNotice = await screen.findByText('Доступ пристрою «Вузол 01» заблоковано.');
+    expect(successNotice).toBeInTheDocument();
+    expect(successNotice).toHaveFocus();
     expect(await screen.findByText('Доступ заблоковано')).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Заблокувати доступ пристрою «Вузол 01»' }),

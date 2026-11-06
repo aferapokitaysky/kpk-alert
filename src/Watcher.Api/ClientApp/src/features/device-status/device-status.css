@@ -80,7 +80,7 @@
   outline-offset: 2px;
 }
 
-.device-registration-form label > span {
+.device-fingerprint-help {
   color: var(--text-muted, #536174);
   font-size: 0.8rem;
   font-weight: 400;
@@ -241,7 +241,8 @@
 
 .device-status-pagination :focus-visible,
 .device-status-heading :focus-visible,
-.device-status-message :focus-visible {
+.device-status-message :focus-visible,
+.device-status-notice:focus {
   outline: 3px solid var(--accent, #f2c94c);
   outline-offset: 3px;
 }
