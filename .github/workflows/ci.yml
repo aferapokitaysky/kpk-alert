@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main, develop]
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -187,7 +188,13 @@ jobs:
   publish-image:
     name: Публікація контейнера
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, validate-compose, documentation]
+    needs:
+      - build
+      - windows-edge-agent
+      - validate-compose
+      - documentation
+      - postgres-migrations
+      - combined-coverage
     runs-on: ubuntu-latest
     permissions:
       contents: read
