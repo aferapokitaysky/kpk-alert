@@ -116,6 +116,22 @@ try {
         $baseKey.Dispose()
     }
 
+    $actualUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $actualUserRunSubKey = "$actualUserSid\$testRunSubKey"
+    $actualHiveCommand = Set-EdgeAgentDesktopStartupEntry `
+        -InteractiveUserSid $actualUserSid `
+        -ExecutablePath $testExecutablePath `
+        -RunSubKeyPath $actualUserRunSubKey
+    Assert-Equal -Expected $expectedCommand -Actual $actualHiveCommand -Message 'Запис через HKEY_USERS цільового профілю має повертати ту саму команду.'
+    $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
+    try {
+        if (-not $actualUserRunKey) { throw 'Запис через HKEY_USERS не створив підрозділ у профілі цільового користувача.' }
+        Assert-Equal -Expected $expectedCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'HKEY_USERS має містити команду панелі у Run цільового профілю.'
+    } finally {
+        if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+    }
+    Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey
+
     Write-Host 'Перевірки автозапуску Windows-вузла пройшли.'
 } finally {
     if ($runKey) { $runKey.Dispose() }
