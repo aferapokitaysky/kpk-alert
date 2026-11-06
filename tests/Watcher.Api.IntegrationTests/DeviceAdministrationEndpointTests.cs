@@ -221,6 +221,11 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
         {
             allowRegistration.TrySetResult(false);
             _ = await registration.WaitAsync(TimeSpan.FromSeconds(5));
+            if (revokeTask is not null)
+            {
+                using HttpResponseMessage completedResponse =
+                    await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
         }
     }
 
