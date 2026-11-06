@@ -184,6 +184,7 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
                 CancellationToken.None);
 
         Task<HttpResponseMessage>? revokeTask = null;
+        HttpResponseMessage? revokeResponse = null;
         try
         {
             Assert.True(await sessionCheckCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -212,19 +213,25 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
             Assert.NotNull(revokedAtUtc);
             Assert.NotNull(await registration);
 
-            using HttpResponseMessage response = await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            revokeResponse = await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(HttpStatusCode.OK, revokeResponse.StatusCode);
             Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
             Assert.DoesNotContain(deviceId, fixture.DeviceSessions.ConnectedDeviceIds);
         }
         finally
         {
             allowRegistration.TrySetResult(false);
-            _ = await registration.WaitAsync(TimeSpan.FromSeconds(5));
-            if (revokeTask is not null)
+            try
             {
-                using HttpResponseMessage completedResponse =
-                    await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+                _ = await registration.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally
+            {
+                if (revokeTask is not null)
+                {
+                    revokeResponse ??= await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+                    revokeResponse.Dispose();
+                }
             }
         }
     }
