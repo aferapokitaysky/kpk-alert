@@ -95,7 +95,7 @@ public partial class MainWindow : Window
             ? "Остання команда: немає"
             : $"Остання команда: {status.LastCommandState} · № {status.LastSequence} · {status.LastCommandId:D}";
         QueueText.Text = $"Квитанцій у черзі: {status.PendingReceiptCount}";
-        DiagnosticText.Text = status.DiagnosticCode is null ? "Діагностика: немає" : $"Діагностика: {status.DiagnosticCode}";
+        DiagnosticText.Text = FormatDiagnostic(status.DiagnosticCode);
         UpdatedText.Text = $"Оновлено {status.ObservedAtUtc.ToLocalTime():HH:mm:ss}";
     }
 
@@ -107,7 +107,7 @@ public partial class MainWindow : Window
         AudioText.Text = "Аудіовихід: —";
         CommandText.Text = "Остання команда: —";
         QueueText.Text = "Квитанцій у черзі: —";
-        DiagnosticText.Text = $"Діагностика: {diagnostic}";
+        DiagnosticText.Text = FormatDiagnostic(diagnostic);
         UpdatedText.Text = $"Перевірено {DateTimeOffset.Now:HH:mm:ss}";
     }
 
@@ -116,6 +116,21 @@ public partial class MainWindow : Window
         ShowUnavailable("access_denied");
         DiagnosticText.Text = "Доступ до панелі відсутній. Попросіть адміністратора додати ваш обліковий запис до групи KGTA Alert Operators.";
     }
+
+    private static string FormatDiagnostic(string? diagnosticCode)
+    {
+        EdgeAgentDiagnostic diagnostic = EdgeAgentDiagnosticCatalog.Describe(diagnosticCode);
+        var technicalCode = IsSafeDiagnosticCode(diagnosticCode) ? $"\nКод: {diagnosticCode}" : string.Empty;
+        var recommendedAction = string.IsNullOrWhiteSpace(diagnostic.RecommendedAction)
+            ? string.Empty
+            : $"\nЩо зробити: {diagnostic.RecommendedAction}";
+
+        return $"Діагностика: {diagnostic.Message}{recommendedAction}{technicalCode}";
+    }
+
+    private static bool IsSafeDiagnosticCode(string? value) =>
+        value is { Length: > 0 and <= 64 } && value.All(character =>
+            character is >= 'a' and <= 'z' or >= '0' and <= '9' or '_');
 
     private static async Task WriteFrameAsync(Stream stream, byte[] payload, CancellationToken token)
     {
