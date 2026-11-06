@@ -52,6 +52,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.Property(x => x.Code).HasMaxLength(80).IsRequired();
             entity.Property(x => x.Name).HasMaxLength(160).IsRequired();
             entity.Property(x => x.ManifestHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.IsPublished).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<AlertCommand>(entity =>

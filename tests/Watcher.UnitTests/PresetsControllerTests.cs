@@ -20,6 +20,13 @@ public sealed class PresetsControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new WatcherDbContext(options);
+        _db.Users.Add(new UserAccount
+        {
+            Id = _userId,
+            ExternalSubject = $"preset-controller-test-{_userId}",
+            Email = $"{_userId}@example.test",
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        });
         _db.Roles.Add(new Role { Id = _notificatorRoleId, Code = "notificator", Name = "Оператор" });
         _db.SoundPresets.AddRange(
             new SoundPreset

@@ -27,6 +27,13 @@ public sealed class PresetsEndpointTests
         using (IServiceScope scope = factory.Services.CreateScope())
         {
             WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            db.Users.Add(new UserAccount
+            {
+                Id = userId,
+                ExternalSubject = $"presets-test-{userId}",
+                Email = $"{userId}@example.test",
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            });
             Role role = new() { Id = Guid.NewGuid(), Code = "notificator", Name = "Оператор" };
             db.Roles.Add(role);
             db.UserRoles.Add(new UserRole
@@ -81,6 +88,54 @@ public sealed class PresetsEndpointTests
         using HttpResponseMessage response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task List_forbids_an_inactive_administrator_with_a_stale_admin_claim()
+    {
+        using WebApplicationFactory<Program> factory = CreateFactory();
+        var userId = Guid.NewGuid();
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            db.Users.Add(new UserAccount
+            {
+                Id = userId,
+                ExternalSubject = $"inactive-presets-test-{userId}",
+                Email = $"inactive-{userId}@example.test",
+                IsActive = false,
+                CreatedAtUtc = DateTimeOffset.UtcNow
+            });
+            Role role = new() { Id = Guid.NewGuid(), Code = "admin", Name = "Адміністратор" };
+            db.Roles.Add(role);
+            db.UserRoles.Add(new UserRole
+            {
+                Id = Guid.NewGuid(),
+                UserId = userId,
+                RoleId = role.Id,
+                LocationId = null
+            });
+            db.SoundPresets.Add(new SoundPreset
+            {
+                Id = Guid.NewGuid(),
+                Code = "evacuation",
+                Name = "Евакуація",
+                Priority = 1,
+                ManifestHash = new string('a', 64),
+                IsPublished = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using HttpClient client = factory.CreateClient();
+        using HttpRequestMessage request = new(HttpMethod.Get, "/api/v1/presets");
+        request.Headers.Add("X-Test-User-Id", userId.ToString());
+        request.Headers.Add("X-Test-Role", "admin");
+
+        using HttpResponseMessage response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.DoesNotContain("evacuation", await response.Content.ReadAsStringAsync());
     }
 
     private static WebApplicationFactory<Program> CreateFactory() =>
