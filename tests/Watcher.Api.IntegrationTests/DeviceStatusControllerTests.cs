@@ -164,6 +164,7 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         JsonElement item = Assert.Single(root.GetProperty("items").EnumerateArray());
         Assert.Equal(1, root.GetProperty("pageSize").GetInt32());
         Assert.Equal(1, root.GetProperty("totalCount").GetInt32());
+        Assert.Equal(deviceId, item.GetProperty("deviceId").GetGuid());
         Assert.Equal("Вузол 01", item.GetProperty("name").GetString());
         Assert.Equal("Північний корпус", item.GetProperty("locationName").GetString());
         Assert.True(item.GetProperty("isActive").GetBoolean());
