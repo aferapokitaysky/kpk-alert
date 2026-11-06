@@ -47,6 +47,82 @@ public sealed class DeviceCommandSessionRegistryTests
             Guid.NewGuid(), "{}"u8.ToArray(), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Delayed_stale_handshake_does_not_replace_or_close_current_session()
+    {
+        DeviceCommandSessionRegistry registry = new();
+        var deviceId = Guid.NewGuid();
+        var currentPresenceSessionId = Guid.NewGuid();
+        FakeWebSocket currentSocket = new();
+        DeviceCommandWebSocketSession currentSession = await registry.RegisterAsync(
+            deviceId, currentPresenceSessionId, currentSocket, CancellationToken.None);
+
+        FakeWebSocket staleSocket = new();
+        DeviceCommandWebSocketSession? staleSession = await registry.TryRegisterIfCurrentAsync(
+            deviceId,
+            Guid.NewGuid(),
+            staleSocket,
+            _ => Task.FromResult(false),
+            CancellationToken.None);
+
+        Assert.Null(staleSession);
+        Assert.Equal(WebSocketState.Open, currentSocket.State);
+        Assert.Equal(WebSocketState.Open, staleSocket.State);
+        Assert.True(await registry.SendAsync(
+            deviceId, currentPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
+        Assert.Equal(1, currentSocket.SendCount);
+        registry.Unregister(currentSession);
+    }
+
+    [Fact]
+    public async Task Concurrent_handshakes_register_in_validation_order_for_same_device()
+    {
+        DeviceCommandSessionRegistry registry = new();
+        var deviceId = Guid.NewGuid();
+        var olderPresenceSessionId = Guid.NewGuid();
+        var newerPresenceSessionId = Guid.NewGuid();
+        var allowOlderValidation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var olderValidationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWebSocket olderSocket = new();
+        Task<DeviceCommandWebSocketSession?> olderRegistration = registry.TryRegisterIfCurrentAsync(
+            deviceId,
+            olderPresenceSessionId,
+            olderSocket,
+            async cancellationToken =>
+            {
+                olderValidationStarted.SetResult();
+                await allowOlderValidation.Task.WaitAsync(cancellationToken);
+                return true;
+            },
+            CancellationToken.None);
+
+        await olderValidationStarted.Task;
+        FakeWebSocket newerSocket = new();
+        Task<DeviceCommandWebSocketSession?> newerRegistration = registry.TryRegisterIfCurrentAsync(
+            deviceId,
+            newerPresenceSessionId,
+            newerSocket,
+            _ => Task.FromResult(true),
+            CancellationToken.None);
+
+        allowOlderValidation.SetResult();
+        DeviceCommandWebSocketSession? olderSession = await olderRegistration;
+        DeviceCommandWebSocketSession? newerSession = await newerRegistration;
+
+        Assert.NotNull(olderSession);
+        Assert.NotNull(newerSession);
+        Assert.Equal(WebSocketState.CloseSent, olderSocket.State);
+        Assert.True(await registry.SendAsync(
+            deviceId, newerPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
+        Assert.Equal(1, newerSocket.SendCount);
+        Assert.False(await registry.SendAsync(
+            deviceId, olderPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
+        registry.Unregister(newerSession);
+    }
+
     private sealed class FakeWebSocket : WebSocket
     {
         private WebSocketState _state = WebSocketState.Open;

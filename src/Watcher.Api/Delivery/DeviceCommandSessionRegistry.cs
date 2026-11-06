@@ -6,7 +6,7 @@ namespace Watcher.Api.Delivery;
 public sealed class DeviceCommandSessionRegistry
 {
     private readonly ConcurrentDictionary<Guid, DeviceCommandWebSocketSession> _sessions = new();
-    private readonly object _registrationLock = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _registrationLocks = new();
 
     public IReadOnlyCollection<Guid> ConnectedDeviceIds => _sessions.Keys.ToArray();
 
@@ -23,6 +23,27 @@ public sealed class DeviceCommandSessionRegistry
         Guid deviceId,
         Guid presenceSessionId,
         WebSocket socket,
+        CancellationToken cancellationToken) =>
+        await RegisterCoreAsync(deviceId, presenceSessionId, socket, null, cancellationToken)
+            ?? throw new InvalidOperationException("Не вдалося зареєструвати WebSocket-сеанс пристрою.");
+
+    public Task<DeviceCommandWebSocketSession?> TryRegisterIfCurrentAsync(
+        Guid deviceId,
+        Guid presenceSessionId,
+        WebSocket socket,
+        Func<CancellationToken, Task<bool>> isCurrentSessionAsync,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(isCurrentSessionAsync);
+        return RegisterCoreAsync(deviceId, presenceSessionId, socket, isCurrentSessionAsync,
+            cancellationToken);
+    }
+
+    private async Task<DeviceCommandWebSocketSession?> RegisterCoreAsync(
+        Guid deviceId,
+        Guid presenceSessionId,
+        WebSocket socket,
+        Func<CancellationToken, Task<bool>>? isCurrentSessionAsync,
         CancellationToken cancellationToken)
     {
         if (deviceId == Guid.Empty)
@@ -34,10 +55,22 @@ public sealed class DeviceCommandSessionRegistry
 
         DeviceCommandWebSocketSession session = new(deviceId, presenceSessionId, socket);
         DeviceCommandWebSocketSession? previous;
-        lock (_registrationLock)
+        SemaphoreSlim registrationLock = _registrationLocks.GetOrAdd(
+            deviceId, static _ => new SemaphoreSlim(1, 1));
+        await registrationLock.WaitAsync(cancellationToken);
+        try
         {
+            if (isCurrentSessionAsync is not null && !await isCurrentSessionAsync(cancellationToken))
+            {
+                return null;
+            }
+
             _sessions.TryGetValue(deviceId, out previous);
             _sessions[deviceId] = session;
+        }
+        finally
+        {
+            registrationLock.Release();
         }
 
         if (previous is not null)
