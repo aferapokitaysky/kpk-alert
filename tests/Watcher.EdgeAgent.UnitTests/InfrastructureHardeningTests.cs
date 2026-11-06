@@ -354,8 +354,7 @@ public sealed class InfrastructureHardeningTests
     {
         public TemporaryDirectory(string prefix)
         {
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), prefix, Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(Path);
+            Path = TestTemporaryPaths.CreateDirectory(prefix);
         }
 
         public string Path { get; }
