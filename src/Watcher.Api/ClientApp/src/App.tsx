@@ -19,6 +19,7 @@ import { Dashboard } from './features/dashboard/Dashboard';
 import { CommandDialog } from './features/dashboard/CommandDialog';
 import { StopCommandDialog } from './features/dashboard/StopCommandDialog';
 import { UserAccessPanel } from './features/user-access/UserAccessPanel';
+import { SoundPresetsPage } from './features/sound-presets/SoundPresetsPage';
 import {
   clearLastCommandId,
   readLastCommandId,
@@ -34,11 +35,12 @@ import {
   type SessionState,
 } from './state';
 
-type Page = 'dashboard' | 'audit' | 'users';
+type Page = 'dashboard' | 'audit' | 'users' | 'presets';
 
 function pageFromHash(): Page {
   if (window.location.hash === '#audit') return 'audit';
   if (window.location.hash === '#users') return 'users';
+  if (window.location.hash === '#presets') return 'presets';
   return 'dashboard';
 }
 
@@ -235,7 +237,7 @@ function App() {
   useEffect(() => {
     if (session.status !== 'authenticated') return;
     const { canOperate, canViewAudit } = session.capabilities;
-    if (page === 'users' && !session.roles.includes('admin')) {
+    if ((page === 'users' || page === 'presets') && !session.roles.includes('admin')) {
       window.location.hash = canViewAudit ? 'audit' : 'dashboard';
       return;
     }
@@ -394,8 +396,15 @@ function App() {
   const canOperate = isAuthenticated && session.capabilities.canOperate;
   const canViewAudit = isAuthenticated && session.capabilities.canViewAudit;
   const canManageUsers = isAuthenticated && session.roles.includes('admin');
+  const canManagePresets = isAuthenticated && session.roles.includes('admin');
   const activeTitle =
-    page === 'audit' ? 'Журнал дій' : page === 'users' ? 'Облікові записи' : 'Пульт оповіщення';
+    page === 'audit'
+      ? 'Журнал дій'
+      : page === 'users'
+        ? 'Облікові записи'
+        : page === 'presets'
+          ? 'Звукові сценарії'
+          : 'Пульт оповіщення';
 
   return (
     <div className={`app-shell${menuOpen && isMobile ? ' is-menu-open' : ''}`}>
@@ -450,6 +459,21 @@ function App() {
                 </svg>
               </span>
               <span>Облікові записи</span>
+            </a>
+          )}
+          {canManagePresets && (
+            <a
+              className={`nav-link${page === 'presets' ? ' active' : ''}`}
+              aria-current={page === 'presets' ? 'page' : undefined}
+              href="#presets"
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 5h16v14H4zM8 9h8M8 13h5M8 17h2" />
+                </svg>
+              </span>
+              <span>Звукові сценарії</span>
             </a>
           )}
         </nav>
@@ -577,8 +601,17 @@ function App() {
               }}
               onSessionRetry={() => void refreshData()}
             />
-          ) : canManageUsers ? (
+          ) : page === 'users' && canManageUsers ? (
             <UserAccessPanel />
+          ) : page === 'presets' && canManagePresets ? (
+            <SoundPresetsPage
+              session={session}
+              onSessionExpired={() => {
+                setSession({ status: 'unauthenticated' });
+                setLocations({ status: 'unauthenticated' });
+                setPresets({ status: 'unauthenticated' });
+              }}
+            />
           ) : null}
 
           <footer className="page-footer">
