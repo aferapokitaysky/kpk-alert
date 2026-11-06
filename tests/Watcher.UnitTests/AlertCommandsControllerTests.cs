@@ -202,6 +202,37 @@ public sealed class AlertCommandsControllerTests : IDisposable
         Assert.DoesNotContain(_db.AlertCommands, item => item.Action == "stop");
     }
 
+    [Fact]
+    public async Task Create_stop_rejects_a_location_outside_the_start_command_targets()
+    {
+        var targetCommandId = Guid.NewGuid();
+        _db.AlertCommands.Add(new AlertCommand
+        {
+            Id = targetCommandId,
+            IdempotencyKey = Guid.NewGuid(),
+            Action = "start",
+            PresetCode = "evacuation",
+            InitiatedByUserId = _userId,
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5),
+            Targets = [new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                LocationId = Guid.NewGuid(),
+                Sequence = 1,
+                State = "Playing"
+            }]
+        });
+        await _db.SaveChangesAsync();
+
+        IActionResult result = await CreateController(_userId).Create(
+            new CreateAlertCommandRequest("stop", null, [_locationId], targetCommandId),
+            _idempotencyKey, CancellationToken.None);
+
+        AssertProblem(result, StatusCodes.Status422UnprocessableEntity);
+        Assert.DoesNotContain(_db.AlertCommands, item => item.Action == "stop");
+    }
+
     [Theory]
     [InlineData("stop", "evacuation")]
     [InlineData("start", " ")]
@@ -223,6 +254,16 @@ public sealed class AlertCommandsControllerTests : IDisposable
             ValidRequest(), Guid.Empty, CancellationToken.None);
 
         AssertProblem(result, StatusCodes.Status400BadRequest);
+    }
+
+    [Fact]
+    public async Task Create_forbids_a_principal_without_a_local_account_claim()
+    {
+        IActionResult result = await CreateController(null).Create(
+            ValidRequest(), _idempotencyKey, CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.Empty(_db.AlertCommands);
     }
 
     [Fact]
@@ -521,10 +562,14 @@ public sealed class AlertCommandsControllerTests : IDisposable
         Assert.IsType<OkObjectResult>(result);
     }
 
-    private AlertCommandsController CreateController(Guid userId, params string[] roles)
+    private AlertCommandsController CreateController(Guid? userId, params string[] roles)
     {
-        Claim[] claims = [new Claim("kgta_user_id", userId.ToString()), .. roles.Select(role =>
-            new Claim(ClaimTypes.Role, role))];
+        var claims = roles.Select(role => new Claim(ClaimTypes.Role, role)).ToList();
+        if (userId is Guid accountId)
+        {
+            claims.Add(new Claim("kgta_user_id", accountId.ToString()));
+        }
+
         AlertCommandsController controller = new(_db, TimeProvider.System, _sequenceAllocator)
         {
             ControllerContext = new ControllerContext

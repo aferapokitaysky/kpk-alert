@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -91,11 +92,7 @@ def _expand(patterns: list[str], kind: str) -> list[str]:
 
 
 def _coverage_markdown(label: str, files: list[str]) -> str:
-    coverage_by_name: dict[str, ModuleCoverage] = {}
-    for file_path in files:
-        for module in read_coverage(file_path):
-            coverage_by_name[module.name] = module
-
+    coverage_by_name = _coverage_by_name(files)
     rows = [
         f"### Покриття рядків і гілок: {label}",
         "",
@@ -109,9 +106,50 @@ def _coverage_markdown(label: str, files: list[str]) -> str:
     return "\n".join(rows)
 
 
+def _coverage_by_name(files: list[str]) -> dict[str, ModuleCoverage]:
+    coverage_by_name: dict[str, ModuleCoverage] = {}
+    for file_path in _unique_report_files(files):
+        for module in read_coverage(file_path):
+            if module.name in coverage_by_name:
+                raise ValueError(
+                    f"Production-модуль {module.name} є у кількох звітах покриття."
+                )
+            coverage_by_name[module.name] = module
+    return coverage_by_name
+
+
+def _unique_report_files(files: list[str]) -> list[str]:
+    unique_files: list[str] = []
+    seen_reports: set[bytes] = set()
+    for file_path in files:
+        report_hash = hashlib.sha256(Path(file_path).read_bytes()).digest()
+        if report_hash not in seen_reports:
+            seen_reports.add(report_hash)
+            unique_files.append(file_path)
+    return unique_files
+
+
+def _validate_module_coverage(files: list[str], minimum: float) -> None:
+    if not 0 <= minimum <= 100:
+        raise ValueError("Мінімальне покриття модуля має бути від 0 до 100 відсотків.")
+
+    modules = _coverage_by_name(files)
+    below_threshold = [
+        module for module in modules.values() if module.line_rate * 100 < minimum
+    ]
+    print(f"Мінімум покриття кожного production-модуля: {minimum:.1f}%.")
+    if below_threshold:
+        details = ", ".join(
+            f"{module.name}: {module.line_rate:.1%}" for module in below_threshold
+        )
+        raise ValueError(
+            f"Покриття production-модулів нижче порога {minimum:.1f}%: {details}."
+        )
+
+
 def _total_line_rate(files: list[str]) -> float:
     covered = valid = 0
-    for file_path in files:
+    for file_path in _unique_report_files(files):
         root = ET.parse(file_path).getroot()
         try:
             covered += int(root.attrib["lines-covered"])
@@ -153,6 +191,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Мінімальне сумарне покриття рядків у відсотках.",
     )
     parser.add_argument(
+        "--minimum-module-line-coverage",
+        type=float,
+        help="Мінімальне покриття рядків для кожного production-модуля у відсотках.",
+    )
+    parser.add_argument(
         "--trx-glob",
         action="append",
         default=[],
@@ -178,6 +221,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Загальне покриття рядків: {actual_coverage:.1f}% (потрібно {args.minimum_line_coverage:.1f}%).")
             if actual_coverage < args.minimum_line_coverage:
                 raise ValueError("Покриття рядків нижче встановленого порога.")
+
+        if args.minimum_module_line_coverage is not None:
+            _validate_module_coverage(coverage_files, args.minimum_module_line_coverage)
 
         if args.trx_glob:
             trx_files = _expand(args.trx_glob, "TRX")

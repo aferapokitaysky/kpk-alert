@@ -157,6 +157,33 @@ jobs:
           path: tests/Watcher.Api.IntegrationTests/TestResults/**/coverage.cobertura.xml
           if-no-files-found: ignore
 
+  combined-coverage:
+    name: Объединённое покрытие модулей (70%)
+    needs: [build, postgres-migrations]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-results-and-coverage
+          path: coverage-artifacts/unit-and-edge-agent
+      - uses: actions/download-artifact@v4
+        with:
+          name: postgresql-integration-coverage
+          path: coverage-artifacts/postgresql
+      - name: Проверить объединённое покрытие production-модулей
+        run: >-
+          python3 scripts/ci/coverage_union.py
+          --coverage-glob "coverage-artifacts/**/coverage.cobertura.xml"
+          --minimum-module-line-coverage 70
+          --required-module Watcher.Api
+          --required-module Watcher.Contracts
+          --required-module Watcher.Domain
+          --required-module Watcher.Infrastructure
+          --required-module Watcher.EdgeAgent.Contracts
+          --required-module Watcher.EdgeAgent.Core
+          --required-module Watcher.EdgeAgent.Infrastructure
+
   publish-image:
     name: Публікація контейнера
     if: startsWith(github.ref, 'refs/tags/v')

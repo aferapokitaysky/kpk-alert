@@ -44,6 +44,14 @@ class CoverageSummaryTests(unittest.TestCase):
         self.assertIn('--filter "TestArea=PostgreSQL"', test_step)
         self.assertIn("if: success() && steps.postgres-tests.outcome == 'success'", summary_step)
 
+    def test_combined_coverage_gate_waits_for_unit_and_postgres_jobs(self) -> None:
+        self.assertIn("combined-coverage:", self.workflow)
+        self.assertIn("needs: [build, postgres-migrations]", self.workflow)
+        self.assertIn("scripts/ci/coverage_union.py", self.workflow)
+        self.assertIn("--minimum-module-line-coverage 70", self.workflow)
+        self.assertIn("name: test-results-and-coverage", self.workflow)
+        self.assertIn("name: postgresql-integration-coverage", self.workflow)
+
     def write_xml(self, content: str) -> str:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -172,6 +180,98 @@ class CoverageSummaryTests(unittest.TestCase):
 
         self.assertEqual(1, self.run_coverage_threshold(path, 75))
 
+    def test_minimum_module_line_coverage_passes_when_every_module_meets_threshold(self) -> None:
+        path = self.write_xml(
+            '<coverage><packages>'
+            '<package name="Watcher.Api" line-rate="0.6" branch-rate="0.5" />'
+            '<package name="Watcher.Infrastructure" line-rate="0.8" branch-rate="0.5" />'
+            '</packages></coverage>'
+        )
+
+        self.assertEqual(0, self.run_module_coverage_threshold(path, 60))
+
+    def test_minimum_module_line_coverage_fails_when_one_module_is_below_threshold(self) -> None:
+        path = self.write_xml(
+            '<coverage><packages>'
+            '<package name="Watcher.Api" line-rate="0.59" branch-rate="0.5" />'
+            '<package name="Watcher.Infrastructure" line-rate="0.8" branch-rate="0.5" />'
+            '</packages></coverage>'
+        )
+
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Unit",
+                "--coverage-glob", path,
+                "--minimum-module-line-coverage", "60",
+            ])
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Watcher.Api: 59.0%", stderr.getvalue())
+        self.assertIn("нижче порога 60.0%", stderr.getvalue())
+
+    def test_rejects_multiple_coverage_reports_for_the_same_module(self) -> None:
+        lower_coverage = self.write_xml(
+            '<coverage><package name="Watcher.Api" line-rate="0.4" branch-rate="0.5" /></coverage>'
+        )
+        higher_coverage = self.write_xml(
+            '<coverage><package name="Watcher.Api" line-rate="0.9" branch-rate="0.5" /></coverage>'
+        )
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Unit",
+                "--coverage-glob", lower_coverage,
+                "--coverage-glob", higher_coverage,
+                "--minimum-module-line-coverage", "60",
+            ])
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("є у кількох звітах покриття", stderr.getvalue())
+
+    def test_deduplicates_identical_cobertura_report_copies(self) -> None:
+        report = Path(self.write_coverage_report())
+        duplicate = report.with_name("coverage-copy.xml")
+        duplicate.write_bytes(report.read_bytes())
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Unit",
+                "--coverage-glob", str(report),
+                "--coverage-glob", str(duplicate),
+                "--minimum-module-line-coverage", "70",
+            ])
+
+        self.assertEqual(0, exit_code, stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("`Watcher.Api`"))
+
+    def test_ignores_duplicate_report_when_calculating_total_coverage(self) -> None:
+        covered_module = self.write_xml(
+            '<coverage lines-covered="9" lines-valid="10">'
+            '<package name="Watcher.Api" line-rate="0.9" branch-rate="0.5" />'
+            '</coverage>'
+        )
+        uncovered_module = self.write_xml(
+            '<coverage lines-covered="0" lines-valid="100">'
+            '<package name="Watcher.Domain" line-rate="0" branch-rate="0" />'
+            '</coverage>'
+        )
+        duplicate = Path(covered_module).with_name("covered-copy.xml")
+        duplicate.write_bytes(Path(covered_module).read_bytes())
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Combined",
+                "--coverage-glob", covered_module,
+                "--coverage-glob", str(duplicate),
+                "--coverage-glob", uncovered_module,
+                "--minimum-line-coverage", "10",
+            ])
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Покриття рядків нижче", stderr.getvalue())
+
     def run_coverage_threshold(self, path: str, minimum: float) -> int:
         stderr = io.StringIO()
         with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
@@ -182,6 +282,18 @@ class CoverageSummaryTests(unittest.TestCase):
             ])
         if exit_code:
             self.assertIn("Покриття рядків нижче", stderr.getvalue())
+        return exit_code
+
+    def run_module_coverage_threshold(self, path: str, minimum: float) -> int:
+        stderr = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+            exit_code = main([
+                "--label", "Unit",
+                "--coverage-glob", path,
+                "--minimum-module-line-coverage", str(minimum),
+            ])
+        if exit_code:
+            self.assertIn("Покриття production-модулів нижче", stderr.getvalue())
         return exit_code
 
     def run_report(self, coverage_path: str, trx_path: str) -> int:

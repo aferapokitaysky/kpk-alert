@@ -148,6 +148,29 @@ public sealed class UkraineAlarmWebhookOperationsTests : IClassFixture<WebhookOp
     }
 
     [PostgresFact]
+    public async Task Get_state_returns_safe_service_unavailable_when_integration_state_is_missing()
+    {
+        Guid administratorId = await _fixture.ResetAndSeedAsync("admin", global: true);
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            ExternalIntegrationState state = await db.ExternalIntegrationStates.SingleAsync();
+            db.ExternalIntegrationStates.Remove(state);
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage response = await SendGetStateAsync(administratorId);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        using var body = JsonDocument.Parse(responseBody);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal("Стан інтеграції ще не ініціалізований.",
+            body.RootElement.GetProperty("title").GetString());
+        Assert.DoesNotContain("test-token", responseBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("alerts.example.test", responseBody, StringComparison.Ordinal);
+    }
+
+    [PostgresFact]
     public async Task Missing_csrf_is_rejected_before_provider_call_and_request_is_not_audited()
     {
         Guid administratorId = await _fixture.ResetAndSeedAsync("admin", global: true);
