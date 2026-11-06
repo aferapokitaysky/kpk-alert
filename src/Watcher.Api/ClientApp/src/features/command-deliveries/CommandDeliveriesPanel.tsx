@@ -93,6 +93,7 @@ function DeliveryItem({ delivery }: { delivery: CommandDelivery }) {
 
 interface Props {
   commandId: string;
+  commandAction?: 'start' | 'stop';
   canOperate?: boolean;
   targetLocations?: Location[];
   onRequestStop?: (commandId: string, locations: Location[]) => void;
@@ -100,6 +101,7 @@ interface Props {
 
 export function CommandDeliveriesPanel({
   commandId,
+  commandAction = 'start',
   canOperate = false,
   targetLocations = [],
   onRequestStop,
@@ -177,6 +179,12 @@ export function CommandDeliveriesPanel({
   const hasStopCandidate = status === 'ready' && data !== null && data.hasUnfinishedDeliveries;
   const canStop =
     canOperate && hasStopCandidate && targetLocations.length > 0 && onRequestStop !== undefined;
+  const summary = data?.stateSummary;
+  const stopConfirmed = summary ? summary.stopped + summary.completed : 0;
+  const stopWaiting = summary
+    ? summary.pending + summary.inFlight + summary.accepted + summary.playing
+    : 0;
+  const stopUnconfirmed = summary ? summary.rejected + summary.failed + summary.expired : 0;
 
   return (
     <section
@@ -212,6 +220,17 @@ export function CommandDeliveriesPanel({
       )}
       {data && (
         <>
+          {commandAction === 'stop' && (
+            <p className="delivery-message" role="status" aria-live="polite">
+              {data.totalCount === 0
+                ? 'Для команди відбою немає доставок до вузлів.'
+                : stopWaiting > 0
+                  ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Очікують відповіді: ${stopWaiting}.${stopUnconfirmed > 0 ? ` Без підтвердження: ${stopUnconfirmed}.` : ''}`
+                  : stopUnconfirmed > 0
+                    ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Без підтвердження: ${stopUnconfirmed}.`
+                    : `Усі вузли підтвердили обробку відбою: ${stopConfirmed} із ${data.totalCount}.`}
+            </p>
+          )}
           {data.items.length === 0 ? (
             <p className="delivery-message" role="status">
               {data.totalCount === 0

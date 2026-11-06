@@ -27,7 +27,38 @@ function page(
   totalCount = items.length,
   hasUnfinishedDeliveries = false,
 ) {
-  return { items, page: currentPage, pageSize: 25, totalCount, hasUnfinishedDeliveries };
+  const stateSummary = {
+    pending: 0,
+    inFlight: 0,
+    accepted: 0,
+    playing: 0,
+    completed: 0,
+    stopped: 0,
+    rejected: 0,
+    failed: 0,
+    expired: 0,
+  };
+  for (const item of items) {
+    if (typeof item === 'object' && item !== null && 'state' in item) {
+      const state = item.state;
+      const key = typeof state === 'string' ? state.charAt(0).toLowerCase() + state.slice(1) : '';
+      if (key in stateSummary) {
+        stateSummary[key as keyof typeof stateSummary]++;
+      }
+    }
+  }
+  stateSummary.pending += Math.max(0, totalCount - items.length);
+  if (hasUnfinishedDeliveries && Object.values(stateSummary).every((count) => count === 0)) {
+    stateSummary.pending = 1;
+  }
+  return {
+    items,
+    page: currentPage,
+    pageSize: 25,
+    totalCount,
+    hasUnfinishedDeliveries,
+    stateSummary,
+  };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -142,6 +173,60 @@ describe('панель доставлення команди', () => {
       within(panel).getByText('Прийняття команди не означає, що звук уже відтворюється.'),
     ).toBeInTheDocument();
     expect(within(panel).getByText('Ще не було')).toBeInTheDocument();
+  });
+
+  it('підсумовує підтвердження відбою за всіма вузлами, а не лише відкритою сторінкою', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...page([{ ...playing, state: 'Stopped' }], 1, 26),
+        stateSummary: {
+          pending: 0,
+          inFlight: 0,
+          accepted: 0,
+          playing: 0,
+          completed: 2,
+          stopped: 24,
+          rejected: 0,
+          failed: 0,
+          expired: 0,
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="stop-command" commandAction="stop" />);
+
+    expect(
+      await screen.findByText('Усі вузли підтвердили обробку відбою: 26 із 26.'),
+    ).toBeInTheDocument();
+  });
+
+  it('показує очікування та помилки вузлів одночасно', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...page([{ ...playing, state: 'Stopped' }], 1, 26),
+        stateSummary: {
+          pending: 1,
+          inFlight: 0,
+          accepted: 0,
+          playing: 0,
+          completed: 0,
+          stopped: 24,
+          rejected: 0,
+          failed: 1,
+          expired: 0,
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="stop-command" commandAction="stop" />);
+
+    expect(
+      await screen.findByText(
+        'Підтверджено обробку відбою на 24 із 26 вузлів. Очікують відповіді: 1. Без підтвердження: 1.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('показує завантаження та окремий порожній стан', async () => {

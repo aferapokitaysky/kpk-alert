@@ -7,7 +7,7 @@
 - `PostgresAlertCommandApiTests` використовує справжній PostgreSQL: міграції, запити EF Core, JSONB, індекси й зовнішні ключі перевіряються провайдером, який використовує застосунок.
 - `tests/ui` перевіряє повторне використання ключа ідемпотентності командами пульта за допомогою вбудованого тестового засобу Node.js.
 - `src/Watcher.Api/ClientApp/src` містить Vitest-тести API-клієнта, ролей, станів інтерфейсу, команд, відновлення команди з `sessionStorage`, журналу аудиту та політики Service Worker у jsdom.
-- `CommandDeliveriesEndpointTests` перевіряє на PostgreSQL агреговану ознаку незавершених доставок поза поточною сторінкою; `CommandDeliveriesPanel.test.tsx` перевіряє доступність STOP за цією ознакою. `DeviceCommandProcessorTests` перевіряє, що ранній STOP фіксує sequence й відхиляє запізнілий START.
+- `CommandDeliveriesEndpointTests` перевіряє агреговані стани доставок за всіма сторінками; `CommandDeliveriesPanel.test.tsx` перевіряє доступність STOP і підсумок підтверджень вузлів. `DeviceCommandProcessorTests` перевіряє, що ранній STOP фіксує sequence й відхиляє запізнілий START.
 - `MinuteOfSilenceScheduleTests` перевіряє час 09:00 у `Europe/Kyiv`, переходи літнього часу й відмову від запуску після пропущеного вікна. PostgreSQL-тести перевіряють строк дії команди, коректність manifest hash, запис пропущеної дати, причини пропуску та конкуренцію кількох обробників за одну дату.
 - `CommandDeliveryMaterializerTests` використовує PostgreSQL для перевірки fan-out за активними корпусами й незаблокованими пристроями, обробки строку дії та конкуренції за один outbox запис.
 

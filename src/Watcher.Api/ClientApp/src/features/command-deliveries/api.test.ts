@@ -11,6 +11,18 @@ const delivery = {
   attemptCount: 0,
 };
 
+const stateSummary = {
+  pending: 0,
+  inFlight: 0,
+  accepted: 1,
+  playing: 0,
+  completed: 0,
+  stopped: 0,
+  rejected: 0,
+  failed: 0,
+  expired: 0,
+};
+
 function response(status: number, body?: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -35,6 +47,7 @@ describe('клієнт доставлення команд', () => {
         pageSize: 25,
         totalCount: 26,
         hasUnfinishedDeliveries: true,
+        stateSummary: { ...stateSummary, pending: 25 },
       }),
     );
     vi.stubGlobal('fetch', fetchMock);
@@ -45,6 +58,7 @@ describe('клієнт доставлення команд', () => {
       pageSize: 25,
       totalCount: 26,
       hasUnfinishedDeliveries: true,
+      stateSummary: { ...stateSummary, pending: 25 },
     });
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/alert-commands/command-1/deliveries?page=2&pageSize=25',
@@ -65,6 +79,7 @@ describe('клієнт доставлення команд', () => {
         pageSize: 25,
         totalCount: 1,
         hasUnfinishedDeliveries: false,
+        stateSummary,
       }),
     );
     vi.stubGlobal('fetch', fetchMock);

@@ -315,6 +315,7 @@ export function Dashboard({
           <CommandDeliveriesPanel
             key={lastCommand.id}
             commandId={lastCommand.id}
+            commandAction={lastCommand.action}
             canOperate={canOperate && lastCommand.action === 'start'}
             targetLocations={resolvedStopLocations}
             onRequestStop={onStop}

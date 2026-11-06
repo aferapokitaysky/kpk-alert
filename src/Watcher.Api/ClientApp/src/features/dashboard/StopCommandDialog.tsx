@@ -56,8 +56,8 @@ export function StopCommandDialog({
           ))}
         </ul>
         <p className="dialog-note dialog-note-warning">
-          Сервер повторно перевірить, чи команда ще активна. Якщо відтворення вже завершилося,
-          зупинку буде відхилено.
+          Команда надійде всім вузлам, яким передавали запуск. Якщо відтворення вже завершилося,
+          вузол безпечно підтвердить відбій без повторного запуску звуку.
         </p>
         {error && (
           <p className="alert alert-error dialog-error" role="alert">

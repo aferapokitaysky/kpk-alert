@@ -56,12 +56,29 @@ public sealed class CommandDeliveriesController(WatcherDbContext db) : Controlle
 
         IQueryable<CommandDelivery> deliveriesQuery = db.CommandDeliveries.AsNoTracking()
             .Where(delivery => delivery.CommandId == commandId);
-        var totalCount = await deliveriesQuery.CountAsync(cancellationToken);
-        var hasUnfinishedDeliveries = await deliveriesQuery.AnyAsync(delivery =>
-            delivery.State == CommandDeliveryState.Pending ||
-            delivery.State == CommandDeliveryState.InFlight ||
-            delivery.State == CommandDeliveryState.Accepted ||
-            delivery.State == CommandDeliveryState.Playing, cancellationToken);
+        Dictionary<CommandDeliveryState, int> stateCounts = await deliveriesQuery
+            .GroupBy(delivery => delivery.State)
+            .Select(group => new { State = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.State, item => item.Count, cancellationToken);
+        int Count(CommandDeliveryState state) => stateCounts.GetValueOrDefault(state);
+        var totalCount = stateCounts.Values.Sum();
+        var hasUnfinishedDeliveries =
+            Count(CommandDeliveryState.Pending) +
+            Count(CommandDeliveryState.InFlight) +
+            Count(CommandDeliveryState.Accepted) +
+            Count(CommandDeliveryState.Playing) > 0;
+        var stateSummary = new
+        {
+            pending = Count(CommandDeliveryState.Pending),
+            inFlight = Count(CommandDeliveryState.InFlight),
+            accepted = Count(CommandDeliveryState.Accepted),
+            playing = Count(CommandDeliveryState.Playing),
+            completed = Count(CommandDeliveryState.Completed),
+            stopped = Count(CommandDeliveryState.Stopped),
+            rejected = Count(CommandDeliveryState.Rejected),
+            failed = Count(CommandDeliveryState.Failed),
+            expired = Count(CommandDeliveryState.Expired)
+        };
         var items = await (
             from delivery in deliveriesQuery
             join device in db.Devices.AsNoTracking() on delivery.DeviceId equals device.Id
@@ -80,6 +97,6 @@ public sealed class CommandDeliveriesController(WatcherDbContext db) : Controlle
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
-        return Ok(new { items, page, pageSize, totalCount, hasUnfinishedDeliveries });
+        return Ok(new { items, page, pageSize, totalCount, hasUnfinishedDeliveries, stateSummary });
     }
 }

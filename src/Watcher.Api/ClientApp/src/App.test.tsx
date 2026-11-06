@@ -101,6 +101,17 @@ beforeEach(() => {
     pageSize: 25,
     totalCount: 0,
     hasUnfinishedDeliveries: false,
+    stateSummary: {
+      pending: 0,
+      inFlight: 0,
+      accepted: 0,
+      playing: 0,
+      completed: 0,
+      stopped: 0,
+      rejected: 0,
+      failed: 0,
+      expired: 0,
+    },
   });
   vi.mocked(getAuditEvents).mockResolvedValue({ items: [], page: 1, pageSize: 25, totalCount: 0 });
   vi.mocked(createAlertCommand).mockResolvedValue(command);
@@ -268,6 +279,17 @@ describe('пульт оператора', () => {
       pageSize: 25,
       totalCount: 1,
       hasUnfinishedDeliveries: true,
+      stateSummary: {
+        pending: 0,
+        inFlight: 0,
+        accepted: 0,
+        playing: 1,
+        completed: 0,
+        stopped: 0,
+        rejected: 0,
+        failed: 0,
+        expired: 0,
+      },
     });
     vi.mocked(createStopCommand)
       .mockRejectedValueOnce(new ApiError(409))

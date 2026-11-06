@@ -19,12 +19,25 @@ export interface CommandDelivery {
   attemptCount: number;
 }
 
+export interface CommandDeliveryStateSummary {
+  pending: number;
+  inFlight: number;
+  accepted: number;
+  playing: number;
+  completed: number;
+  stopped: number;
+  rejected: number;
+  failed: number;
+  expired: number;
+}
+
 export interface CommandDeliveriesPage {
   items: CommandDelivery[];
   page: number;
   pageSize: number;
   totalCount: number;
   hasUnfinishedDeliveries: boolean;
+  stateSummary: CommandDeliveryStateSummary;
 }
 
 export class CommandDeliveriesApiError extends Error {
@@ -47,6 +60,36 @@ const deliveryStates: readonly CommandDeliveryState[] = [
   'Failed',
   'Expired',
 ];
+
+function parseStateSummary(value: unknown): CommandDeliveryStateSummary | null {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== deliveryStates.length ||
+    !isNonNegativeSafeInteger(value.pending) ||
+    !isNonNegativeSafeInteger(value.inFlight) ||
+    !isNonNegativeSafeInteger(value.accepted) ||
+    !isNonNegativeSafeInteger(value.playing) ||
+    !isNonNegativeSafeInteger(value.completed) ||
+    !isNonNegativeSafeInteger(value.stopped) ||
+    !isNonNegativeSafeInteger(value.rejected) ||
+    !isNonNegativeSafeInteger(value.failed) ||
+    !isNonNegativeSafeInteger(value.expired)
+  ) {
+    return null;
+  }
+
+  return {
+    pending: value.pending,
+    inFlight: value.inFlight,
+    accepted: value.accepted,
+    playing: value.playing,
+    completed: value.completed,
+    stopped: value.stopped,
+    rejected: value.rejected,
+    failed: value.failed,
+    expired: value.expired,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -119,6 +162,7 @@ export async function getCommandDeliveries(
   if (!response.ok) throw new CommandDeliveriesApiError(response.status);
 
   const value: unknown = await response.json();
+  const stateSummary = isRecord(value) ? parseStateSummary(value.stateSummary) : null;
   if (
     !isRecord(value) ||
     !Array.isArray(value.items) ||
@@ -127,7 +171,9 @@ export async function getCommandDeliveries(
     !isPositiveSafeInteger(value.pageSize) ||
     value.pageSize !== pageSize ||
     !isNonNegativeSafeInteger(value.totalCount) ||
-    typeof value.hasUnfinishedDeliveries !== 'boolean'
+    typeof value.hasUnfinishedDeliveries !== 'boolean' ||
+    stateSummary === null ||
+    Object.values(stateSummary).reduce((sum, count) => sum + count, 0) !== value.totalCount
   ) {
     throw new Error('invalid-command-deliveries-response');
   }
@@ -148,5 +194,6 @@ export async function getCommandDeliveries(
     pageSize: value.pageSize,
     totalCount: value.totalCount,
     hasUnfinishedDeliveries: value.hasUnfinishedDeliveries,
+    stateSummary,
   };
 }

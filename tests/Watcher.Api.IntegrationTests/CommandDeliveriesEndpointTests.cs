@@ -67,6 +67,9 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         Assert.Equal(2, root.GetProperty("pageSize").GetInt32());
         Assert.Equal(5, root.GetProperty("totalCount").GetInt32());
         Assert.True(root.GetProperty("hasUnfinishedDeliveries").GetBoolean());
+        JsonElement summary = root.GetProperty("stateSummary");
+        Assert.Equal(5, summary.GetProperty("pending").GetInt32());
+        Assert.Equal(5, summary.EnumerateObject().Sum(property => property.Value.GetInt32()));
         Assert.Equal(2, items.Length);
         Assert.Equal(Guid.Parse("00000000-0000-0000-0000-000000000003"), item.GetProperty("deviceId").GetGuid());
         Assert.Equal("device-3", item.GetProperty("deviceName").GetString());
@@ -130,6 +133,10 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         Assert.All(root.GetProperty("items").EnumerateArray(), item =>
             Assert.Equal("Completed", item.GetProperty("state").GetString()));
         Assert.True(root.GetProperty("hasUnfinishedDeliveries").GetBoolean());
+        JsonElement activeSummary = root.GetProperty("stateSummary");
+        Assert.Equal(4, activeSummary.GetProperty("completed").GetInt32());
+        Assert.Equal(1, activeSummary.GetProperty("playing").GetInt32());
+        Assert.Equal(5, activeSummary.EnumerateObject().Sum(property => property.Value.GetInt32()));
 
         using (WatcherDbContext db = _fixture.CreateDbContext())
         {
@@ -149,6 +156,8 @@ public sealed class CommandDeliveriesEndpointTests : IClassFixture<PostgresApiFi
         using JsonDocument completedDocument = await JsonDocument.ParseAsync(
             await completedResponse.Content.ReadAsStreamAsync());
         Assert.False(completedDocument.RootElement.GetProperty("hasUnfinishedDeliveries").GetBoolean());
+        Assert.Equal(5, completedDocument.RootElement.GetProperty("stateSummary")
+            .GetProperty("completed").GetInt32());
     }
 
     [PostgresTheory]
