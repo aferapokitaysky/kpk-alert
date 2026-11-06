@@ -6,6 +6,7 @@ import { AutomaticAlertDispatchPanel } from '../alert-sources/AutomaticAlertDisp
 import { UkraineAlarmWebhookPanel } from '../alert-sources/UkraineAlarmWebhookPanel';
 import { CommandDeliveriesPanel } from '../command-deliveries/CommandDeliveriesPanel';
 import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
+import { DeviceConnectionPanel } from '../device-status/DeviceConnectionPanel';
 
 interface Props {
   session: SessionState;
@@ -346,27 +347,7 @@ export function Dashboard({
         </div>
       )}
 
-      <section className="panel node-panel" aria-labelledby="nodes-title">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">ЗВ’ЯЗОК З ОБЛАДНАННЯМ</p>
-            <h2 id="nodes-title">Стан вузлів</h2>
-          </div>
-          <span className="unknown-pill">Немає даних</span>
-        </div>
-        <div className="unknown-state">
-          <span className="unknown-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M9.5 9a2.5 2.5 0 1 1 4.5 1.5c-1.2 1.2-2 1.5-2 3M12 17h.01" />
-            </svg>
-          </span>
-          <div>
-            <strong>Стан вузлів невідомий</strong>
-            <p>У поточному API немає підтверджень стану пристроїв.</p>
-          </div>
-        </div>
-      </section>
+      <DeviceConnectionPanel session={session} />
     </>
   );
 }

@@ -899,6 +899,68 @@ h3 {
   font-size: var(--font-caption);
 }
 
+.device-status-summary {
+  margin: var(--space-4) var(--space-5) 0;
+  color: var(--slate-600);
+  font-size: var(--font-caption);
+  font-weight: 650;
+}
+
+.device-status-list {
+  margin: var(--space-3) 0 0;
+  padding: 0 var(--space-5) var(--space-4);
+  list-style: none;
+}
+
+.device-status-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.device-status-list li:last-child {
+  border-bottom: 0;
+}
+
+.device-status-list li div {
+  display: grid;
+  gap: 4px;
+}
+
+.device-status-list li div span {
+  color: var(--slate-500);
+  font-size: var(--font-caption);
+}
+
+.device-connection-state {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 99px;
+  font-size: var(--font-caption);
+  font-weight: 650;
+}
+
+.device-connection-state.is-connected {
+  background: var(--green-soft);
+  color: #166534;
+}
+
+.device-connection-state.is-offline {
+  background: var(--slate-100);
+  color: var(--slate-700);
+}
+
+@media (max-width: 520px) {
+  .device-status-list li {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+}
+
 .command-result {
   display: flex;
   gap: var(--space-4);

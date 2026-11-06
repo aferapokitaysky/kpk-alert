@@ -4,6 +4,14 @@ export interface Location {
   code: string;
 }
 
+export interface DeviceConnectionStatus {
+  deviceId: string;
+  deviceName: string;
+  locationId: string;
+  locationName: string;
+  connectionState: 'connected' | 'offline';
+}
+
 export interface OperatorSession {
   authenticated: true;
   roles: string[];
@@ -96,6 +104,35 @@ export async function getLocations(): Promise<Location[]> {
       throw new Error('invalid-locations-response');
     }
     return { id: location.id, name: location.name, code: location.code };
+  });
+}
+
+export async function getDeviceConnectionStatuses(
+  signal?: AbortSignal,
+): Promise<DeviceConnectionStatus[]> {
+  const response = await request('/api/v1/device-status', signal ? { signal } : {});
+  if (!response.ok) throw new ApiError(response.status);
+  const result: unknown = await response.json();
+  if (!Array.isArray(result) || !result.every(isRecord)) {
+    throw new Error('invalid-device-status-response');
+  }
+  return result.map((device): DeviceConnectionStatus => {
+    if (
+      typeof device.deviceId !== 'string' ||
+      typeof device.deviceName !== 'string' ||
+      typeof device.locationId !== 'string' ||
+      typeof device.locationName !== 'string' ||
+      (device.connectionState !== 'connected' && device.connectionState !== 'offline')
+    ) {
+      throw new Error('invalid-device-status-response');
+    }
+    return {
+      deviceId: device.deviceId,
+      deviceName: device.deviceName,
+      locationId: device.locationId,
+      locationName: device.locationName,
+      connectionState: device.connectionState,
+    };
   });
 }
 
