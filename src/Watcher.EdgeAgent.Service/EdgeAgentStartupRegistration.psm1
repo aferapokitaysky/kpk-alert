@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 $script:EdgeAgentStartupValueName = 'KGTA.Alert.OperatorPanel'
 $script:EdgeAgentRunSubKeySuffix = 'Software\Microsoft\Windows\CurrentVersion\Run'
@@ -98,7 +98,7 @@ function Set-EdgeAgentDesktopStartupEntry {
     )
 
     $canonicalExecutablePath = [IO.Path]::GetFullPath($ExecutablePath)
-    if (-not [IO.Path]::IsPathFullyQualified($canonicalExecutablePath) -or
+    if (-not [IO.Path]::IsPathRooted($canonicalExecutablePath) -or
         -not (Test-Path -LiteralPath $canonicalExecutablePath -PathType Leaf)) {
         throw 'Не знайдено виконуваний файл панелі за абсолютним шляхом.'
     }

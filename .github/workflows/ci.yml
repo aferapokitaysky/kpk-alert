@@ -20,7 +20,7 @@ jobs:
       - run: dotnet restore tests/Watcher.EdgeAgent.Service.IntegrationTests/Watcher.EdgeAgent.Service.IntegrationTests.csproj
       - run: dotnet test tests/Watcher.EdgeAgent.Service.IntegrationTests/Watcher.EdgeAgent.Service.IntegrationTests.csproj -c Release --no-restore -p:RunWindowsIntegrationTests=true --logger "trx;LogFileName=windows-edge-agent.trx"
       - name: Перевірити автозапуск Windows-вузла
-        shell: pwsh
+        shell: powershell
         run: ./tests/scripts/test_edge_agent_startup_registration.ps1
       - uses: actions/upload-artifact@v4
         if: always()

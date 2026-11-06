@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
@@ -28,7 +28,8 @@ $testRunSubKey = "$testRootSubKey\Run"
 $testRegistryPath = "HKCU:\$testRootSubKey"
 $testExecutableDirectory = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert $testId"
 $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desktop.exe'
-$interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$([Random]::Shared.Next(100000, 2000000000))"
+$random = New-Object System.Random
+$interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$($random.Next(100000, 2000000000))"
 $usersHive = $null
 $runKey = $null
 
@@ -120,4 +121,3 @@ $defaultRunPath = Get-EdgeAgentStartupRegistrySubKeyPath -InteractiveUserSid $in
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }
 }
-
