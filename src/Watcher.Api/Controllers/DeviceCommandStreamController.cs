@@ -11,6 +11,7 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/device/commands")]
 public sealed class DeviceCommandStreamController(
     DeviceCommandSessionRegistry sessions,
+    DeviceSessionPresenceService presence,
     IConfiguration configuration,
     ILogger<DeviceCommandStreamController> logger) : ControllerBase
 {
@@ -36,12 +37,22 @@ public sealed class DeviceCommandStreamController(
             return Forbid();
         }
 
-        using WebSocket socket = await HttpContext.WebSockets.AcceptWebSocketAsync();
-        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, cancellationToken);
-        var receiveBuffer = new byte[1024];
+        Guid sessionId = await presence.OpenSessionAsync(deviceId, cancellationToken);
+        WebSocket? socket = null;
+        DeviceCommandWebSocketSession? commandSession = null;
+        using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? heartbeatTask = null;
         try
         {
+            socket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+            commandSession = await sessions.RegisterAsync(deviceId, sessionId, socket, cancellationToken);
+            heartbeatTask = presence.RunHeartbeatAsync(sessionId, () =>
+            {
+                logger.LogInformation(
+                    "Сеанс пристрою {DeviceId} замінено новим підключенням.", deviceId);
+                socket.Abort();
+            }, heartbeatCancellation.Token);
+            var receiveBuffer = new byte[1024];
             while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
             {
                 WebSocketReceiveResult result = await socket.ReceiveAsync(
@@ -51,7 +62,7 @@ public sealed class DeviceCommandStreamController(
                     break;
                 }
 
-                await session.CloseAsync(
+                await commandSession.CloseAsync(
                     WebSocketCloseStatus.PolicyViolation,
                     "Пристрій не може надсилати повідомлення в каналі команд.",
                     cancellationToken);
@@ -71,7 +82,31 @@ public sealed class DeviceCommandStreamController(
         }
         finally
         {
-            sessions.Unregister(session);
+            heartbeatCancellation.Cancel();
+            if (heartbeatTask is not null)
+            {
+                await heartbeatTask;
+            }
+
+            if (commandSession is not null)
+            {
+                sessions.Unregister(commandSession);
+            }
+
+            if (socket is { State: WebSocketState.Open })
+            {
+                socket.Abort();
+            }
+
+            try
+            {
+                await presence.DisconnectAsync(sessionId, CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception,
+                    "Не вдалося записати завершення сеансу пристрою {DeviceId}.", deviceId);
+            }
         }
 
         return new EmptyResult();
