@@ -67,11 +67,10 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 continue;
             }
 
-            var sent = await sessions.SendAsync(
-                dispatch.DeviceId,
-                localSessions.Single(session => session.DeviceId == dispatch.DeviceId).PresenceSessionId,
-                dispatch.Payload,
-                cancellationToken);
+            Guid presenceSessionId = localSessions
+                .Single(session => session.DeviceId == dispatch.DeviceId)
+                .PresenceSessionId;
+            var sent = await SendToCurrentSessionAsync(dispatch, presenceSessionId, cancellationToken);
             if (!sent)
             {
                 await ScheduleRetryAsync(dispatch, clock.GetUtcNow(), cancellationToken);
@@ -85,6 +84,62 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         }
 
         return processedCount;
+    }
+
+    private async Task<bool> SendToCurrentSessionAsync(
+        PreparedDispatch dispatch,
+        Guid presenceSessionId,
+        CancellationToken cancellationToken)
+    {
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if (db.Database.IsNpgsql())
+        {
+            List<Device> lockedDevices = await db.Devices
+                .FromSqlInterpolated($"SELECT * FROM devices WHERE \"Id\" = {dispatch.DeviceId} FOR SHARE")
+                .AsNoTracking()
+                .ToListAsync(cancellationToken);
+            if (lockedDevices.Count == 0)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+        }
+
+        DateTimeOffset now = clock.GetUtcNow();
+        var isCurrentSession = await db.DeviceSessions.AsNoTracking()
+            .AnyAsync(session => session.Id == presenceSessionId &&
+                                 session.DeviceId == dispatch.DeviceId &&
+                                 session.DisconnectedAtUtc == null &&
+                                 session.LastSeenAtUtc >= now - DeviceSessionPresenceService.PresenceTimeToLive,
+                cancellationToken);
+        if (!isCurrentSession)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return false;
+        }
+
+        bool sent;
+        using (var sendTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            sendTimeout.CancelAfter(options.Value.AcknowledgementTimeout);
+            try
+            {
+                sent = await sessions.SendAsync(
+                    dispatch.DeviceId, presenceSessionId, dispatch.Payload, sendTimeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                sessions.Abort(dispatch.DeviceId, presenceSessionId);
+                logger.LogWarning(
+                    "Час надсилання команди {CommandId} пристрою {DeviceId} вичерпано.",
+                    dispatch.CommandId,
+                    dispatch.DeviceId);
+                sent = false;
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return sent;
     }
 
     private async Task<Guid[]> FindDueDeliveryIdsAsync(

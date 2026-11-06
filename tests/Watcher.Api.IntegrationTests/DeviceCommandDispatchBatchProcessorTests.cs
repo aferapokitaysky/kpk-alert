@@ -142,8 +142,9 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
 
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -204,6 +205,52 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
         Assert.Equal(CommandDeliveryState.InFlight, delivery.State);
         Assert.Equal(1, delivery.AttemptCount);
+    }
+
+    [PostgresFact]
+    public async Task Reconnect_after_presence_snapshot_prevents_dispatch_to_the_superseded_socket()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid oldPresenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, oldPresenceSessionId, socket, CancellationToken.None);
+        DispatchQueryGate queryGate = new();
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext(queryGate);
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+            Task<int> processing = processor.ProcessBatchAsync(CancellationToken.None);
+
+            await queryGate.WaitForDispatchQueryAsync();
+            Guid newPresenceSessionId = await _fixture.DevicePresence.OpenSessionAsync(
+                deviceId, CancellationToken.None);
+            Assert.NotEqual(oldPresenceSessionId, newPresenceSessionId);
+            queryGate.ReleaseDispatchQuery();
+
+            Assert.Equal(1, await processing);
+        }
+        finally
+        {
+            queryGate.ReleaseDispatchQuery();
+            sessions.Unregister(session);
+        }
+
+        Assert.Equal(0, socket.SendCount);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+        Assert.Equal(CommandDeliveryState.Pending, delivery.State);
+        Assert.Equal(1, delivery.AttemptCount);
+        Assert.NotNull(delivery.NextAttemptAtUtc);
+        DeviceSession[] presenceSessions = await verifyDb.DeviceSessions
+            .Where(item => item.DeviceId == deviceId)
+            .ToArrayAsync();
+        Assert.Equal(2, presenceSessions.Length);
+        Assert.Single(presenceSessions, item => item.DisconnectedAtUtc == null);
+        Assert.Contains(presenceSessions, item =>
+            item.Id == oldPresenceSessionId && item.DisconnectedAtUtc is not null);
     }
 
     private async Task<(Guid CommandId, Guid DeviceId, Guid DeliveryId)> AddPendingStartAsync(
@@ -321,6 +368,34 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
                 }
 
                 await _allQueriesRead.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class DispatchQueryGate : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _queryStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseQuery = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitForDispatchQueryAsync() => _queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        public void ReleaseDispatchQuery() => _releaseQuery.TrySetResult();
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("command_deliveries", StringComparison.OrdinalIgnoreCase) &&
+                command.CommandText.Contains("alert_commands", StringComparison.OrdinalIgnoreCase))
+            {
+                _queryStarted.TrySetResult();
+                await _releaseQuery.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             }
 
             return result;

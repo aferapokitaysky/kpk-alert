@@ -66,6 +66,15 @@ public sealed class DeviceCommandSessionRegistry
             .Remove(new KeyValuePair<Guid, DeviceCommandWebSocketSession>(session.DeviceId, session));
     }
 
+    public void Abort(Guid deviceId, Guid presenceSessionId)
+    {
+        if (_sessions.TryGetValue(deviceId, out DeviceCommandWebSocketSession? session) &&
+            session.PresenceSessionId == presenceSessionId)
+        {
+            session.Abort();
+        }
+    }
+
     public async Task<bool> SendAsync(
         Guid deviceId,
         Guid presenceSessionId,
