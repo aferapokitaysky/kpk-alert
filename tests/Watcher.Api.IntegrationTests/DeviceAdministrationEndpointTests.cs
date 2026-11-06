@@ -145,6 +145,85 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
         Assert.Empty(await db.AuditEvents.ToArrayAsync());
     }
 
+    [PostgresFact]
+    public async Task Revocation_closes_socket_registered_after_session_recheck()
+    {
+        SeedData seed = await fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        await using (WatcherDbContext db = fixture.CreateDbContext())
+        {
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Вузол під час відкликання",
+                CertificateThumbprint = new('d', 64)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Guid sessionId = await fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None);
+        OpenWebSocket socket = new();
+        TaskCompletionSource<bool> sessionCheckCompleted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<bool> allowRegistration = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<Watcher.Api.Delivery.DeviceCommandWebSocketSession?> registration =
+            fixture.DeviceSessions.TryRegisterIfCurrentAsync(
+                deviceId,
+                sessionId,
+                socket,
+                async cancellationToken =>
+                {
+                    var isCurrent = await fixture.DevicePresence.IsSessionActiveAsync(
+                        sessionId, cancellationToken);
+                    sessionCheckCompleted.TrySetResult(isCurrent);
+                    await allowRegistration.Task.WaitAsync(cancellationToken);
+                    return isCurrent;
+                },
+                CancellationToken.None);
+
+        Task<HttpResponseMessage>? revokeTask = null;
+        try
+        {
+            Assert.True(await sessionCheckCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+            revokeTask = SendAsync(
+                fixture.Client,
+                seed.AdministratorId,
+                HttpMethod.Post,
+                $"{Endpoint}/{deviceId}/revoke");
+
+            DateTimeOffset? revokedAtUtc = null;
+            DateTimeOffset timeoutAtUtc = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (revokedAtUtc is null && DateTimeOffset.UtcNow < timeoutAtUtc)
+            {
+                await using WatcherDbContext db = fixture.CreateDbContext();
+                revokedAtUtc = await db.Devices
+                    .Where(device => device.Id == deviceId)
+                    .Select(device => device.RevokedAtUtc)
+                    .SingleAsync();
+                if (revokedAtUtc is null)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(25));
+                }
+            }
+
+            allowRegistration.TrySetResult(true);
+            Assert.NotNull(revokedAtUtc);
+            Assert.NotNull(await registration);
+
+            using HttpResponseMessage response = await revokeTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal(WebSocketCloseStatus.PolicyViolation, socket.CloseStatus);
+            Assert.DoesNotContain(deviceId, fixture.DeviceSessions.ConnectedDeviceIds);
+        }
+        finally
+        {
+            allowRegistration.TrySetResult(false);
+            _ = await registration.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     private static async Task<HttpResponseMessage> SendAsync(
         HttpClient client,
         Guid userId,
