@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Watcher.Api.AlertSources;
+using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -10,13 +11,13 @@ namespace Watcher.Api.Controllers;
 
 [ApiController]
 [Authorize]
+[NoStoreResponse]
 [Route("api/v1/automatic-alert-dispatch/status")]
 public sealed class AutomaticAlertDispatchStatusController(
     WatcherDbContext db,
     AutomaticAlertDispatchOptions options) : ControllerBase
 {
     [HttpGet]
-    [ResponseCache(Location = ResponseCacheLocation.None, NoStore = true)]
     public async Task<IActionResult> GetAsync(CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId))
