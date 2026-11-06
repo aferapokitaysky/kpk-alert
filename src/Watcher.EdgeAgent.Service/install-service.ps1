@@ -160,6 +160,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі 
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до журналів.' }
 & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
+& sc.exe failureflag $serviceName 1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
 if (-not $SkipStart) {
     try {
         if ($existingService -and $serviceConfiguration.StartMode -eq 'Disabled') {

@@ -314,7 +314,7 @@ public sealed class EdgeAgentStartupIntegrationTests
     }
 
     [Fact]
-    public async Task StartupFailureIsRepresentedAsDegradedStatus()
+    public async Task StartupFailureMarksDegradedAndRequestsNonzeroProcessExit()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -327,19 +327,16 @@ public sealed class EdgeAgentStartupIntegrationTests
             DeviceCommandProcessor processor = new(store, new StartupTestAssetResolver(),
                 new StartupTestAudioPlayer(), clock, TimeSpan.FromMinutes(2), 100);
             DeviceCommandTransport transport = new(options, processor);
+            int? requestedExitCode = null;
             using EdgeAgentHostedService hostedService = new(store, coordinator, transport,
                 new StartupTestAudioPlayer(), new StartupTestAudioEndpointAvailabilityMonitor(),
-                options, clock, status, NullLogger<EdgeAgentHostedService>.Instance);
-            var previousExitCode = Environment.ExitCode;
-            try
-            {
-                await hostedService.StartAsync(CancellationToken.None);
-                InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => hostedService.ExecuteTask!);
-                Assert.Equal("Службу Edge Agent зупинено: agent_start_failed.", exception.Message);
-                Assert.Equal(1, Environment.ExitCode);
-            }
-            finally { Environment.ExitCode = previousExitCode; }
+                options, clock, status, NullLogger<EdgeAgentHostedService>.Instance,
+                exitCode => requestedExitCode = exitCode);
+            await hostedService.StartAsync(CancellationToken.None);
+            InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => hostedService.ExecuteTask!);
+            Assert.Equal("Службу Edge Agent зупинено: agent_start_failed.", exception.Message);
+            Assert.Equal(1, requestedExitCode);
 
             Assert.Equal(EdgeAgentConnectionState.Degraded, status.Get().ConnectionState);
             Assert.Equal("agent_start_failed", status.Get().DiagnosticCode);

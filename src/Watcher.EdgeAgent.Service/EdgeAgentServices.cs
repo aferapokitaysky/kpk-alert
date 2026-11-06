@@ -119,8 +119,11 @@ internal sealed class EdgeAgentHostedService(
     EdgeAgentOptions options,
     IEdgeAgentClock clock,
     EdgeAgentStatusProvider status,
-    ILogger<EdgeAgentHostedService> logger) : BackgroundService
+    ILogger<EdgeAgentHostedService> logger,
+    Action<int>? terminateProcess = null) : BackgroundService
 {
+    private readonly Action<int> _terminateProcess = terminateProcess ?? Environment.Exit;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
@@ -159,7 +162,7 @@ internal sealed class EdgeAgentHostedService(
             };
             startupCoordinator.MarkDegraded(diagnosticCode);
             logger.LogError("Edge Agent зупинився: {DiagnosticCode}.", diagnosticCode);
-            Environment.ExitCode = 1;
+            _terminateProcess(1);
             throw new InvalidOperationException($"Службу Edge Agent зупинено: {diagnosticCode}.");
         }
     }
