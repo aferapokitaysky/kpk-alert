@@ -6,10 +6,12 @@ param(
     [string]$DesktopPublishDirectory,
     [string]$ConfigurationFile = "$PSScriptRoot\edge-agent.json",
     [string[]]$OperatorMembers = @(),
+    [string]$InteractiveUser,
     [switch]$SkipStart
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'EdgeAgentStartupRegistration.psm1') -Force
 $serviceName = 'KGTA.Alert.EdgeAgent'
 $serviceAccount = "NT SERVICE\$serviceName"
 $operatorGroupName = 'KGTA Alert Operators'
@@ -53,6 +55,13 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Запустіть інсталятор від імені адміністратора.'
 }
+$interactiveUserSid = Resolve-EdgeAgentInteractiveUserSid -InteractiveUser $InteractiveUser
+if (-not (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid)) {
+    throw "Профіль користувача $interactiveUserSid не завантажено. Увійдіть у цей обліковий запис і повторіть встановлення."
+}
+$interactiveUserAccount = ([Security.Principal.SecurityIdentifier]::new($interactiveUserSid)).Translate(
+    [Security.Principal.NTAccount]
+).Value
 if (-not (Test-Path -LiteralPath (Join-Path $PublishDirectory 'Watcher.EdgeAgent.Service.exe'))) {
     throw 'У каталозі публікації немає Watcher.EdgeAgent.Service.exe.'
 }
@@ -95,6 +104,24 @@ foreach ($member in $OperatorMembers) {
 }
 
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+$previousStartupType = $null
+if ($existingService) {
+    $serviceConfiguration = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'"
+    if (-not $serviceConfiguration) { throw 'Не вдалося прочитати поточну конфігурацію Windows-служби.' }
+    $previousStartupType = switch ($serviceConfiguration.StartMode) {
+        'Auto' { 'auto' }
+        'Manual' { 'demand' }
+        'Disabled' { 'disabled' }
+        default { throw "Непідтримуваний тип запуску наявної служби: $($serviceConfiguration.StartMode)." }
+    }
+    if ($serviceConfiguration.StartMode -eq 'Auto') {
+        $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
+        $delayedAutoStart = (Get-ItemProperty -LiteralPath $serviceRegistryPath -Name DelayedAutoStart -ErrorAction SilentlyContinue).DelayedAutoStart
+        if ($delayedAutoStart -eq 1) { $previousStartupType = 'delayed-auto' }
+    }
+} else {
+    $previousStartupType = 'demand'
+}
 if ($existingService) {
     if ($existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
         Stop-Service -Name $serviceName -Force
@@ -110,7 +137,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory 'edge-agent.json'))) 
 }
 
 if ($existingService) {
-    & sc.exe config $serviceName binPath= "`"$executable`"" start= demand obj= $serviceAccount | Out-Null
+    & sc.exe config $serviceName binPath= "`"$executable`"" obj= $serviceAccount | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Не вдалося оновити конфігурацію Windows-служби.' }
 } else {
     & sc.exe create $serviceName binPath= "`"$executable`"" start= demand obj= $serviceAccount | Out-Null
@@ -135,6 +162,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі 
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
 if (-not $SkipStart) {
     try {
+        if ($existingService -and $serviceConfiguration.StartMode -eq 'Disabled') {
+            & sc.exe config $serviceName start= demand | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Не вдалося тимчасово ввімкнути службу для перевірки після оновлення.' }
+        }
         Start-Service -Name $serviceName
         $healthDeadline = [DateTime]::UtcNow.AddSeconds(20)
         $statusResponse = $null
@@ -152,10 +183,12 @@ if (-not $SkipStart) {
         if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status -ne 'Stopped') {
             Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
         }
+        & sc.exe config $serviceName start= $previousStartupType | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Перевірка служби не пройшла, також не вдалося відновити попередній тип запуску '$previousStartupType'. Зверніться до адміністратора. Причина: $_"
+        }
         throw "edge_agent_health_check_failed: перевірте журнал Application у Windows Event Viewer. Для device_certificate_unavailable відкрийте certlm.msc → керування приватними ключами сертифіката → надайте $serviceAccount право Read, а потім повторіть інсталяцію. Деталь: $_"
     }
-    & sc.exe config $serviceName start= auto | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Служба перевірена, але не вдалося увімкнути автоматичний запуск.' }
 }
 $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
@@ -163,11 +196,31 @@ $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $sta
 $shortcut.TargetPath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
 $shortcut.WorkingDirectory = $installDirectory
 $shortcut.Save()
-if ($OperatorMembers.Count -eq 0) {
-    $currentMember = "$env:USERDOMAIN\$env:USERNAME"
-    Write-Warning "Група операторів порожня. Щоб відкрити панель поточному адміністратору, виконайте: Add-LocalGroupMember -Group 'KGTA Alert Operators' -Member '$currentMember'"
+if (-not (Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
+        Where-Object { $_.SID.Value -eq $interactiveUserSid })) {
+    Add-LocalGroupMember -Group $operatorGroupName -Member $interactiveUserAccount
+}
+$startupType = Get-EdgeAgentServiceStartupType -SkipStart:$SkipStart
+try {
+    & sc.exe config $serviceName start= $startupType | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати автоматичний запуск Windows-служби.' }
+    $configuredService = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'"
+    if (-not $configuredService -or $configuredService.StartMode -ne 'Auto') {
+        throw 'Windows не підтвердила автоматичний тип запуску служби.'
+    }
+
+    Set-EdgeAgentDesktopStartupEntry `
+        -InteractiveUserSid $interactiveUserSid `
+        -ExecutablePath (Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe')
+} catch {
+    $configurationFailure = $_
+    & sc.exe config $serviceName start= $previousStartupType | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Не вдалося налаштувати автозапуск. Також не вдалося відновити попередній тип запуску '$previousStartupType'. Причина: $configurationFailure"
+    }
+    throw $configurationFailure
 }
 if ($SkipStart) {
-    Write-Warning "Службу встановлено з запуском вручну. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте її через Start-Service -Name '$serviceName', потім виконайте: Set-Service -Name '$serviceName' -StartupType Automatic"
+    Write-Warning "Службу налаштовано на автоматичний запуск після завантаження Windows, але зараз не запущено й не перевірено. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте запуск командою Start-Service -Name '$serviceName' і стан автозапуску через Get-Service -Name '$serviceName'."
 }
 Get-Service -Name $serviceName | Select-Object Name, Status, StartType

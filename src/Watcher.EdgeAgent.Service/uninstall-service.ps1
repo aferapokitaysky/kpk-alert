@@ -1,7 +1,11 @@
 [CmdletBinding()]
-param([switch]$RemoveLocalData)
+param(
+    [switch]$RemoveLocalData,
+    [string]$InteractiveUser
+)
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'EdgeAgentStartupRegistration.psm1') -Force
 $serviceName = 'KGTA.Alert.EdgeAgent'
 $dataDirectory = Join-Path $env:ProgramData 'KGTA\Alert'
 $installDirectory = Join-Path $env:ProgramFiles 'KGTA\Alert\EdgeAgent'
@@ -11,6 +15,11 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Запустіть видалення від імені адміністратора.'
 }
+$interactiveUserSid = Resolve-EdgeAgentInteractiveUserSid -InteractiveUser $InteractiveUser
+if (-not (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid)) {
+    throw "Профіль користувача $interactiveUserSid не завантажено. Увійдіть у цей обліковий запис і повторіть видалення; службу та файли не змінено."
+}
+Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $interactiveUserSid
 if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
     $service = Get-Service -Name $serviceName
     if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
