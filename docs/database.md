@@ -41,7 +41,7 @@ erDiagram
 | `command_receipts`           | `id`, `command_id`, `device_id`, `status`, `occurred_at`                                      | Підтвердження отримання, запуску та завершення                |
 | `audit_events`               | `id`, `event_type`, `actor_type`, `actor_id`, `payload`, `occurred_at`                        | Історія дій користувачів і системи                            |
 | `outbox_messages`            | `id`, `command_id`, `event_type`, `payload`, `created_at_utc`, `processed_at_utc`, `attempts` | Надійна черга подій для подальшої доставки                    |
-| `device_sessions`            | `id`, `device_id`, `connected_at`, `last_seen_at`                                             | Історія технічних з’єднань                                    |
+| `device_sessions`            | `id`, `device_id`, `connected_at`, `disconnected_at`, `last_seen_at`                          | Історія технічних з’єднань і спільна присутність вузлів        |
 | `ukrainealarm_webhook_operations` | `id`, `idempotency_key`, `actor_user_id`, `action`, `state`, `callback_url`, `outcome_code`, timestamps | Довговічний стан ручних змін callback UkraineAlarm; активна або невизначена операція блокує наступну |
 | `external_integration_states` | `integration_code`, `is_registered?`, `updated_at_utc`                                      | Останній підтверджений стан реєстрації webhook; `NULL` означає невідомий стан |
 | `automatic_alert_dispatch_states` | `id`, `has_open_episode`, `scope`, `scope_id`, `start_command_id`, `started_at_utc`, `last_decision_code`, `updated_at_utc` | Єдиний серіалізований стан епізоду автоматичної тривоги для Кременчука |

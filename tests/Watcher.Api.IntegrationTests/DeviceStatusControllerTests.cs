@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.WebSockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -18,6 +17,36 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
     private readonly PostgresApiFixture _fixture;
 
     public DeviceStatusControllerTests(PostgresApiFixture fixture) => _fixture = fixture;
+
+    [PostgresFact]
+    public async Task Concurrent_reconnects_leave_only_the_last_database_session_active()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Вузол reconnect",
+                CertificateThumbprint = new string('a', 64)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Guid[] sessionIds = await Task.WhenAll(
+            _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None),
+            _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None));
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        DeviceSession[] sessions = await verifyDb.DeviceSessions
+            .Where(session => session.DeviceId == deviceId)
+            .ToArrayAsync();
+        DeviceSession activeSession = Assert.Single(sessions, session => session.DisconnectedAtUtc == null);
+        Assert.Contains(activeSession.Id, sessionIds);
+        Assert.Equal(2, sessions.Length);
+    }
 
     [PostgresFact]
     public async Task Device_status_is_restricted_no_store_and_does_not_expose_certificate_data()
@@ -60,11 +89,19 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         using HttpResponseMessage operatorResponse = await SendGetAsync(seed.OperatorId, "notificator");
         using HttpResponseMessage anonymous = await _fixture.Client.GetAsync(Path);
 
-        OpenWebSocket socket = new();
-        DeviceCommandWebSocketSession session = await _fixture.DeviceSessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            db.DeviceSessions.Add(new DeviceSession
+            {
+                Id = Guid.NewGuid(),
+                DeviceId = deviceId,
+                ConnectedAtUtc = now,
+                LastSeenAtUtc = now
+            });
+            await db.SaveChangesAsync();
+        }
         using HttpResponseMessage connectedResponse = await SendGetAsync(seed.AdministratorId, "admin");
-        _fixture.DeviceSessions.Unregister(session);
 
         Assert.Equal(HttpStatusCode.OK, administrator.StatusCode);
         Assert.Equal("no-store", administrator.Headers.CacheControl?.ToString());
@@ -97,24 +134,6 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         return await _fixture.Client.SendAsync(request);
     }
 
-    private sealed class OpenWebSocket : WebSocket
-    {
-        public override WebSocketCloseStatus? CloseStatus => null;
-        public override string? CloseStatusDescription => null;
-        public override WebSocketState State => WebSocketState.Open;
-        public override string? SubProtocol => null;
-        public override void Abort() { }
-        public override void Dispose() { }
-        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer,
-            CancellationToken cancellationToken) => Task.FromResult(
-            new WebSocketReceiveResult(0, WebSocketMessageType.Close, true));
-        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType,
-            bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
-    }
 }
 
 public sealed class DeviceStatusPaginationTests

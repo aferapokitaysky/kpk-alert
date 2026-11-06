@@ -25,10 +25,11 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
         (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -65,8 +66,9 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             seed.FirstLocationId, expiresAtUtc: Now.AddSeconds(-1));
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -169,14 +171,15 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
         (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandSessionRegistry firstSessions = new();
         DeviceCommandSessionRegistry secondSessions = new();
         RecordingWebSocket firstSocket = new();
         RecordingWebSocket secondSocket = new();
         DeviceCommandWebSocketSession firstSession = await firstSessions.RegisterAsync(
-            deviceId, firstSocket, CancellationToken.None);
+            deviceId, presenceSessionId, firstSocket, CancellationToken.None);
         DeviceCommandWebSocketSession secondSession = await secondSessions.RegisterAsync(
-            deviceId, secondSocket, CancellationToken.None);
+            deviceId, presenceSessionId, secondSocket, CancellationToken.None);
         try
         {
             DueDeliveryQueryBarrier barrier = new(expectedQueries: 2);
@@ -273,6 +276,21 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             new FixedTimeProvider(Now),
             Options.Create(options),
             NullLogger<DeviceCommandDispatchBatchProcessor>.Instance);
+    }
+
+    private async Task<Guid> AddActivePresenceAsync(Guid deviceId)
+    {
+        var sessionId = Guid.NewGuid();
+        await using WatcherDbContext db = _fixture.CreateDbContext();
+        db.DeviceSessions.Add(new DeviceSession
+        {
+            Id = sessionId,
+            DeviceId = deviceId,
+            ConnectedAtUtc = Now,
+            LastSeenAtUtc = Now
+        });
+        await db.SaveChangesAsync();
+        return sessionId;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
