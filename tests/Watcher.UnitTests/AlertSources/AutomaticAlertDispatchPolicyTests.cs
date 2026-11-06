@@ -440,6 +440,25 @@ public sealed class AutomaticAlertDispatchPolicyTests
     }
 
     [Fact]
+    public void Narrower_active_status_prevents_a_broader_inactive_status_from_stopping_episode()
+    {
+        AlertSourceObservationResponse hromada = Observation(
+            AlertSourceCatalog.AlertsInUaCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
+            "active", "red");
+        AlertSourceObservationResponse oblast = Observation(
+            AlertSourceCatalog.AlertsInUaCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
+            "inactive");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(
+            Status(Target(hromada), Target(oblast)),
+            new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId));
+
+        Assert.Equal(AutomaticAlertDispatchAction.NoChange, decision.Action);
+        Assert.Equal("alert_still_active", decision.ReasonCode);
+        Assert.Equal(hromada, decision.Observation);
+    }
+
+    [Fact]
     public void Broader_inactive_neptun_status_closes_hromada_episode_without_hromada_record()
     {
         AlertSourceObservationResponse primary = Observation(

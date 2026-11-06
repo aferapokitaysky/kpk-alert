@@ -22,6 +22,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<DeviceCommandReceipt> DeviceCommandReceipts => Set<DeviceCommandReceipt>();
     public DbSet<UkraineAlarmWebhookOperation> UkraineAlarmWebhookOperations => Set<UkraineAlarmWebhookOperation>();
     public DbSet<ExternalIntegrationState> ExternalIntegrationStates => Set<ExternalIntegrationState>();
+    public DbSet<AutomaticAlertDispatchState> AutomaticAlertDispatchStates => Set<AutomaticAlertDispatchState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -240,6 +241,22 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
                 "\"IntegrationCode\" = 'ukrainealarm_webhook'"));
             entity.HasKey(item => item.IntegrationCode);
             entity.Property(item => item.IntegrationCode).HasMaxLength(80).IsRequired();
+        });
+
+        modelBuilder.Entity<AutomaticAlertDispatchState>(entity =>
+        {
+            entity.ToTable("automatic_alert_dispatch_states", table =>
+            {
+                table.HasCheckConstraint("CK_automatic_alert_dispatch_states_id",
+                    "\"Id\" = 'kremenchuk'");
+                table.HasCheckConstraint("CK_automatic_alert_dispatch_states_episode",
+                    "(\"HasOpenEpisode\" AND \"Scope\" IS NOT NULL AND \"ScopeId\" IS NOT NULL AND \"StartCommandId\" IS NOT NULL AND \"StartedAtUtc\" IS NOT NULL) OR (NOT \"HasOpenEpisode\" AND \"Scope\" IS NULL AND \"ScopeId\" IS NULL AND \"StartCommandId\" IS NULL AND \"StartedAtUtc\" IS NULL)");
+            });
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Id).HasMaxLength(40).IsRequired();
+            entity.Property(item => item.Scope).HasMaxLength(16);
+            entity.Property(item => item.ScopeId).HasMaxLength(80);
+            entity.Property(item => item.LastDecisionCode).HasMaxLength(80).IsRequired();
         });
     }
 }

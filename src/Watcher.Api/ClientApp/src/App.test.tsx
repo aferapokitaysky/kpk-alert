@@ -38,6 +38,10 @@ vi.mock('./features/alert-sources/AlertSourcesPanel', () => ({
   AlertSourcesPanel: () => null,
 }));
 
+vi.mock('./features/alert-sources/AutomaticAlertDispatchPanel', () => ({
+  AutomaticAlertDispatchPanel: () => <div data-testid="automatic-alert-dispatch-status" />,
+}));
+
 vi.mock('./features/alert-sources/UkraineAlarmWebhookPanel', () => ({
   UkraineAlarmWebhookPanel: () => <div data-testid="ukrainealarm-webhook-management" />,
 }));
@@ -237,8 +241,10 @@ describe('пульт оператора', () => {
       await screen.findByRole('heading', { name: 'Команду прийнято до черги' }),
     ).toBeInTheDocument();
     expect(screen.getAllByText('Головний корпус')).not.toHaveLength(0);
-    expect(getAlertCommand).toHaveBeenCalledWith(commandId);
-    expect(getCommandDeliveries).toHaveBeenCalledWith(commandId, 1, expect.any(AbortSignal));
+    await waitFor(() => {
+      expect(getAlertCommand).toHaveBeenCalledWith(commandId);
+      expect(getCommandDeliveries).toHaveBeenCalledWith(commandId, 1, expect.any(AbortSignal));
+    });
   });
 
   it('зберігає й відновлює команду відбою після перезавантаження вкладки', async () => {

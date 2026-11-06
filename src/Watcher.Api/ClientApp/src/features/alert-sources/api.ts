@@ -1,8 +1,62 @@
-import { getCsrfToken } from '../../api';
+import { ApiError, getCsrfToken } from '../../api';
 
 export type AlertLevel = 'active' | 'inactive' | 'partial' | 'unknown' | 'conflict';
 export type SourceFreshness = 'fresh' | 'stale' | 'unknown';
 export type AlertScope = 'oblast' | 'raion' | 'hromada';
+
+export interface AutomaticAlertDispatchStatus {
+  enabled: boolean;
+  presetCode: string;
+  state: 'alerting' | 'idle';
+  scope: AlertScope | null;
+  scopeId: string | null;
+  startCommandId: string | null;
+  startedAtUtc: string | null;
+  lastDecisionCode: string;
+  updatedAtUtc: string;
+}
+
+export async function getAutomaticAlertDispatchStatus(
+  signal?: AbortSignal,
+): Promise<AutomaticAlertDispatchStatus> {
+  const response = await fetch('/api/v1/automatic-alert-dispatch/status', {
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json' },
+    ...(signal ? { signal } : {}),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  const value: unknown = await response.json();
+  if (
+    !isRecord(value) ||
+    typeof value.enabled !== 'boolean' ||
+    typeof value.presetCode !== 'string' ||
+    (value.state !== 'alerting' && value.state !== 'idle') ||
+    (value.scope !== null &&
+      value.scope !== 'oblast' &&
+      value.scope !== 'raion' &&
+      value.scope !== 'hromada') ||
+    (value.scopeId !== null && typeof value.scopeId !== 'string') ||
+    (value.startCommandId !== null && typeof value.startCommandId !== 'string') ||
+    (value.startedAtUtc !== null && !isWebhookDate(value.startedAtUtc)) ||
+    typeof value.lastDecisionCode !== 'string' ||
+    !isWebhookDate(value.updatedAtUtc)
+  ) {
+    throw new Error('invalid-automatic-alert-dispatch-status');
+  }
+
+  return {
+    enabled: value.enabled,
+    presetCode: value.presetCode,
+    state: value.state,
+    scope: value.scope,
+    scopeId: value.scopeId,
+    startCommandId: value.startCommandId,
+    startedAtUtc: value.startedAtUtc,
+    lastDecisionCode: value.lastDecisionCode,
+    updatedAtUtc: value.updatedAtUtc,
+  };
+}
 
 export interface AlertSourceObservation {
   source: string;

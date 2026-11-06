@@ -105,6 +105,47 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.ToTable("audit_events", (string)null);
                 });
 
+            modelBuilder.Entity("Watcher.Domain.Entities.AutomaticAlertDispatchState", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<bool>("HasOpenEpisode")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastDecisionCode")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("Scope")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("ScopeId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid?>("StartCommandId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("automatic_alert_dispatch_states", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_automatic_alert_dispatch_states_episode", "(\"HasOpenEpisode\" AND \"Scope\" IS NOT NULL AND \"ScopeId\" IS NOT NULL AND \"StartCommandId\" IS NOT NULL AND \"StartedAtUtc\" IS NOT NULL) OR (NOT \"HasOpenEpisode\" AND \"Scope\" IS NULL AND \"ScopeId\" IS NULL AND \"StartCommandId\" IS NULL AND \"StartedAtUtc\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_automatic_alert_dispatch_states_id", "\"Id\" = 'kremenchuk'");
+                        });
+                });
+
             modelBuilder.Entity("Watcher.Domain.Entities.CommandDelivery", b =>
                 {
                     b.Property<Guid>("Id")

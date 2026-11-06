@@ -83,6 +83,29 @@ public sealed class AlertSourcesServiceCollectionExtensionsTests
             descriptor.ImplementationType == typeof(NeptunRealtimeMonitor));
         Assert.DoesNotContain(services, descriptor =>
             descriptor.ServiceType == typeof(UkraineAlarmWebhookOperationsService));
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(AutomaticAlertDispatchProcessor));
+    }
+
+    [Fact]
+    public void Registers_automatic_dispatch_processor_and_worker_only_when_enabled()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AlertSources:AutomaticDispatch:Enabled"] = "true"
+            })
+            .Build();
+        ServiceCollection services = new();
+
+        services.AddAlertSources(configuration);
+
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(AutomaticAlertDispatchProcessor) &&
+            descriptor.Lifetime == ServiceLifetime.Scoped);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IHostedService) &&
+            descriptor.ImplementationType == typeof(AutomaticAlertDispatchBackgroundService));
     }
 
     [Fact]

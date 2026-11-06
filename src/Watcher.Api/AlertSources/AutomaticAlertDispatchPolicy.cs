@@ -111,6 +111,23 @@ public sealed class AutomaticAlertDispatchPolicy
                 return Hold("observation_not_actionable");
             }
 
+            PolicyObservation[] morePrecise = currentEpisodeObservations
+                .Where(item => item.Precision < broadestAvailable.Precision)
+                .ToArray();
+            if (morePrecise.Any(IsAmbiguous))
+            {
+                return Hold("observation_not_actionable");
+            }
+
+            if (morePrecise.Any(IsMaintainingActiveEpisode))
+            {
+                PolicyObservation activeObservation = morePrecise.First(IsMaintainingActiveEpisode);
+                return new(
+                    AutomaticAlertDispatchAction.NoChange,
+                    "alert_still_active",
+                    activeObservation.Observation);
+            }
+
             if (equallyBroad.Any(item => IsState(item.Observation, Inactive)))
             {
                 PolicyObservation inactiveObservation = equallyBroad

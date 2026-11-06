@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionState } from '../../state';
@@ -85,9 +85,8 @@ describe('робоча панель оператора', () => {
       capabilities: { canOperate: true, canViewAudit: true },
     });
 
-    expect(await screen.findByRole('region', { name: 'Хвилина мовчання' })).toHaveTextContent(
-      'Результат ще не зафіксовано.',
-    );
+    const status = await screen.findByRole('region', { name: 'Хвилина мовчання' });
+    await waitFor(() => expect(status).toHaveTextContent('Результат ще не зафіксовано.'));
   });
 
   it('показує вибір корпусу перед сценаріями та передає вибір до підтвердження', async () => {

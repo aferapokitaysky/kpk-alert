@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AlertCommand, Location, Preset } from '../../api';
 import type { ResourceState, SessionState } from '../../state';
 import { AlertSourcesPanel } from '../alert-sources/AlertSourcesPanel';
+import { AutomaticAlertDispatchPanel } from '../alert-sources/AutomaticAlertDispatchPanel';
 import { UkraineAlarmWebhookPanel } from '../alert-sources/UkraineAlarmWebhookPanel';
 import { CommandDeliveriesPanel } from '../command-deliveries/CommandDeliveriesPanel';
 import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
@@ -204,6 +205,10 @@ export function Dashboard({
       </section>
 
       <AlertSourcesPanel />
+      {session.status === 'authenticated' &&
+        (session.roles.includes('admin') || session.roles.includes('auditor')) && (
+          <AutomaticAlertDispatchPanel />
+        )}
       {session.status === 'authenticated' && session.roles.includes('admin') && (
         <UkraineAlarmWebhookPanel />
       )}

@@ -44,8 +44,11 @@ erDiagram
 | `device_sessions`            | `id`, `device_id`, `connected_at`, `last_seen_at`                                             | Історія технічних з’єднань                                    |
 | `ukrainealarm_webhook_operations` | `id`, `idempotency_key`, `actor_user_id`, `action`, `state`, `callback_url`, `outcome_code`, timestamps | Довговічний стан ручних змін callback UkraineAlarm; активна або невизначена операція блокує наступну |
 | `external_integration_states` | `integration_code`, `is_registered?`, `updated_at_utc`                                      | Останній підтверджений стан реєстрації webhook; `NULL` означає невідомий стан |
+| `automatic_alert_dispatch_states` | `id`, `has_open_episode`, `scope`, `scope_id`, `start_command_id`, `started_at_utc`, `last_decision_code`, `updated_at_utc` | Єдиний серіалізований стан епізоду автоматичної тривоги для Кременчука |
 
 Для `ukrainealarm_webhook_operations` унікальний індекс гарантує одну активну операцію зі станом `Pending`, `Running` або `Unknown`; окремий унікальний індекс захищає `Idempotency-Key`. Таблиця стану містить один рядок `ukrainealarm_webhook`, який блокується `FOR UPDATE` під час запуску, завершення й ручної звірки. Намір і аудит фіксуються перед зовнішнім HTTP-запитом. `Unknown` не очищається автоматично: адміністратор звіряє стан у кабінеті UkraineAlarm і додає окремий аудований перехід. Відкат міграції заборонений, якщо збереглася історія операцій або стан інтеграції.
+
+Рядок `automatic_alert_dispatch_states` із ключем `kremenchuk` створюється міграцією. Він блокується `FOR UPDATE` перед оцінкою спостережень. Перехід епізоду та команда старту чи відбою зберігаються атомарно разом із цілями, послідовностями, outbox і аудитом. Таблиця містить лише поточний епізод; історію команд і рішень зберігають `alert_commands` та `audit_events`.
 
 Фізичну схему підтримують EF Core migrations. Кожне повідомлення outbox посилається на одну команду; унікальний індекс не дозволяє створити для неї дубльовану подію. Непроцесовані записи читаються за індексом стану й часу створення.
 

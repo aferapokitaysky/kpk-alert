@@ -17,6 +17,22 @@ public static class AlertSourcesServiceCollectionExtensions
         services.AddSingleton<IOptions<AlertsInUaOptions>>(Options.Create(new AlertsInUaOptions(token)));
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.AddSingleton<AlertStatusAggregator>();
+        services.AddSingleton<AutomaticAlertDispatchPolicy>();
+        AutomaticAlertDispatchOptions automaticDispatchOptions = configuration
+            .GetSection(AutomaticAlertDispatchOptions.SectionName)
+            .Get<AutomaticAlertDispatchOptions>() ?? new AutomaticAlertDispatchOptions();
+        if (automaticDispatchOptions.PollInterval < TimeSpan.FromSeconds(15))
+        {
+            throw new InvalidOperationException("Інтервал оцінювання автоматичного оповіщення має бути не меншим за 15 секунд.");
+        }
+
+        services.AddSingleton(automaticDispatchOptions);
+        if (automaticDispatchOptions.Enabled)
+        {
+            services.AddScoped<AutomaticAlertDispatchProcessor>();
+            services.AddHostedService<AutomaticAlertDispatchBackgroundService>();
+        }
+
         services.AddSingleton<AlertsInUaProvider>();
         services.AddSingleton<NeptunProvider>();
         services.Configure<UkraineAlarmOptions>(configuration.GetSection("UkraineAlarm"));
