@@ -38,6 +38,10 @@ vi.mock('./features/alert-sources/AlertSourcesPanel', () => ({
   AlertSourcesPanel: () => null,
 }));
 
+vi.mock('./features/alert-sources/UkraineAlarmWebhookPanel', () => ({
+  UkraineAlarmWebhookPanel: () => <div data-testid="ukrainealarm-webhook-management" />,
+}));
+
 vi.mock('./features/minute-of-silence/MinuteOfSilenceStatusPanel', () => ({
   MinuteOfSilenceStatusPanel: () => null,
 }));
@@ -121,6 +125,22 @@ beforeEach(() => {
 });
 
 describe('пульт оператора', () => {
+  it('показує керування webhook лише адміністратору', async () => {
+    render(<App />);
+    expect(await screen.findByTestId('ukrainealarm-webhook-management')).toBeInTheDocument();
+  });
+
+  it('не показує керування webhook аудитор-ролі', async () => {
+    vi.mocked(getSession).mockResolvedValue({
+      authenticated: true,
+      roles: ['auditor'],
+      capabilities: { canOperate: false, canViewAudit: true },
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Пульт керування' });
+    expect(screen.queryByTestId('ukrainealarm-webhook-management')).not.toBeInTheDocument();
+  });
+
   it('показує завантаження й окрему помилку списку корпусів', async () => {
     vi.mocked(getLocations).mockRejectedValue(new ApiError(503));
     render(<App />);

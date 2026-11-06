@@ -84,6 +84,7 @@ public sealed class UkraineAlarmWebhookOperationsController(
         }
 
         ExternalIntegrationState? state = await operations.GetStateAsync(cancellationToken);
+        UkraineAlarmWebhookOperation? activeOperation = await operations.GetActiveAsync(cancellationToken);
         return state is null
             ? Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
                 title: "Стан інтеграції ще не ініціалізований.")
@@ -96,7 +97,8 @@ public sealed class UkraineAlarmWebhookOperationsController(
                     false => "not_registered",
                     null => "unknown"
                 },
-                state.UpdatedAtUtc
+                state.UpdatedAtUtc,
+                activeOperation = activeOperation is null ? null : ToResponse(activeOperation)
             });
     }
 

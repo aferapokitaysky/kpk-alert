@@ -195,6 +195,12 @@ public sealed class UkraineAlarmWebhookOperationsService(
         await db.UkraineAlarmWebhookOperations.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == operationId, cancellationToken);
 
+    public Task<UkraineAlarmWebhookOperation?> GetActiveAsync(CancellationToken cancellationToken) =>
+        db.UkraineAlarmWebhookOperations.AsNoTracking()
+            .Where(item => new[] { "Pending", "Running", "Unknown" }.Contains(item.State))
+            .OrderBy(item => item.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
     public Task<ExternalIntegrationState?> GetStateAsync(CancellationToken cancellationToken) =>
         db.ExternalIntegrationStates.AsNoTracking()
             .SingleOrDefaultAsync(item => item.IntegrationCode == UkraineAlarmWebhookOperation.DefaultIntegrationCode,

@@ -136,7 +136,7 @@ export async function getReadiness(): Promise<{ httpStatus: number; status: stri
   return { httpStatus: response.status, status };
 }
 
-async function getCsrfToken(): Promise<string> {
+export async function getCsrfToken(): Promise<string> {
   const result = await getJson('/api/v1/auth/csrf-token');
   if (!isRecord(result) || typeof result.token !== 'string' || result.token.length === 0) {
     throw new Error('csrf-token-unavailable');

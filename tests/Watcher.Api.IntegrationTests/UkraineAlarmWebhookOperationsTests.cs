@@ -132,6 +132,7 @@ public sealed class UkraineAlarmWebhookOperationsTests : IClassFixture<WebhookOp
         using HttpResponseMessage initialState = await SendGetStateAsync(administratorId);
         using var initialBody = JsonDocument.Parse(await initialState.Content.ReadAsStringAsync());
         Assert.Equal("unknown", initialBody.RootElement.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, initialBody.RootElement.GetProperty("activeOperation").ValueKind);
 
         using HttpResponseMessage reconciled = await SendReconcileStateAsync(administratorId, true);
         using var reconciledBody = JsonDocument.Parse(await reconciled.Content.ReadAsStringAsync());
@@ -235,6 +236,11 @@ public sealed class UkraineAlarmWebhookOperationsTests : IClassFixture<WebhookOp
 
         using HttpResponseMessage tooSoon = await ResolveAsync(
             administratorId, operationId, confirmed: true, isRegistered: true);
+        using HttpResponseMessage activeState = await SendGetStateAsync(administratorId);
+        using var activeStateBody = JsonDocument.Parse(await activeState.Content.ReadAsStringAsync());
+        JsonElement activeOperation = activeStateBody.RootElement.GetProperty("activeOperation");
+        Assert.Equal(operationId, activeOperation.GetProperty("id").GetGuid());
+        Assert.Equal(state, activeOperation.GetProperty("state").GetString());
         Assert.Equal(HttpStatusCode.Conflict, tooSoon.StatusCode);
 
         using HttpResponseMessage resolved = await ResolveAsync(
