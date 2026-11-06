@@ -22,6 +22,97 @@
   margin: 0;
 }
 
+.device-registration-panel {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #dce3eb);
+  border-radius: var(--radius-md, 0.75rem);
+  display: grid;
+  gap: 1.25rem;
+  padding: clamp(1rem, 2vw, 1.5rem);
+}
+
+.device-registration-panel h2 {
+  font-size: 1.1rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.device-registration-panel > div > p:last-child {
+  color: var(--text-muted, #536174);
+  line-height: 1.5;
+  margin: 0.4rem 0 0;
+  max-width: 52rem;
+}
+
+.device-registration-form {
+  align-items: end;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.device-registration-form label {
+  color: var(--text, #172b4d);
+  display: grid;
+  font-size: 0.9rem;
+  font-weight: 600;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.device-registration-form input,
+.device-registration-form select {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 0.5rem;
+  color: var(--text, #172b4d);
+  font: inherit;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  width: 100%;
+}
+
+.device-registration-form input:focus-visible,
+.device-registration-form select:focus-visible {
+  border-color: var(--blue, #2563eb);
+  outline: 3px solid var(--accent, #f2c94c);
+  outline-offset: 2px;
+}
+
+.device-registration-form label > span {
+  color: var(--text-muted, #536174);
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.device-registration-form > p,
+.device-registration-form > button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin: 0;
+}
+
+.device-status-notice {
+  border: 1px solid var(--border, #dce3eb);
+  border-radius: var(--radius-md, 0.75rem);
+  margin: 0;
+  padding: 0.85rem 1rem;
+}
+
+.device-status-notice.is-success {
+  background: #e8f5ef;
+  border-color: #a8d7c1;
+  color: #175c43;
+}
+
+.device-status-notice.is-error {
+  background: #fff1f0;
+  border-color: #e9b0ad;
+  color: #8f2924;
+}
+
 .device-status-list {
   display: grid;
   gap: 0.85rem;
@@ -101,6 +192,29 @@
   overflow-wrap: anywhere;
 }
 
+.device-status-actions {
+  border-top: 1px solid var(--border, #dce3eb);
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+}
+
+.device-revoke-confirmation {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: flex-end;
+}
+
+.device-revoke-confirmation p {
+  color: var(--text-muted, #536174);
+  flex: 1 1 100%;
+  margin: 0 0 0.2rem;
+  text-align: right;
+}
+
 .device-status-message {
   align-items: center;
   background: var(--surface, #fff);
@@ -150,5 +264,24 @@
   .device-status-message {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .device-registration-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .device-status-actions,
+  .device-revoke-confirmation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .device-revoke-confirmation p {
+    text-align: left;
+  }
+
+  .device-status-actions > button,
+  .device-revoke-confirmation > button {
+    width: 100%;
   }
 }
