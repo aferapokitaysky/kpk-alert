@@ -1,0 +1,95 @@
+name: kgta-alert
+
+services:
+  watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - '8080'
+    ports:
+      - '${DEVICE_MTLS_BIND_ADDRESS:?Set DEVICE_MTLS_BIND_ADDRESS}:8443:8443'
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Watcher: Host=postgres;Port=5432;Database=${POSTGRES_DB:?Set POSTGRES_DB};Username=${POSTGRES_USER:?Set POSTGRES_USER};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      DataProtection__KeysPath: /var/lib/kgta-alert/data-protection-keys
+      DataProtection__CertificatePath: /run/secrets/data-protection.pfx
+      DataProtection__CertificatePassword: ${DATAPROTECTION_CERTIFICATE_PASSWORD:?Set DATAPROTECTION_CERTIFICATE_PASSWORD}
+      ReverseProxy__KnownProxies__0: ${REVERSE_PROXY_IP:?Set REVERSE_PROXY_IP}
+      ReverseProxy__HttpsPort: '443'
+      DeviceListener__Enabled: 'true'
+      DeviceListener__HttpPort: '8080'
+      DeviceListener__Port: '8443'
+      DeviceListener__ClientCaCertificatePath: /run/secrets/device-ca.crt
+      DeviceListener__ServerCertificatePath: /run/secrets/device-server.pfx
+      DeviceListener__ServerCertificatePasswordFile: /run/secrets/device-server-password
+      UkraineAlarm__PublicBaseUrl: https://notify.kgta.edu.ua
+      UkraineAlarm__Token: ${UKRAINEALARM_TOKEN:?Set UKRAINEALARM_TOKEN}
+      ALERTS_IN_UA_TOKEN: ${ALERTS_IN_UA_TOKEN:?Set ALERTS_IN_UA_TOKEN}
+      Authentication__Google__Enabled: ${GOOGLE_AUTH_ENABLED:-false}
+      Authentication__Google__ClientId: ${GOOGLE_AUTH_CLIENT_ID:-}
+      Authentication__Google__ClientSecret: ${GOOGLE_AUTH_CLIENT_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - data-protection-keys:/var/lib/kgta-alert/data-protection-keys
+      - ${DATAPROTECTION_CERTIFICATE_FILE:?Set DATAPROTECTION_CERTIFICATE_FILE}:/run/secrets/data-protection.pfx:ro
+      - ${DEVICE_SERVER_CERTIFICATE_FILE:?Set DEVICE_SERVER_CERTIFICATE_FILE}:/run/secrets/device-server.pfx:ro
+      - ${DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE:?Set DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE}:/run/secrets/device-server-password:ro
+      - ${DEVICE_CLIENT_CA_CERTIFICATE_FILE:?Set DEVICE_CLIENT_CA_CERTIFICATE_FILE}:/run/secrets/device-ca.crt:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '--fail',
+          '--silent',
+          '--show-error',
+          'http://127.0.0.1:8080/api/v1/health/ready',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+  postgres:
+    image: postgres:16.15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    profiles: ['migration']
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migration
+    command:
+      - database
+      - update
+      - --project
+      - src/Watcher.Infrastructure
+      - --startup-project
+      - src/Watcher.Api
+    environment:
+      ConnectionStrings__Watcher: Host=postgres;Port=5432;Database=${POSTGRES_DB:?Set POSTGRES_DB};Username=${POSTGRES_USER:?Set POSTGRES_USER};Password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+volumes:
+  postgres-data:
+  data-protection-keys:

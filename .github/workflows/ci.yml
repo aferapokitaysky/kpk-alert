@@ -97,6 +97,24 @@ jobs:
           DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE: /tmp/device-server-password
           DEVICE_CLIENT_CA_CERTIFICATE_FILE: /tmp/device-ca.crt
         run: docker compose --env-file .env.example -f compose.yaml -f compose.mtls.yaml config --quiet
+      - name: Перевірити production Compose для Coolify
+        env:
+          POSTGRES_DB: kgta_alert_ci
+          POSTGRES_USER: kgta_alert_ci
+          POSTGRES_PASSWORD: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          DEVICE_MTLS_BIND_ADDRESS: 192.0.2.10
+          REVERSE_PROXY_IP: 172.30.0.3
+          DATAPROTECTION_CERTIFICATE_FILE: /tmp/data-protection.pfx
+          DATAPROTECTION_CERTIFICATE_PASSWORD: test-only-placeholder
+          DEVICE_SERVER_CERTIFICATE_FILE: /tmp/device-server.pfx
+          DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE: /tmp/device-server-password
+          DEVICE_CLIENT_CA_CERTIFICATE_FILE: /tmp/device-ca.crt
+          UKRAINEALARM_TOKEN: test-only-placeholder
+          ALERTS_IN_UA_TOKEN: test-only-placeholder
+          GOOGLE_AUTH_ENABLED: 'false'
+          GOOGLE_AUTH_CLIENT_ID: ''
+          GOOGLE_AUTH_CLIENT_SECRET: ''
+        run: docker compose -f compose.coolify.yaml config --quiet
 
   documentation:
     name: Перевірка посилань у документації
@@ -118,7 +136,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16.10-alpine
+        image: postgres:16.15-alpine
         env:
           POSTGRES_DB: kgta_alert
           POSTGRES_USER: kgta_alert
