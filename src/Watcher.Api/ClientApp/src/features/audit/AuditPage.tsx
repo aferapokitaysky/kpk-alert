@@ -10,6 +10,7 @@ import { GoogleLoginLink } from '../auth/GoogleLoginLink';
 import { MinuteOfSilenceHistoryPanel } from '../minute-of-silence/MinuteOfSilenceHistoryPanel';
 import { MinuteOfSilenceStatusPanel } from '../minute-of-silence/MinuteOfSilenceStatusPanel';
 import { pageCount, type SessionState } from '../../state';
+import { presentAuditEvent } from './event-presentation';
 
 type AuditState =
   | { status: 'loading' }
@@ -33,6 +34,54 @@ function formatDate(value: string): string {
     timeStyle: 'short',
     timeZone: 'Europe/Kyiv',
   }).format(date);
+}
+
+function actorLabel(actorType: string): string {
+  const labels: Record<string, string> = {
+    user: 'Користувач',
+    system: 'Система',
+    device: 'Вузол',
+    provider: 'Зовнішня інтеграція',
+    integration: 'Зовнішня інтеграція',
+    external: 'Зовнішня інтеграція',
+    ukrainealarm: 'Зовнішня інтеграція',
+    neptun: 'Зовнішня інтеграція',
+    'alerts.in.ua': 'Зовнішня інтеграція',
+  };
+  return labels[actorType.toLowerCase()] ?? 'Інший суб’єкт';
+}
+
+function AuditEventCard({ item }: { item: AuditPageData['items'][number] }) {
+  const presentation = presentAuditEvent(item);
+  return (
+    <article className="audit-event">
+      <div className="audit-event-heading">
+        <h3 className="event-title">{presentation.title}</h3>
+        <time dateTime={item.occurredAtUtc}>{formatDate(item.occurredAtUtc)}</time>
+      </div>
+      <p className="audit-actor">
+        {actorLabel(item.actorType)} ·{' '}
+        {item.actorId && /^[0-9a-f-]{36}$/i.test(item.actorId) ? item.actorId : 'системна дія'}
+      </p>
+      <details>
+        <summary>Деталі події</summary>
+        <ul className="audit-event-details">
+          {presentation.details.length > 0 ? (
+            presentation.details.map((detail) => <li key={detail}>{detail}</li>)
+          ) : (
+            <li>
+              {presentation.known
+                ? 'Додаткових безпечних для показу відомостей немає.'
+                : 'Для цього типу події опис поки недоступний.'}
+            </li>
+          )}
+        </ul>
+        <p className="audit-technical-type">
+          Тип події: <code>{item.eventType}</code>
+        </p>
+      </details>
+    </article>
+  );
 }
 
 type KyivTimeResolution =
@@ -429,20 +478,7 @@ export function AuditPage({ session, onSessionExpired, onSessionRetry }: Props) 
           ) : (
             <div className="audit-list" aria-live="polite">
               {displayState.data.items.map((item) => (
-                <article className="audit-event" key={item.id}>
-                  <div className="audit-event-heading">
-                    <span className="event-type">{item.eventType}</span>
-                    <time dateTime={item.occurredAtUtc}>{formatDate(item.occurredAtUtc)}</time>
-                  </div>
-                  <p className="audit-actor">
-                    {item.actorType === 'user' ? 'Користувач' : item.actorType} ·{' '}
-                    {item.actorId ?? 'системна дія'}
-                  </p>
-                  <details>
-                    <summary>Деталі події</summary>
-                    <pre>{JSON.stringify(item.payload, null, 2)}</pre>
-                  </details>
-                </article>
+                <AuditEventCard item={item} key={item.id} />
               ))}
             </div>
           )

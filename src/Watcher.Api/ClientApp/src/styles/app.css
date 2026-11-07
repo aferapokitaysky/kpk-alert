@@ -1430,9 +1430,10 @@ h3 {
   gap: 15px;
 }
 
-.event-type {
+.event-title {
+  margin: 0;
   color: var(--slate-900);
-  font-size: var(--font-small);
+  font-size: var(--font-body);
   font-weight: 700;
   overflow-wrap: anywhere;
 }
@@ -1463,21 +1464,24 @@ h3 {
   font-weight: 650;
 }
 
-.audit-event pre {
-  max-height: 260px;
-  overflow: auto;
+.audit-event-details {
   margin: 10px 0 0;
-  padding: 12px;
-  border-radius: 7px;
-  background: var(--slate-50);
   color: var(--slate-700);
-  font:
-    11px/1.55 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
-  white-space: pre-wrap;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
   overflow-wrap: anywhere;
+}
+
+.audit-technical-type {
+  margin: 10px 0 0;
+  color: var(--slate-500);
+  overflow-wrap: anywhere;
+}
+
+.audit-technical-type code {
+  color: var(--slate-700);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .pagination {

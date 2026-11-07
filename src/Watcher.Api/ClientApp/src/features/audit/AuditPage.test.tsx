@@ -33,6 +33,300 @@ afterEach(() => {
 });
 
 describe('сторінка аудиту', () => {
+  it('показує зрозумілі події та не виводить довільний вміст payload', async () => {
+    const commandId = 'c6b2f302-0675-4a4d-88eb-cf18c9022920';
+    const targetUserId = 'a0b1c2d3-e4f5-4678-9012-345678901234';
+    const events = [
+      {
+        id: '1',
+        eventType: 'alert_command.created',
+        actorType: 'user',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:00:00Z',
+        payload: {
+          CommandId: commandId,
+          Action: 'start',
+          PresetCode: 'alarm',
+          AlertLevel: 'red',
+          Source: 'UkraineAlarm',
+          Scope: 'oblast',
+          ScopeId: 'UA-53',
+          CheckedAtUtc: '2026-11-06T07:00:00Z',
+          secret: 'hidden-token',
+        },
+      },
+      {
+        id: '2',
+        eventType: 'alert_command.stop_requested',
+        actorType: 'user',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:01:00Z',
+        payload: { TargetCommandId: commandId },
+      },
+      {
+        id: '3',
+        eventType: 'alert_command.receipt_received',
+        actorType: 'device',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:02:00Z',
+        payload: { CommandId: commandId, State: 'Playing' },
+      },
+      {
+        id: '4',
+        eventType: 'alert_command.delivery_retry_scheduled',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:03:00Z',
+        payload: { CommandId: commandId, AttemptCount: 2, Reason: 'connection_unavailable' },
+      },
+      {
+        id: '5',
+        eventType: 'auth.login.rejected',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:04:00Z',
+        payload: { method: 'google', reason: 'account_not_allowed', email: 'private@example.com' },
+      },
+      {
+        id: '6',
+        eventType: 'user.role_granted',
+        actorType: 'user',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:05:00Z',
+        payload: { targetUserId, roleCode: 'admin', token: 'hidden-secret' },
+      },
+      {
+        id: '7',
+        eventType: 'future.private_event',
+        actorType: 'vendor_unknown',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:06:00Z',
+        payload: { secret: 'must-not-render', callbackUrl: 'https://private.example' },
+      },
+      {
+        id: '8',
+        eventType: 'alert_command.delivery_attempt_started',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:07:00Z',
+        payload: { CommandId: commandId, AttemptCount: 3, Action: 'start', PresetCode: 'alarm' },
+      },
+      {
+        id: '9',
+        eventType: 'alert_command.delivery_write_result',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:08:00Z',
+        payload: {
+          CommandId: commandId,
+          Outcome: 'completed',
+          ReasonCode: 'socket_write_completed',
+        },
+      },
+      {
+        id: '10',
+        eventType: 'alert_command.device_playback_state_reported',
+        actorType: 'device',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:09:00Z',
+        payload: { CommandId: commandId, State: 'Playing' },
+      },
+      {
+        id: '11',
+        eventType: 'device.session_connected',
+        actorType: 'device',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:10:00Z',
+        payload: { Id: commandId, DeviceId: targetUserId, LocationId: targetUserId },
+      },
+      {
+        id: '12',
+        eventType: 'automatic_alert.held',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:11:00Z',
+        payload: {
+          DecisionCode: 'no_fresh_observation',
+          Observations: [
+            {
+              Source: 'UkraineAlarm',
+              Scope: 'hromada',
+              ScopeId: 'UA-53',
+              Level: 'active',
+              AlertLevel: 'red',
+              Freshness: 'stale',
+              CheckedAtUtc: '2026-11-06T07:11:00Z',
+              DataUpdatedAtUtc: '2026-11-06T07:00:00Z',
+              AccessToken: 'must-not-render',
+            },
+            {
+              Source: 'alerts.in.ua',
+              Scope: 'raion',
+              ScopeId: 'UA-53',
+              Level: 'unknown',
+              Freshness: 'fresh',
+            },
+          ],
+          ObservationsTruncated: true,
+        },
+      },
+      {
+        id: '13',
+        eventType: 'integration.ukrainealarm_webhook.running',
+        actorType: 'integration',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:12:00Z',
+        payload: {
+          OperationId: commandId,
+          Action: 'unsubscribe',
+          CallbackUrl: 'https://callback.private.example/path?token=private',
+        },
+      },
+      {
+        id: '14',
+        eventType: 'alert_command.delivery_write_result',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:13:00Z',
+        payload: { CommandId: commandId, Outcome: 'failed', ReasonCode: 'send_timeout' },
+      },
+      {
+        id: '15',
+        eventType: 'alert_command.delivery_write_result',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:14:00Z',
+        payload: {
+          CommandId: commandId,
+          Outcome: 'not_started',
+          ReasonCode: 'presence_session_changed',
+        },
+      },
+      {
+        id: '16',
+        eventType: 'alert_command.delivery_write_result',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:15:00Z',
+        payload: {
+          CommandId: commandId,
+          Outcome: 'indeterminate',
+          ReasonCode: 'socket_write_result_unknown',
+        },
+      },
+      {
+        id: '17',
+        eventType: 'alert_command.delivery_write_result',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:16:00Z',
+        payload: {
+          CommandId: commandId,
+          Outcome: 'indeterminate',
+          ReasonCode: 'socket_write_timed_out_result_unknown',
+        },
+      },
+    ];
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
+      const path = String(input);
+      const body = path.includes('/minute-of-silence/status/today')
+        ? minuteStatus
+        : path.includes('/minute-of-silence/history')
+          ? minuteHistory
+          : { items: events, page: 1, pageSize: 25, totalCount: events.length };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <AuditPage session={auditSession} onSessionExpired={vi.fn()} onSessionRetry={vi.fn()} />,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Створено команду' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Запитано зупинку команди' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Отримано підтвердження від вузла' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Вхід відхилено' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Надано роль' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Подія системи' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Розпочато спробу надсилання команди' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole('heading', { name: 'Результат запису команди у WebSocket' }),
+    ).toHaveLength(5);
+    expect(
+      screen.getByRole('heading', { name: 'Вузол повідомив стан відтворення' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Підключено сесію вузла' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Автоматичну дію відкладено' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Запит вебхука обробляється' })).toBeInTheDocument();
+    for (const summary of screen.getAllByText('Деталі події')) fireEvent.click(summary);
+    expect(screen.getAllByText(`Дія: запуск сигналу`)).toHaveLength(2);
+    expect(
+      screen.getByText('Рівень спостереження джерела: червоний (не гучність)'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Джерело спостереження: UkraineAlarm')).toBeInTheDocument();
+    expect(screen.getByText('Область спостереження: область')).toBeInTheDocument();
+    expect(screen.getByText('Код області спостереження: UA-53')).toBeInTheDocument();
+    expect(screen.getByText(`Зупиняє команду: ${commandId}`)).toBeInTheDocument();
+    expect(
+      screen.getByText('Підтвердження вузла: запущено програмний шлях відтворення'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Причина: тимчасово недоступний зв’язок')).toBeInTheDocument();
+    expect(screen.getByText('Спосіб: Google')).toBeInTheDocument();
+    expect(screen.getByText('Роль: admin')).toBeInTheDocument();
+    expect(screen.getByText('future.private_event')).toBeInTheDocument();
+    expect(screen.getByText('Спроба надсилання: 3')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Запис команди у WebSocket завершився; отримання вузлом не підтверджене/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Спроба запису не завершилася успішно; перевірте квитанцію вузла.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Запис команди не розпочався.')).toBeInTheDocument();
+    expect(screen.getByText('Причина: вичерпано час очікування запису')).toBeInTheDocument();
+    expect(screen.getByText('Причина: сесія вузла змінилася')).toBeInTheDocument();
+    expect(
+      screen.getAllByText('Результат передавання невідомий; перевірте квитанцію вузла.'),
+    ).toHaveLength(2);
+    expect(
+      screen.getByText('Причина: виклик запису не повернув підтвердженого результату'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Причина: час очікування запису минув без підтвердженого результату'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/звук із динаміка не вимірювався/)).toBeInTheDocument();
+    expect(screen.getByText('Рішення: немає свіжого спостереження')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Спостереження 1: UkraineAlarm · громада · код UA-53 · тривога активна · рівень API: червоний (не гучність) · застарілі дані',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Спостереження 2: Alerts in UA · район · код UA-53 · невідомий стан · свіжі дані',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Частину спостережень не показано.')).toBeInTheDocument();
+    expect(screen.getAllByText('Зовнішня інтеграція · системна дія')).toHaveLength(1);
+    expect(screen.getByText('Дія: скасування підписки')).toBeInTheDocument();
+    expect(screen.getAllByText('Інший суб’єкт · системна дія')).toHaveLength(1);
+    expect(screen.getAllByText('Система · системна дія').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Вузол · системна дія').length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText(
+        /hidden-token|hidden-secret|private@example|must-not-render|private\.example|callback\.private|token=private|must-not-render/,
+      ),
+    ).not.toBeInTheDocument();
+  });
+
   it('показує статус хвилини мовчання аудитору без права запуску команд', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
