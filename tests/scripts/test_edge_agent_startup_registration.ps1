@@ -87,6 +87,12 @@ try {
         $installerText -notmatch 'AreAccessRulesProtected' -or $installerText -notmatch 'FileAttributes\]::ReparsePoint') {
         throw 'Перед перемиканням пакета інсталятор має створити SQLite-копію в каталозі із захищеним ACL.'
     }
+    $startupRegistration = $installerText.IndexOf('Set-EdgeAgentDesktopStartupEntry', [StringComparison]::Ordinal)
+    $lateRollback = $installerText.LastIndexOf('Restore-EdgeAgentPackage -Deployment $packageDeployment', [StringComparison]::Ordinal)
+    $deploymentCleanup = $installerText.IndexOf('Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment', [StringComparison]::Ordinal)
+    if ($startupRegistration -lt 0 -or $lateRollback -lt $startupRegistration -or $deploymentCleanup -lt $lateRollback) {
+        throw 'Пакет має залишатися доступним для rollback до завершення реєстрації запуску та обробки пізніх помилок.'
+    }
 
     $serviceSource = Join-Path $testDeploymentRoot 'source-service'
     $desktopSource = Join-Path $testDeploymentRoot 'source-desktop'
@@ -111,6 +117,21 @@ try {
     Assert-Equal -Expected 'previous-panel' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'panel.exe') -Raw).Trim() -Message 'Rollback має відновити всі файли попереднього пакета.'
     Assert-Equal -Expected 'preserved-receipt' -Actual (Get-Content -LiteralPath $dataTarget -Raw).Trim() -Message 'Rollback не має видаляти квитанції в ProgramData.'
     Complete-EdgeAgentPackageDeployment -Deployment $deployment
+
+    $lateFailureTarget = Join-Path $testDeploymentRoot 'Late Failure\EdgeAgent'
+    New-Item -ItemType Directory -Path $lateFailureTarget -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $lateFailureTarget 'service.exe') -Value 'previous-service'
+    $lateFailureDeployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $lateFailureTarget
+    Install-EdgeAgentPackageStage -Deployment $lateFailureDeployment
+    Assert-Equal -Expected $true -Actual (Test-Path -LiteralPath $lateFailureDeployment.BackupDirectory -PathType Container) -Message 'До завершення фіналізації попередній пакет має залишатися доступним для rollback.'
+    try {
+        throw 'simulated operator startup registration failure'
+    } catch {
+        Restore-EdgeAgentPackage -Deployment $lateFailureDeployment
+    }
+    Assert-Equal -Expected 'previous-service' -Actual (Get-Content -LiteralPath (Join-Path $lateFailureTarget 'service.exe') -Raw).Trim() -Message 'Пізня помилка до завершення інсталяції має відновити попередній пакет.'
+    Assert-Equal -Expected $false -Actual (Test-Path -LiteralPath $lateFailureDeployment.BackupDirectory) -Message 'Rollback має повернути попередній пакет із тимчасового каталогу.'
+    Complete-EdgeAgentPackageDeployment -Deployment $lateFailureDeployment
 
     $newInstallTarget = Join-Path $testDeploymentRoot 'New Install\EdgeAgent'
     $newInstall = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $newInstallTarget

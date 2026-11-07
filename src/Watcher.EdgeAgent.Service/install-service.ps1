@@ -285,25 +285,26 @@ if (-not $SkipStart) {
         throw "edge_agent_health_check_failed: попередній пакет і конфігурацію служби відновлено. Перевірте журнал Application у Windows Event Viewer. Для device_certificate_unavailable відкрийте certlm.msc → керування приватними ключами сертифіката → надайте $serviceAccount право Read, а потім повторіть інсталяцію. Деталь: $healthCheckFailure"
     }
 }
-& sc.exe sidtype $serviceName restricted | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося обмежити service SID.' }
-& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
-& sc.exe failureflag $serviceName 1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
-Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment
-$startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
-New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
-$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startMenu 'Стан вузла.lnk'))
-$shortcut.TargetPath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
-$shortcut.WorkingDirectory = $installDirectory
-$shortcut.Save()
-if (-not (Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
-        Where-Object { $_.SID.Value -eq $interactiveUserSid })) {
-    Add-LocalGroupMember -Group $operatorGroupName -Member $interactiveUserAccount
-}
-$startupType = Get-EdgeAgentServiceStartupType -SkipStart:$SkipStart
 try {
+    & sc.exe sidtype $serviceName restricted | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Не вдалося обмежити service SID.' }
+    & sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
+    & sc.exe failureflag $serviceName 1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
+
+    $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
+    New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startMenu 'Стан вузла.lnk'))
+    $shortcut.TargetPath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
+    $shortcut.WorkingDirectory = $installDirectory
+    $shortcut.Save()
+    if (-not (Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
+            Where-Object { $_.SID.Value -eq $interactiveUserSid })) {
+        Add-LocalGroupMember -Group $operatorGroupName -Member $interactiveUserAccount
+    }
+
+    $startupType = Get-EdgeAgentServiceStartupType -SkipStart:$SkipStart
     & sc.exe config $serviceName start= $startupType | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати автоматичний запуск Windows-служби.' }
     $configuredService = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'"
@@ -311,18 +312,55 @@ try {
         throw 'Windows не підтвердила автоматичний тип запуску служби.'
     }
 
+    if ($SkipStart) {
+        Write-Warning "Службу налаштовано на автоматичний запуск після завантаження Windows, але зараз не запущено й не перевірено. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте запуск командою Start-Service -Name '$serviceName' і стан автозапуску через Get-Service -Name '$serviceName'."
+    }
+    $finalService = Get-Service -Name $serviceName
     Set-EdgeAgentDesktopStartupEntry `
         -InteractiveUserSid $interactiveUserSid `
         -ExecutablePath (Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe')
 } catch {
-    $configurationFailure = $_
-    & sc.exe config $serviceName start= $previousStartupType | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Не вдалося налаштувати автозапуск. Також не вдалося відновити попередній тип запуску '$previousStartupType'. Причина: $configurationFailure"
+    $finalizationFailure = $_
+    $rollbackFailures = [System.Collections.Generic.List[string]]::new()
+    $currentService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($currentService -and $currentService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+        try {
+            Stop-Service -Name $serviceName -Force
+            $currentService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+        } catch {
+            $rollbackFailures.Add("Не вдалося зупинити службу перед відновленням пакета: $_")
+        }
     }
-    throw $configurationFailure
+
+    if ($rollbackFailures.Count -eq 0) {
+        try {
+            Restore-EdgeAgentPackage -Deployment $packageDeployment
+        } catch {
+            $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
+        }
+    }
+    if ($existingService) {
+        & sc.exe config $serviceName binPath= $previousServicePathName obj= $previousServiceAccount start= demand | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            $rollbackFailures.Add('Не вдалося відновити шлях і обліковий запис попередньої Windows-служби.')
+        } elseif ($rollbackFailures.Count -eq 0 -and $wasServiceRunning) {
+            try {
+                Start-Service -Name $serviceName
+                (Get-Service -Name $serviceName).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+            } catch {
+                $rollbackFailures.Add("Не вдалося повторно запустити попередню Windows-службу: $_")
+            }
+        }
+        & sc.exe config $serviceName start= $previousStartupType | Out-Null
+        if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add("Не вдалося відновити тип запуску '$previousStartupType'.") }
+    } else {
+        & sc.exe delete $serviceName | Out-Null
+        if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося видалити створену під час інсталяції службу.') }
+    }
+    if ($rollbackFailures.Count -gt 0) {
+        throw "Фіналізація інсталяції не пройшла, а автоматичне відновлення має помилки: $($rollbackFailures -join ' ') Зверніться до адміністратора. Причина: $finalizationFailure"
+    }
+    throw "Фіналізація інсталяції не пройшла; попередній пакет і конфігурацію Windows-служби відновлено. Деталь: $finalizationFailure"
 }
-if ($SkipStart) {
-    Write-Warning "Службу налаштовано на автоматичний запуск після завантаження Windows, але зараз не запущено й не перевірено. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте запуск командою Start-Service -Name '$serviceName' і стан автозапуску через Get-Service -Name '$serviceName'."
-}
-Get-Service -Name $serviceName | Select-Object Name, Status, StartType
+Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment
+$finalService | Select-Object Name, Status, StartType
