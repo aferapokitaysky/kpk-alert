@@ -31,7 +31,7 @@ erDiagram
 | Таблиця                      | Основні поля                                                                                  | Призначення                                                   |
 | ---------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `users`                      | `id`, `external_subject`, `email`, `is_active`                                                | Облікові записи з довіреного постачальника входу              |
-| `roles`                      | `id`, `code`                                                                                  | Ролі `admin`, `sound_engineer`, `notificator`, `auditor`      |
+| `roles`                      | `id`, `code`                                                                                  | Каталог ролей `admin`, `sound_engineer`, `notificator`, `auditor`, який заповнюється міграцією `SeedRoleCatalog` |
 | `user_roles`                 | `user_id`, `role_id`, `location_id?`                                                          | Глобальні права або права в конкретній локації                |
 | `locations`                  | `id`, `code`, `name`, `is_active`                                                             | Корпус або окрема зона трансляції                             |
 | `devices`                    | `id`, `location_id`, `certificate_thumbprint`, `pending_certificate_thumbprint?`, `pending_certificate_created_at_utc?`, `revoked_at_utc?` | Вузли, активний сертифікат і очікування його ротації           |
@@ -66,6 +66,7 @@ Worker використовує нову DI scope для кожного цикл
 ## Обмеження та індекси
 
 - Унікальні значення: `locations.code`, `roles.code`, `sound_presets.code`, `users.external_subject`.
+- Міграція `SeedRoleCatalog` додає визначені системою ролі, але не перезаписує наявні рядки з такими `code`. Їхні ідентифікатори й назви зберігаються; адміністраторів і призначення `user_roles` міграція не створює.
 - Пара `(command_id, location_id)` у `command_targets` унікальна.
 - Пара `(location_id, sequence)` у `command_targets` унікальна; номер завжди додатний.
 - Лічильник локації змінюється атомарно в тій самій транзакції, що команда, ціль, outbox та аудит.
