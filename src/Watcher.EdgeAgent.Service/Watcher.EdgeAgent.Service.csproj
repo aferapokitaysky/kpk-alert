@@ -17,4 +17,9 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Watcher.EdgeAgent.Service.IntegrationTests" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="EdgeAgentStartupRegistration.psm1;install-service.ps1;uninstall-service.ps1"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
