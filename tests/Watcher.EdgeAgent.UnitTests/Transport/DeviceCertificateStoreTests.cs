@@ -69,24 +69,13 @@ public sealed class DeviceCertificateStoreTests
         using var key = RSA.Create(2048);
         CertificateRequest request = new("CN=Edge Agent Certificate Selection Test", key,
             HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using X509Certificate2 generated = request.CreateSelfSigned(notBefore, notAfter);
-        var certificateBytes = generated.Export(X509ContentType.Cert);
-
         if (!includePrivateKey)
         {
-            return X509CertificateLoader.LoadCertificate(certificateBytes);
+            using X509Certificate2 publicCertificate = request.CreateSelfSigned(notBefore, notAfter);
+            return X509CertificateLoader.LoadCertificate(publicCertificate.Export(X509ContentType.Cert));
         }
 
-        var certificateWithPrivateKey = generated.Export(X509ContentType.Pfx);
-        try
-        {
-            return X509CertificateLoader.LoadPkcs12(certificateWithPrivateKey, null,
-                X509KeyStorageFlags.EphemeralKeySet);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(certificateWithPrivateKey);
-        }
+        return request.CreateSelfSigned(notBefore, notAfter);
     }
 }
 
