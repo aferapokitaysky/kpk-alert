@@ -45,7 +45,18 @@ public sealed class DeviceCommandStreamController(
         try
         {
             socket = await HttpContext.WebSockets.AcceptWebSocketAsync();
-            commandSession = await sessions.RegisterAsync(deviceId, sessionId, socket, cancellationToken);
+            commandSession = await sessions.TryRegisterIfCurrentAsync(
+                deviceId,
+                sessionId,
+                socket,
+                token => presence.IsSessionActiveAsync(sessionId, token),
+                cancellationToken);
+            if (commandSession is null)
+            {
+                socket.Abort();
+                return new EmptyResult();
+            }
+
             heartbeatTask = presence.RunHeartbeatAsync(sessionId, () =>
             {
                 logger.LogInformation(

@@ -125,6 +125,15 @@ public sealed class DeviceSessionPresenceService(
         }
     }
 
+    public async Task<bool> IsSessionActiveAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        return await db.DeviceSessions.AsNoTracking()
+            .AnyAsync(session => session.Id == sessionId && session.DisconnectedAtUtc == null,
+                cancellationToken);
+    }
+
     public static IQueryable<Guid> ConnectedDeviceIds(WatcherDbContext db, DateTimeOffset now) =>
         db.DeviceSessions.AsNoTracking()
             .Where(session => session.DisconnectedAtUtc == null &&
