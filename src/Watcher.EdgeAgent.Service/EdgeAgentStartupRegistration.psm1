@@ -3,29 +3,68 @@
 $script:EdgeAgentStartupValueName = 'KGTA.Alert.OperatorPanel'
 $script:EdgeAgentRunSubKeySuffix = 'Software\Microsoft\Windows\CurrentVersion\Run'
 
+function Assert-EdgeAgentInteractiveUserSid {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$InteractiveUserSid)
+
+    try {
+        $sid = [Security.Principal.SecurityIdentifier]::new($InteractiveUserSid)
+    } catch [System.ArgumentException] {
+        throw 'SID інтерактивного користувача має некоректний формат.'
+    }
+
+    if ($sid.IsWellKnown([Security.Principal.WellKnownSidType]::LocalSystemSid) -or
+        $sid.IsWellKnown([Security.Principal.WellKnownSidType]::LocalServiceSid) -or
+        $sid.IsWellKnown([Security.Principal.WellKnownSidType]::NetworkServiceSid) -or
+        $sid.Value -match '^S-1-5-(?:80|82|83)-') {
+        throw 'Для автозапуску панелі вкажіть інтерактивний обліковий запис, а не системний або службовий SID.'
+    }
+
+    return $sid.Value
+}
+
+function Get-EdgeAgentInteractiveUserSidForContext {
+    [CmdletBinding()]
+    param(
+        [string]$InteractiveUser,
+        [string]$CurrentIdentitySid,
+        [bool]$CurrentIdentityIsSystem
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InteractiveUser)) {
+        if ($CurrentIdentityIsSystem) {
+            throw 'Під час встановлення від імені SYSTEM потрібно явно вказати -InteractiveUser для інтерактивного облікового запису.'
+        }
+        if ([string]::IsNullOrWhiteSpace($CurrentIdentitySid)) {
+            throw 'Не вдалося визначити SID поточного облікового запису.'
+        }
+        $sid = [Security.Principal.SecurityIdentifier]::new($CurrentIdentitySid)
+    } elseif ($InteractiveUser -match '^S-\d-(?:\d+-)*\d+$') {
+        $sid = [Security.Principal.SecurityIdentifier]::new($InteractiveUser)
+    } else {
+        try {
+            $sid = ([Security.Principal.NTAccount]::new($InteractiveUser)).Translate(
+                [Security.Principal.SecurityIdentifier]
+            )
+        } catch [System.Security.Principal.IdentityNotMappedException] {
+            throw "Не вдалося визначити SID інтерактивного користувача '$InteractiveUser'."
+        }
+    }
+
+    if (-not $sid) { throw 'Не вдалося визначити SID інтерактивного користувача.' }
+
+    return Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $sid.Value
+}
+
 function Resolve-EdgeAgentInteractiveUserSid {
     [CmdletBinding()]
     param([string]$InteractiveUser)
 
-    if ([string]::IsNullOrWhiteSpace($InteractiveUser)) {
-        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-        if ($identity.IsSystem) {
-            throw 'Під час встановлення від імені SYSTEM потрібно явно вказати -InteractiveUser для інтерактивного облікового запису.'
-        }
-
-        return $identity.User.Value
-    }
-
-    if ($InteractiveUser -match '^S-\d-(?:\d+-)*\d+$') {
-        return ([Security.Principal.SecurityIdentifier]::new($InteractiveUser)).Value
-    }
-
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     try {
-        return ([Security.Principal.NTAccount]::new($InteractiveUser)).Translate(
-            [Security.Principal.SecurityIdentifier]
-        ).Value
-    } catch [System.Security.Principal.IdentityNotMappedException] {
-        throw "Не вдалося визначити SID інтерактивного користувача '$InteractiveUser'."
+        return Get-EdgeAgentInteractiveUserSidForContext -InteractiveUser $InteractiveUser -CurrentIdentitySid $identity.User.Value -CurrentIdentityIsSystem $identity.IsSystem
+    } finally {
+        $identity.Dispose()
     }
 }
 
@@ -37,9 +76,7 @@ function Get-EdgeAgentStartupRegistrySubKeyPath {
         [string]$RunSubKeyPath
     )
 
-    if ($InteractiveUserSid -notmatch '^S-\d-(?:\d+-)*\d+$') {
-        throw 'SID інтерактивного користувача має некоректний формат.'
-    }
+    $InteractiveUserSid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $InteractiveUserSid
 
     if ([string]::IsNullOrWhiteSpace($RunSubKeyPath)) {
         return "$InteractiveUserSid\$script:EdgeAgentRunSubKeySuffix"
@@ -60,9 +97,7 @@ function Test-EdgeAgentInteractiveUserProfileLoaded {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$InteractiveUserSid)
 
-    if ($InteractiveUserSid -notmatch '^S-\d-(?:\d+-)*\d+$') {
-        throw 'SID інтерактивного користувача має некоректний формат.'
-    }
+    $InteractiveUserSid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $InteractiveUserSid
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
         [Microsoft.Win32.RegistryHive]::Users,
@@ -207,6 +242,8 @@ function Remove-EdgeAgentDesktopStartupEntry {
 }
 
 Export-ModuleMember -Function @(
+    'Assert-EdgeAgentInteractiveUserSid',
+    'Get-EdgeAgentInteractiveUserSidForContext',
     'Resolve-EdgeAgentInteractiveUserSid',
     'Get-EdgeAgentStartupRegistrySubKeyPath',
     'Test-EdgeAgentInteractiveUserProfileLoaded',
