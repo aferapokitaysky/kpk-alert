@@ -181,18 +181,71 @@ try {
         $baseKey.Dispose()
     }
 
+    $fakeService = [pscustomobject]@{ Exists = $true; Status = [System.ServiceProcess.ServiceControllerStatus]::Running; RestartCount = 0; StopCount = 0 }
+    $runValueBeforeFailedDelete = $null
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        $runValueBeforeFailedDelete = $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel')
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+    Assert-Throws {
+        Invoke-EdgeAgentUninstallServiceRemoval `
+            -Profiles $profileCleanupPlan.Profiles `
+            -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+            -GetServiceAction { if ($fakeService.Exists) { [pscustomobject]@{ Status = $fakeService.Status } } } `
+            -StopServiceAction { $fakeService.Status = [System.ServiceProcess.ServiceControllerStatus]::Stopped; $fakeService.StopCount++ } `
+            -DeleteServiceAction { throw 'sc.exe delete failed' } `
+            -StartServiceAction { $fakeService.Status = [System.ServiceProcess.ServiceControllerStatus]::Running; $fakeService.RestartCount++ }
+    } 'Помилка sc delete має відновити Run-записи та перезапустити наявну службу.'
+    Assert-Equal -Expected ([System.ServiceProcess.ServiceControllerStatus]::Running) -Actual $fakeService.Status -Message 'Після помилки видалення служба має працювати.'
+    Assert-Equal -Expected 1 -Actual $fakeService.RestartCount -Message 'Після помилки видалення потрібна одна спроба перезапуску.'
+    Assert-Equal -Expected 1 -Actual $fakeService.StopCount -Message 'До спроби видалення запущена служба має бути зупинена.'
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        Assert-Equal -Expected $runValueBeforeFailedDelete -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Помилка sc delete має зберегти Run-запис.'
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
+    $fakeService.StopCount = 0
+    $fakeService.RestartCount = 0
+    Assert-Throws {
+        Invoke-EdgeAgentUninstallServiceRemoval `
+            -Profiles @(
+                [pscustomobject]@{ Sid = $currentIdentitySid; RunSubKeyPath = $firstProfileRunSubKey },
+                [pscustomobject]@{ Sid = $interactiveUserSid; RunSubKeyPath = '..\InvalidProfile\Run' }
+            ) `
+            -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+            -GetServiceAction { if ($fakeService.Exists) { [pscustomobject]@{ Status = $fakeService.Status } } } `
+            -StopServiceAction { $fakeService.Status = [System.ServiceProcess.ServiceControllerStatus]::Stopped; $fakeService.StopCount++ } `
+            -DeleteServiceAction { $fakeService.Exists = $false } `
+            -StartServiceAction { $fakeService.Status = [System.ServiceProcess.ServiceControllerStatus]::Running; $fakeService.RestartCount++ }
+    } 'Помилка очищення профілю має перервати uninstall до зупинки служби.'
+    Assert-Equal -Expected 0 -Actual $fakeService.StopCount -Message 'Помилка cleanup має виникнути до зупинки служби.'
+    Assert-Equal -Expected 0 -Actual $fakeService.RestartCount -Message 'Служба не має перезапускатися, якщо її не зупиняли.'
+
     $uninstallerText = Get-Content -LiteralPath $uninstallerPath -Raw
     $cleanupModuleText = Get-Content -LiteralPath $modulePath -Raw
-    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
     $prepareProfilesPosition = $uninstallerText.IndexOf('New-EdgeAgentStartupCleanupPlan', [StringComparison]::Ordinal)
-    $removeProfilesPosition = $uninstallerText.IndexOf('Remove-EdgeAgentDesktopStartupEntriesForProfiles', [StringComparison]::Ordinal)
+    $invokeRemovalPosition = $uninstallerText.IndexOf('Invoke-EdgeAgentUninstallServiceRemoval', [StringComparison]::Ordinal)
+    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
     $removeFilesPosition = $uninstallerText.IndexOf('Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force', [StringComparison]::Ordinal)
+    $transactionCleanupPosition = $cleanupModuleText.IndexOf('Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles $Profiles', [StringComparison]::Ordinal)
+    $transactionDeletePosition = $cleanupModuleText.IndexOf('& $DeleteServiceAction', [StringComparison]::Ordinal)
     if ($uninstallerText -notmatch 'Get-CimInstance\s+-ClassName\s+Win32_UserProfile' -or
         $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+load' -or
         $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+unload' -or
-        $prepareProfilesPosition -lt 0 -or $deleteServicePosition -le $prepareProfilesPosition -or
-        $removeProfilesPosition -le $deleteServicePosition -or $removeFilesPosition -le $removeProfilesPosition) {
-        throw 'Видалення має спочатку видалити службу, потім очистити власний Run-запис у профілях і лише після відключення hive прибрати файли.'
+        $prepareProfilesPosition -lt 0 -or $invokeRemovalPosition -le $prepareProfilesPosition -or
+        $deleteServicePosition -le $invokeRemovalPosition -or $removeFilesPosition -le $deleteServicePosition -or
+        $transactionCleanupPosition -lt 0 -or $transactionDeletePosition -le $transactionCleanupPosition -or
+        $cleanupModuleText -notmatch 'if \(\& \$GetServiceAction\) \{ \& \$StartServiceAction \}' -or
+        $cleanupModuleText -notmatch 'Restore-EdgeAgentDesktopStartupEntriesForProfiles -Entries \$removedEntries') {
+        throw 'Видалення має транзакційно очистити Run, видалити службу, відновити Run і службу при помилці та лише потім прибрати файли.'
     }
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Default)

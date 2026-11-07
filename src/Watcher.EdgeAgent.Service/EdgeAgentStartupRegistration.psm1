@@ -489,6 +489,50 @@ function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
     }
 }
 
+function Invoke-EdgeAgentUninstallServiceRemoval {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Profiles,
+        [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users,
+        [Parameter(Mandatory = $true)][scriptblock]$GetServiceAction,
+        [Parameter(Mandatory = $true)][scriptblock]$StopServiceAction,
+        [Parameter(Mandatory = $true)][scriptblock]$DeleteServiceAction,
+        [Parameter(Mandatory = $true)][scriptblock]$StartServiceAction
+    )
+
+    $removedEntries = @(Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles $Profiles -RegistryHive $RegistryHive)
+    $serviceWasRunning = $false
+    try {
+        $service = & $GetServiceAction
+        if ($service) {
+            $serviceWasRunning = $service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped
+            if ($serviceWasRunning) { & $StopServiceAction }
+            & $DeleteServiceAction
+        }
+    } catch {
+        $uninstallFailure = $_
+        $recoveryFailures = @()
+        if ($removedEntries.Count -gt 0) {
+            try {
+                Restore-EdgeAgentDesktopStartupEntriesForProfiles -Entries $removedEntries -RegistryHive $RegistryHive
+            } catch {
+                $recoveryFailures += "Не вдалося відновити Run-записи: $($_.Exception.Message)"
+            }
+        }
+        if ($serviceWasRunning) {
+            try {
+                if (& $GetServiceAction) { & $StartServiceAction }
+            } catch {
+                $recoveryFailures += "Не вдалося повторно запустити службу: $($_.Exception.Message)"
+            }
+        }
+        if ($recoveryFailures.Count -gt 0) {
+            throw "$($uninstallFailure.Exception.Message) $($recoveryFailures -join ' ')"
+        }
+        throw $uninstallFailure
+    }
+}
+
 Export-ModuleMember -Function @(
     'Assert-EdgeAgentInteractiveUserSid',
     'Get-EdgeAgentInteractiveUserSidForContext',
@@ -502,5 +546,6 @@ Export-ModuleMember -Function @(
     'Remove-EdgeAgentDesktopStartupEntriesForProfiles',
     'New-EdgeAgentStartupCleanupPlan',
     'Release-EdgeAgentProfileHives',
-    'Restore-EdgeAgentDesktopStartupEntriesForProfiles'
+    'Restore-EdgeAgentDesktopStartupEntriesForProfiles',
+    'Invoke-EdgeAgentUninstallServiceRemoval'
 )

@@ -27,17 +27,19 @@ $profileCleanupPlan = New-EdgeAgentStartupCleanupPlan `
     -RequiredInteractiveUserSid $interactiveUserSid `
     -RegExecutablePath $regExecutable
 try {
-    if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-        $service = Get-Service -Name $serviceName
-        if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+    Invoke-EdgeAgentUninstallServiceRemoval `
+        -Profiles $profileCleanupPlan.Profiles `
+        -GetServiceAction { Get-Service -Name $serviceName -ErrorAction SilentlyContinue } `
+        -StopServiceAction {
+            $service = Get-Service -Name $serviceName
             Stop-Service -Name $serviceName -Force
             $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
-        }
+        } `
+        -DeleteServiceAction {
         & sc.exe delete $serviceName | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Не вдалося видалити службу.' }
-    }
-
-    Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles $profileCleanupPlan.Profiles
+        } `
+        -StartServiceAction { Start-Service -Name $serviceName -ErrorAction Stop }
 } finally {
     if ($profileCleanupPlan.MountedHiveNames.Count -gt 0) {
         Release-EdgeAgentProfileHives `
