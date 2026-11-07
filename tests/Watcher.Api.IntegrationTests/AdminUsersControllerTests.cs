@@ -48,6 +48,18 @@ public sealed class AdminUsersControllerTests : IClassFixture<PostgresApiFixture
     }
 
     [PostgresFact]
+    public async Task User_list_rejects_page_offsets_that_overflow_the_database_skip_value()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        using HttpRequestMessage request = new(HttpMethod.Get, $"{UsersPath}?page=2147483647&pageSize=100");
+        AddIdentity(request, seed.AdministratorId, "admin");
+
+        using HttpResponseMessage response = await _fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [PostgresFact]
     public async Task Role_grant_is_idempotent_audited_and_limited_to_supported_scopes()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);

@@ -29,7 +29,7 @@ jobs:
 
   build:
     name: Збірка Watcher
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -86,7 +86,7 @@ jobs:
 
   validate-compose:
     name: Перевірка Docker Compose
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Перевірити синтаксис Compose
@@ -100,7 +100,7 @@ jobs:
 
   documentation:
     name: Перевірка посилань у документації
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Перевірити внутрішні посилання в Markdown
@@ -115,7 +115,7 @@ jobs:
 
   postgres-migrations:
     name: Перевірка міграцій PostgreSQL
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16.10-alpine
@@ -161,7 +161,7 @@ jobs:
   combined-coverage:
     name: Объединённое покрытие модулей (70%)
     needs: [build, postgres-migrations]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -195,7 +195,7 @@ jobs:
       - documentation
       - postgres-migrations
       - combined-coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write

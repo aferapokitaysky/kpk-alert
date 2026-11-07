@@ -6,7 +6,7 @@ namespace Watcher.Api.Delivery;
 public sealed class DeviceCommandSessionRegistry
 {
     private readonly ConcurrentDictionary<Guid, DeviceCommandWebSocketSession> _sessions = new();
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _registrationLocks = new();
+    private readonly DeviceCommandSessionRegistrationGate _registrationGate = new();
 
     public IReadOnlyCollection<Guid> ConnectedDeviceIds => _sessions.Keys.ToArray();
 
@@ -55,10 +55,7 @@ public sealed class DeviceCommandSessionRegistry
 
         DeviceCommandWebSocketSession session = new(deviceId, presenceSessionId, socket);
         DeviceCommandWebSocketSession? previous;
-        SemaphoreSlim registrationLock = _registrationLocks.GetOrAdd(
-            deviceId, static _ => new SemaphoreSlim(1, 1));
-        await registrationLock.WaitAsync(cancellationToken);
-        try
+        using (await _registrationGate.EnterAsync(deviceId, cancellationToken))
         {
             if (isCurrentSessionAsync is not null && !await isCurrentSessionAsync(cancellationToken))
             {
@@ -67,10 +64,6 @@ public sealed class DeviceCommandSessionRegistry
 
             _sessions.TryGetValue(deviceId, out previous);
             _sessions[deviceId] = session;
-        }
-        finally
-        {
-            registrationLock.Release();
         }
 
         if (previous is not null)
@@ -106,17 +99,10 @@ public sealed class DeviceCommandSessionRegistry
             throw new ArgumentException("Ідентифікатор пристрою не може бути порожнім.", nameof(deviceId));
         }
 
-        SemaphoreSlim registrationLock = _registrationLocks.GetOrAdd(
-            deviceId, static _ => new SemaphoreSlim(1, 1));
-        await registrationLock.WaitAsync(cancellationToken);
         DeviceCommandWebSocketSession? session;
-        try
+        using (await _registrationGate.EnterAsync(deviceId, cancellationToken))
         {
             _sessions.TryRemove(deviceId, out session);
-        }
-        finally
-        {
-            registrationLock.Release();
         }
 
         if (session is null)

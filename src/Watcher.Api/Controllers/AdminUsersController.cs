@@ -40,6 +40,13 @@ public sealed class AdminUsersController(WatcherDbContext db, TimeProvider timeP
                 title: "Перевірте номер сторінки, розмір і пошуковий запит.");
         }
 
+        var offset = ((long)page - 1) * pageSize;
+        if (offset > int.MaxValue)
+        {
+            return Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "Запитана сторінка виходить за межі списку облікових записів.");
+        }
+
         IQueryable<UserAccount> usersQuery = db.Users.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -51,7 +58,7 @@ public sealed class AdminUsersController(WatcherDbContext db, TimeProvider timeP
         UserAccount[] users = await usersQuery
             .OrderBy(user => user.Email)
             .ThenBy(user => user.Id)
-            .Skip((page - 1) * pageSize)
+            .Skip((int)offset)
             .Take(pageSize)
             .ToArrayAsync(cancellationToken);
         Guid[] userIds = users.Select(user => user.Id).ToArray();
