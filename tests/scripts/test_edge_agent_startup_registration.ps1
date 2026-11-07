@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
 $installerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\install-service.ps1'
+$uninstallerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\uninstall-service.ps1'
 $userStartupScriptPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\set-operator-panel-startup.ps1'
 Import-Module -Name $modulePath -Force
 
@@ -87,6 +88,111 @@ try {
     Assert-Equal -Expected ([IO.Path]::GetFullPath($testDesktopExecutable)) -Actual (Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory $testProgramFilesPath) -Message 'Команда користувача має використовувати exe лише з каталогу встановлення.'
     Assert-Throws { Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory $testExecutableDirectory } 'Відсутня встановлена панель має відхилятися.'
     Assert-Throws { Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory 'relative-path' } 'Відносний каталог Program Files має відхилятися.'
+
+    $firstProfileRoot = "$testRootSubKey\FirstProfile"
+    $secondProfileRoot = "$testRootSubKey\SecondProfile"
+    $firstProfileRunSubKey = "$firstProfileRoot\Software\Microsoft\Windows\CurrentVersion\Run"
+    $secondProfileRunSubKey = "$secondProfileRoot\Software\Microsoft\Windows\CurrentVersion\Run"
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.CreateSubKey($firstProfileRunSubKey, $true)
+        $secondProfileRunKey = $baseKey.CreateSubKey($secondProfileRunSubKey, $true)
+        if (-not $firstProfileRunKey -or -not $secondProfileRunKey) { throw 'Не вдалося створити ізольовані підрозділи автозапуску профілів.' }
+        $expectedDesktopCommand = '"{0}"' -f [IO.Path]::GetFullPath($testExecutablePath)
+        $firstProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', $expectedDesktopCommand, [Microsoft.Win32.RegistryValueKind]::String)
+        $firstProfileRunKey.SetValue('ExistingStartup', 'C:\Existing\Other.exe', [Microsoft.Win32.RegistryValueKind]::String)
+        $secondProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', '"C:\Other\Panel.exe"', [Microsoft.Win32.RegistryValueKind]::String)
+        $secondProfileRunKey.SetValue('ExistingStartup', 'C:\Existing\Other.exe', [Microsoft.Win32.RegistryValueKind]::String)
+        $secondProfileRunKey.SetValue('OtherPanelStartup', $expectedDesktopCommand, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        if ($secondProfileRunKey) { $secondProfileRunKey.Dispose(); $secondProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
+    $profileRecords = @(
+        [pscustomobject]@{ SID = $currentIdentitySid; LocalPath = 'unused-loaded-profile'; Loaded = $true; Special = $false },
+        [pscustomobject]@{ SID = $interactiveUserSid; LocalPath = 'unused-loaded-profile'; Loaded = $true; Special = $false }
+    )
+    $testRegistryRoots = @{}
+    $testRegistryRoots[$currentIdentitySid] = $firstProfileRoot
+    $testRegistryRoots[$interactiveUserSid] = $secondProfileRoot
+    $profileCleanupPlan = New-EdgeAgentStartupCleanupPlan `
+        -Profiles $profileRecords `
+        -RequiredInteractiveUserSid $currentIdentitySid `
+        -RegExecutablePath (Join-Path $env:SystemRoot 'System32\reg.exe') `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryRoots $testRegistryRoots
+    Assert-Equal -Expected 2 -Actual $profileCleanupPlan.Profiles.Count -Message 'План має охопити обидва змодельовані профілі.'
+    Assert-Equal -Expected 0 -Actual $profileCleanupPlan.MountedHiveNames.Count -Message 'Завантажені тестові профілі не мають монтувати hive.'
+    $removedStartupEntries = @(Remove-EdgeAgentDesktopStartupEntriesForProfiles `
+        -Profiles $profileCleanupPlan.Profiles `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser))
+    Assert-Equal -Expected 2 -Actual $removedStartupEntries.Count -Message 'Очищення має повернути snapshot кожного видаленого app-owned значення для rollback.'
+    Assert-Throws {
+        Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles @() -RegistryHive ([Microsoft.Win32.RegistryHive]::LocalMachine)
+    } 'Масове очищення не має приймати HKLM.'
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $false)
+        Assert-Equal -Expected $false -Actual ($firstProfileRunKey.GetValueNames() -contains 'KGTA.Alert.OperatorPanel') -Message 'Очищення має прибирати запис KGTA Alert у кожному профілі.'
+        Assert-Equal -Expected 'C:\Existing\Other.exe' -Actual $firstProfileRunKey.GetValue('ExistingStartup') -Message 'Очищення має зберігати сторонні значення Run.'
+        Assert-Equal -Expected $false -Actual ($secondProfileRunKey.GetValueNames() -contains 'KGTA.Alert.OperatorPanel') -Message 'Очищення має видалити застаріле app-owned значення навіть якщо шлях змінено.'
+        Assert-Equal -Expected $expectedDesktopCommand -Actual $secondProfileRunKey.GetValue('OtherPanelStartup') -Message 'Очищення має залишити інші значення навіть якщо вони посилаються на той самий exe.'
+        Assert-Equal -Expected 'C:\Existing\Other.exe' -Actual $secondProfileRunKey.GetValue('ExistingStartup') -Message 'Очищення має зберігати сторонні значення в кожному профілі.'
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        if ($secondProfileRunKey) { $secondProfileRunKey.Dispose(); $secondProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
+    Restore-EdgeAgentDesktopStartupEntriesForProfiles `
+        -Entries $removedStartupEntries `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser)
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $false)
+        Assert-Equal -Expected $expectedDesktopCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Rollback має відновити Run-запис першого профілю.'
+        Assert-Equal -Expected '"C:\Other\Panel.exe"' -Actual $secondProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Rollback має відновити Run-запис другого профілю без зміни його значення.'
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        if ($secondProfileRunKey) { $secondProfileRunKey.Dispose(); $secondProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
+    Assert-Throws {
+        Remove-EdgeAgentDesktopStartupEntriesForProfiles `
+            -Profiles @(
+                [pscustomobject]@{ Sid = $currentIdentitySid; RunSubKeyPath = $firstProfileRunSubKey },
+                [pscustomobject]@{ Sid = $interactiveUserSid; RunSubKeyPath = '..\InvalidProfile\Run' }
+            ) `
+            -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser)
+    } 'Помилка профілю посеред очищення має зупинити uninstall.'
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        Assert-Equal -Expected $expectedDesktopCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Помилка очищення має відновити вже видалений запис першого профілю.'
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
+    $uninstallerText = Get-Content -LiteralPath $uninstallerPath -Raw
+    $cleanupModuleText = Get-Content -LiteralPath $modulePath -Raw
+    $prepareProfilesPosition = $uninstallerText.IndexOf('New-EdgeAgentStartupCleanupPlan', [StringComparison]::Ordinal)
+    $removeProfilesPosition = $uninstallerText.IndexOf('Remove-EdgeAgentDesktopStartupEntriesForProfiles', [StringComparison]::Ordinal)
+    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
+    $removeFilesPosition = $uninstallerText.IndexOf('Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force', [StringComparison]::Ordinal)
+    if ($uninstallerText -notmatch 'Get-CimInstance\s+-ClassName\s+Win32_UserProfile' -or
+        $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+load' -or
+        $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+unload' -or
+        $prepareProfilesPosition -lt 0 -or $removeProfilesPosition -le $prepareProfilesPosition -or
+        $deleteServicePosition -le $removeProfilesPosition -or $removeFilesPosition -le $deleteServicePosition) {
+        throw 'Видалення має очистити лише власний Run-запис у профілях до видалення файлів і безпечного відключення hive.'
+    }
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Default)
     Assert-Equal -Expected $false -Actual (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid) -Message 'Відсутній профіль користувача має розпізнаватися як незавантажений.'

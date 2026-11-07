@@ -259,6 +259,236 @@ function Remove-EdgeAgentDesktopStartupEntry {
     }
 }
 
+function Remove-EdgeAgentDesktopStartupEntriesForProfiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Profiles,
+        [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users
+    )
+
+    if ($RegistryHive -ne [Microsoft.Win32.RegistryHive]::Users -and
+        $RegistryHive -ne [Microsoft.Win32.RegistryHive]::CurrentUser) {
+        throw 'Очищення автозапуску дозволено лише в профілях користувачів.'
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Default)
+    $removedEntries = @()
+    try {
+        foreach ($profile in $Profiles) {
+            if (-not $profile.Sid -or -not $profile.RunSubKeyPath) {
+                throw 'План очищення автозапуску містить неповний запис профілю.'
+            }
+
+            $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath `
+                -InteractiveUserSid ([string]$profile.Sid) `
+                -RunSubKeyPath ([string]$profile.RunSubKeyPath)
+            $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
+            if (-not $runKey) { continue }
+
+            try {
+                if (-not ($runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName)) { continue }
+
+                $removedEntries += [pscustomobject]@{
+                    Sid = [string]$profile.Sid
+                    RunSubKeyPath = $subKeyPath
+                    Value = $runKey.GetValue(
+                        $script:EdgeAgentStartupValueName,
+                        $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                    )
+                    Kind = $runKey.GetValueKind($script:EdgeAgentStartupValueName)
+                }
+                $runKey.DeleteValue($script:EdgeAgentStartupValueName, $false)
+            } finally {
+                $runKey.Dispose()
+            }
+        }
+        return @($removedEntries)
+    } catch {
+        $failure = $_
+        if ($removedEntries.Count -gt 0) {
+            try {
+                Restore-EdgeAgentDesktopStartupEntriesForProfiles `
+                    -Entries $removedEntries `
+                    -RegistryHive $RegistryHive
+            } catch {
+                throw "Не вдалося повністю очистити записи Run або відновити їх після помилки. Причина: $failure. Помилка відновлення: $($_.Exception.Message)"
+            }
+        }
+        throw $failure
+    } finally {
+        $baseKey.Dispose()
+    }
+}
+
+function Release-EdgeAgentProfileHives {
+    [CmdletBinding()]
+    param(
+        [string[]]$MountedHiveNames,
+        [Parameter(Mandatory = $true)][string]$RegExecutablePath
+    )
+
+    $failedMounts = @()
+    for ($index = $MountedHiveNames.Count - 1; $index -ge 0; $index--) {
+        $mountName = $MountedHiveNames[$index]
+        $output = & $RegExecutablePath unload "HKU\$mountName" 2>&1
+        if ($LASTEXITCODE -ne 0) { $failedMounts += $mountName }
+    }
+
+    if ($failedMounts.Count -gt 0) {
+        throw "Не вдалося від'єднати тимчасові профілі реєстру: $($failedMounts -join ', '). Закрийте їх через reg.exe unload і повторіть видалення."
+    }
+}
+
+function New-EdgeAgentStartupCleanupPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Profiles,
+        [Parameter(Mandatory = $true)][string]$RequiredInteractiveUserSid,
+        [Parameter(Mandatory = $true)][string]$RegExecutablePath,
+        [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users,
+        [hashtable]$RegistryRoots = @{}
+    )
+
+    if ($RegistryHive -ne [Microsoft.Win32.RegistryHive]::Users -and
+        $RegistryHive -ne [Microsoft.Win32.RegistryHive]::CurrentUser) {
+        throw 'План очищення автозапуску дозволено створювати лише для профілів користувачів.'
+    }
+    $interactiveSid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $RequiredInteractiveUserSid
+    if (-not ($Profiles | Where-Object { $_.SID -eq $interactiveSid -and -not $_.Special })) {
+        throw "Не знайдено профіль інтерактивного користувача $interactiveSid. Службу й файли не змінено."
+    }
+
+    $cleanupProfiles = @()
+    $mountedHiveNames = @()
+    $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        foreach ($profile in $Profiles) {
+            if ($profile.Special) { continue }
+            $sid = [string]$profile.SID
+            if ([string]::IsNullOrWhiteSpace($sid) -or
+                $sid -match '^S-1-5-(?:18|19|20)$|^S-1-5-(?:80|82|83)-') {
+                continue
+            }
+            $sid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $sid
+
+            if ($RegistryRoots.ContainsKey($sid)) {
+                $registryRoot = [string]$RegistryRoots[$sid]
+            } elseif ($RegistryHive -eq [Microsoft.Win32.RegistryHive]::CurrentUser) {
+                throw "Для тестового профілю $sid не передано корінь реєстру."
+            } else {
+                $rootKey = $usersHive.OpenSubKey($sid, $false)
+                if ($rootKey) {
+                    $rootKey.Dispose()
+                    $registryRoot = $sid
+                } else {
+                    if ($profile.Loaded) {
+                        throw "Профіль $sid позначено завантаженим, але його hive відсутній у HKEY_USERS. Службу й файли не змінено."
+                    }
+
+                    $profilePath = [string]$profile.LocalPath
+                    if ([string]::IsNullOrWhiteSpace($profilePath)) {
+                        throw "Для профілю $sid не визначено каталог. Службу й файли не змінено."
+                    }
+                    $profileHivePath = Join-Path $profilePath 'NTUSER.DAT'
+                    if (-not (Test-Path -LiteralPath $profileHivePath -PathType Leaf)) {
+                        continue
+                    }
+                    if (-not (Test-Path -LiteralPath $RegExecutablePath -PathType Leaf)) {
+                        throw 'Не знайдено системну утиліту керування реєстром. Службу й файли не змінено.'
+                    }
+
+                    $mountName = 'KGTA.Alert.Uninstall.' + [guid]::NewGuid().ToString('N')
+                    $output = & $RegExecutablePath load "HKU\$mountName" $profileHivePath 2>&1
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Не вдалося підготувати реєстр профілю $sid. Закрийте сеанс цього користувача або від'єднайте зайнятий hive й повторіть видалення; служба й файли не змінені."
+                    }
+                    $mountedHiveNames += $mountName
+                    $registryRoot = $mountName
+                }
+            }
+
+            $runSubKeyPath = "$registryRoot\Software\Microsoft\Windows\CurrentVersion\Run"
+            $validatedRunPath = Get-EdgeAgentStartupRegistrySubKeyPath `
+                -InteractiveUserSid $sid `
+                -RunSubKeyPath $runSubKeyPath
+            $runKey = $usersHive.OpenSubKey($validatedRunPath, $true)
+            if ($runKey) { $runKey.Dispose() }
+            $cleanupProfiles += [pscustomobject]@{
+                Sid = $sid
+                RunSubKeyPath = $validatedRunPath
+            }
+        }
+
+        return [pscustomobject]@{
+            Profiles = @($cleanupProfiles)
+            MountedHiveNames = @($mountedHiveNames)
+        }
+    } catch {
+        $failure = $_
+        $usersHive.Dispose()
+        $usersHive = $null
+        if ($mountedHiveNames.Count -gt 0) {
+            try { Release-EdgeAgentProfileHives -MountedHiveNames $mountedHiveNames -RegExecutablePath $RegExecutablePath }
+            catch { throw "$failure`n$($_.Exception.Message)" }
+        }
+        throw $failure
+    } finally {
+        if ($usersHive) { $usersHive.Dispose() }
+    }
+}
+
+function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries,
+        [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users
+    )
+
+    if ($RegistryHive -ne [Microsoft.Win32.RegistryHive]::Users -and
+        $RegistryHive -ne [Microsoft.Win32.RegistryHive]::CurrentUser) {
+        throw 'Відновлення автозапуску дозволено лише в профілях користувачів.'
+    }
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        foreach ($entry in $Entries) {
+            if (-not $entry.Sid -or -not $entry.RunSubKeyPath) {
+                throw 'Список відновлення автозапуску містить неповний запис профілю.'
+            }
+
+            $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath `
+                -InteractiveUserSid ([string]$entry.Sid) `
+                -RunSubKeyPath ([string]$entry.RunSubKeyPath)
+            $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
+            if (-not $runKey) { $runKey = $baseKey.CreateSubKey($subKeyPath, $true) }
+            if (-not $runKey) { throw "Не вдалося відкрити Run-розділ профілю $($entry.Sid) для відновлення." }
+
+            try {
+                if ($runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName) {
+                    $currentValue = $runKey.GetValue(
+                        $script:EdgeAgentStartupValueName,
+                        $null,
+                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                    )
+                    if ($currentValue -eq $entry.Value -and
+                        $runKey.GetValueKind($script:EdgeAgentStartupValueName) -eq $entry.Kind) {
+                        continue
+                    }
+                    throw "Значення автозапуску профілю $($entry.Sid) змінилося під час видалення; його не перезаписано."
+                }
+
+                $runKey.SetValue($script:EdgeAgentStartupValueName, $entry.Value, $entry.Kind)
+            } finally {
+                $runKey.Dispose()
+            }
+        }
+    } finally {
+        $baseKey.Dispose()
+    }
+}
+
 Export-ModuleMember -Function @(
     'Assert-EdgeAgentInteractiveUserSid',
     'Get-EdgeAgentInteractiveUserSidForContext',
@@ -268,5 +498,9 @@ Export-ModuleMember -Function @(
     'Get-EdgeAgentServiceStartupType',
     'Get-EdgeAgentInstalledDesktopExecutablePath',
     'Set-EdgeAgentDesktopStartupEntry',
-    'Remove-EdgeAgentDesktopStartupEntry'
+    'Remove-EdgeAgentDesktopStartupEntry',
+    'Remove-EdgeAgentDesktopStartupEntriesForProfiles',
+    'New-EdgeAgentStartupCleanupPlan',
+    'Release-EdgeAgentProfileHives',
+    'Restore-EdgeAgentDesktopStartupEntriesForProfiles'
 )
