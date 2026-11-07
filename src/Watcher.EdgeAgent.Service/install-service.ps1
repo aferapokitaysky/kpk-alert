@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'EdgeAgentStartupRegistration.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'EdgeAgentPackageDeployment.psm1') -Force
 $serviceName = 'KGTA.Alert.EdgeAgent'
 $serviceAccount = "NT SERVICE\$serviceName"
 $operatorGroupName = 'KGTA Alert Operators'
@@ -105,9 +106,19 @@ foreach ($member in $OperatorMembers) {
 
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $previousStartupType = $null
+$previousServicePathName = $null
+$previousServiceAccount = $null
 if ($existingService) {
     $serviceConfiguration = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'"
     if (-not $serviceConfiguration) { throw 'Не вдалося прочитати поточну конфігурацію Windows-служби.' }
+    $previousServicePathName = $serviceConfiguration.PathName
+    $previousServiceAccount = $serviceConfiguration.StartName
+    if ([string]::IsNullOrWhiteSpace($previousServicePathName)) {
+        throw 'Не вдалося прочитати шлях до виконуваного файла наявної Windows-служби.'
+    }
+    if ($previousServiceAccount -ne $serviceAccount) {
+        throw "Оновлення наявної служби з обліковим записом '$previousServiceAccount' не підтримується: безпечне відновлення пароля служби неможливе."
+    }
     $previousStartupType = switch ($serviceConfiguration.StartMode) {
         'Auto' { 'auto' }
         'Manual' { 'demand' }
@@ -122,16 +133,46 @@ if ($existingService) {
 } else {
     $previousStartupType = 'demand'
 }
-if ($existingService) {
-    if ($existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+$packageDeployment = New-EdgeAgentPackageStage `
+    -ServicePublishDirectory $PublishDirectory `
+    -DesktopPublishDirectory $DesktopPublishDirectory `
+    -InstallDirectory $installDirectory
+$wasServiceRunning = $existingService -and $existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped
+try {
+    if ($existingService -and $existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
         Stop-Service -Name $serviceName -Force
         $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
     }
+    New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'logs') | Out-Null
+    Install-EdgeAgentPackageStage -Deployment $packageDeployment
+} catch {
+    $stageFailure = $_
+    if (Test-Path -LiteralPath $packageDeployment.StageDirectory) {
+        Remove-Item -LiteralPath $packageDeployment.StageDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($wasServiceRunning) {
+        try {
+            if ($packageDeployment.HadPreviousPackage -and (Test-Path -LiteralPath $packageDeployment.BackupDirectory)) {
+                throw 'Резервний каталог існує; попередній пакет не відновлено.'
+            }
+            $currentService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+            if ($currentService -and $currentService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                if ($currentService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+                    $currentService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+                }
+                & sc.exe config $serviceName start= demand | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'Не вдалося тимчасово ввімкнути попередню службу.' }
+                Start-Service -Name $serviceName
+                (Get-Service -Name $serviceName).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+                & sc.exe config $serviceName start= $previousStartupType | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Не вдалося відновити тип запуску '$previousStartupType'." }
+            }
+        } catch {
+            throw "Не вдалося перемкнути пакет, а попередню службу не вдалося запустити повторно: $_. Причина перемикання: $stageFailure"
+        }
+    }
+    throw $stageFailure
 }
-
-New-Item -ItemType Directory -Force -Path $installDirectory, (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'logs') | Out-Null
-Copy-Item -Path (Join-Path $PublishDirectory '*') -Destination $installDirectory -Recurse -Force
-Copy-Item -Path (Join-Path $DesktopPublishDirectory '*') -Destination $installDirectory -Recurse -Force
 if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory 'edge-agent.json'))) {
     Copy-Item -LiteralPath $ConfigurationFile -Destination (Join-Path $dataDirectory 'edge-agent.json')
 }
@@ -143,9 +184,6 @@ if ($existingService) {
     & sc.exe create $serviceName binPath= "`"$executable`"" start= demand obj= $serviceAccount | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Не вдалося створити Windows-службу.' }
 }
-& sc.exe sidtype $serviceName restricted | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося обмежити service SID.' }
-
 & icacls.exe $installDirectory /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' $operatorGroupAce "$($serviceAccount):(OI)(CI)RX" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати права каталогу програми.' }
 & icacls.exe $dataDirectory /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' "$($serviceAccount):(OI)(CI)RX" | Out-Null
@@ -158,10 +196,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі 
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до аудіопакетів.' }
 & icacls.exe (Join-Path $dataDirectory 'logs') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до журналів.' }
-& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
-& sc.exe failureflag $serviceName 1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
 if (-not $SkipStart) {
     try {
         if ($existingService -and $serviceConfiguration.StartMode -eq 'Disabled') {
@@ -185,13 +219,44 @@ if (-not $SkipStart) {
         if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status -ne 'Stopped') {
             Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
         }
-        & sc.exe config $serviceName start= $previousStartupType | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Перевірка служби не пройшла, також не вдалося відновити попередній тип запуску '$previousStartupType'. Зверніться до адміністратора. Причина: $_"
+        $healthCheckFailure = $_
+        $rollbackFailures = [System.Collections.Generic.List[string]]::new()
+        try {
+            Restore-EdgeAgentPackage -Deployment $packageDeployment
+        } catch {
+            $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
         }
-        throw "edge_agent_health_check_failed: перевірте журнал Application у Windows Event Viewer. Для device_certificate_unavailable відкрийте certlm.msc → керування приватними ключами сертифіката → надайте $serviceAccount право Read, а потім повторіть інсталяцію. Деталь: $_"
+        if ($existingService -and $rollbackFailures.Count -eq 0) {
+            & sc.exe config $serviceName binPath= $previousServicePathName obj= $previousServiceAccount start= demand | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                $rollbackFailures.Add('Не вдалося відновити шлях і обліковий запис попередньої Windows-служби.')
+            } elseif ($wasServiceRunning) {
+                try {
+                    Start-Service -Name $serviceName
+                    (Get-Service -Name $serviceName).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+                } catch {
+                    $rollbackFailures.Add("Не вдалося повторно запустити попередню Windows-службу: $_")
+                }
+            }
+            & sc.exe config $serviceName start= $previousStartupType | Out-Null
+            if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add("Не вдалося відновити тип запуску '$previousStartupType'.") }
+        } elseif (-not $existingService) {
+            & sc.exe delete $serviceName | Out-Null
+            if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося видалити створену під час невдалої інсталяції службу.') }
+        }
+        if ($rollbackFailures.Count -gt 0) {
+            throw "Перевірка служби не пройшла. $($rollbackFailures -join ' ') Зверніться до адміністратора. Причина: $healthCheckFailure"
+        }
+        throw "edge_agent_health_check_failed: попередній пакет і конфігурацію служби відновлено. Перевірте журнал Application у Windows Event Viewer. Для device_certificate_unavailable відкрийте certlm.msc → керування приватними ключами сертифіката → надайте $serviceAccount право Read, а потім повторіть інсталяцію. Деталь: $healthCheckFailure"
     }
 }
+& sc.exe sidtype $serviceName restricted | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося обмежити service SID.' }
+& sc.exe failure $serviceName reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати відновлення служби.' }
+& sc.exe failureflag $serviceName 1 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
+Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment
 $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
 New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
 $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startMenu 'Стан вузла.lnk'))

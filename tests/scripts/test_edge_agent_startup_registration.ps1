@@ -2,10 +2,12 @@
 Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
+$packageModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentPackageDeployment.psm1'
 $installerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\install-service.ps1'
 $uninstallerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\uninstall-service.ps1'
 $userStartupScriptPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\set-operator-panel-startup.ps1'
 Import-Module -Name $modulePath -Force
+Import-Module -Name $packageModulePath -Force
 
 function Assert-Equal {
     param([object]$Expected, [object]$Actual, [string]$Message)
@@ -30,6 +32,7 @@ $testRunSubKey = "$testRootSubKey\Run"
 $testRegistryPath = "HKCU:\$testRootSubKey"
 $testExecutableDirectory = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert $testId"
 $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desktop.exe'
+$testDeploymentRoot = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert Package Tests $testId"
 $testProgramFilesPath = Join-Path ([IO.Path]::GetTempPath()) "KGTA Program Files $testId"
 $random = New-Object System.Random
 $interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$($random.Next(100000, 2000000000))"
@@ -73,6 +76,43 @@ try {
         $failureFlagCommands.Count -ne 1) {
         throw 'Інсталятор має застосовувати автозапуск і відновлення після помилок служби.'
     }
+    if ($installerText -notmatch 'Restore-EdgeAgentPackage\s+-Deployment\s+\$packageDeployment' -or
+        $installerText -notmatch 'binPath=\s+\$previousServicePathName\s+obj=\s+\$previousServiceAccount' -or
+        $installerText -notmatch 'start=\s+\$previousStartupType') {
+        throw 'Невдалий health check має відновлювати попередній пакет і конфігурацію служби.'
+    }
+
+    $serviceSource = Join-Path $testDeploymentRoot 'source-service'
+    $desktopSource = Join-Path $testDeploymentRoot 'source-desktop'
+    $installTarget = Join-Path $testDeploymentRoot 'Program Files\KGTA\EdgeAgent'
+    $dataTarget = Join-Path $testDeploymentRoot 'ProgramData\KGTA\Alert\data\receipt.db'
+    New-Item -ItemType Directory -Path $serviceSource, $desktopSource, $installTarget, (Split-Path -Parent $dataTarget) -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $serviceSource 'service.exe') -Value 'old-service'
+    Set-Content -LiteralPath (Join-Path $desktopSource 'panel.exe') -Value 'old-panel'
+    Set-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Value 'previous-service'
+    Set-Content -LiteralPath (Join-Path $installTarget 'panel.exe') -Value 'previous-panel'
+    Set-Content -LiteralPath $dataTarget -Value 'preserved-receipt'
+    Set-Content -LiteralPath (Join-Path $serviceSource 'service.exe') -Value 'new-service'
+    Set-Content -LiteralPath (Join-Path $desktopSource 'panel.exe') -Value 'new-panel'
+
+    $deployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $installTarget
+    Assert-Equal -Expected 'previous-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Підготовка пакета не має змінювати активні бінарні файли.'
+    Install-EdgeAgentPackageStage -Deployment $deployment
+    Assert-Equal -Expected 'new-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Після перемикання має бути встановлено новий пакет.'
+    Assert-Equal -Expected 'preserved-receipt' -Actual (Get-Content -LiteralPath $dataTarget -Raw).Trim() -Message 'Оновлення не має змінювати квитанції в ProgramData.'
+    Restore-EdgeAgentPackage -Deployment $deployment
+    Assert-Equal -Expected 'previous-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Після невдалого health check має відновитися попередній пакет.'
+    Assert-Equal -Expected 'previous-panel' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'panel.exe') -Raw).Trim() -Message 'Rollback має відновити всі файли попереднього пакета.'
+    Assert-Equal -Expected 'preserved-receipt' -Actual (Get-Content -LiteralPath $dataTarget -Raw).Trim() -Message 'Rollback не має видаляти квитанції в ProgramData.'
+    Complete-EdgeAgentPackageDeployment -Deployment $deployment
+
+    $newInstallTarget = Join-Path $testDeploymentRoot 'New Install\EdgeAgent'
+    $newInstall = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $newInstallTarget
+    Install-EdgeAgentPackageStage -Deployment $newInstall
+    Restore-EdgeAgentPackage -Deployment $newInstall
+    Assert-Equal -Expected $false -Actual (Test-Path -LiteralPath $newInstallTarget) -Message 'Невдала перша інсталяція має прибрати неповний пакет.'
+    Complete-EdgeAgentPackageDeployment -Deployment $newInstall
+
     $userStartupScriptText = Get-Content -LiteralPath $userStartupScriptPath -Raw
     if ($userStartupScriptText -notmatch 'Resolve-EdgeAgentInteractiveUserSid\s*(?:\r?\n|$)' -or
         $userStartupScriptText -notmatch 'Get-EdgeAgentInstalledDesktopExecutablePath' -or
@@ -374,6 +414,7 @@ try {
     if ($usersHive) { $usersHive.Dispose() }
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }
+    if (Test-Path -LiteralPath $testDeploymentRoot) { Remove-Item -LiteralPath $testDeploymentRoot -Recurse -Force }
     $expectedProgramFilesPath = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "KGTA Program Files $testId"))
     if ((Test-Path -LiteralPath $expectedProgramFilesPath) -and
         [IO.Path]::GetFullPath($testProgramFilesPath) -eq $expectedProgramFilesPath) {
