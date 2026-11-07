@@ -15,8 +15,9 @@ const createApiProxy = () => ({
   secure: false,
 });
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   root: clientRoot,
+  base: command === 'build' ? '/dist/' : '/',
   plugins: [react()],
   server: {
     proxy: {
@@ -44,4 +45,4 @@ export default defineConfig({
     setupFiles: [resolve(clientRoot, 'src/test-setup.ts')],
     clearMocks: true,
   },
-});
+}));

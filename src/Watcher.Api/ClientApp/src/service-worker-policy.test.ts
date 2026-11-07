@@ -17,6 +17,15 @@ describe('політика кешування PWA', () => {
         'https://notify.example',
       ),
     ).toBe(true);
+    for (const subset of ['cyrillic', 'cyrillic-ext', 'latin']) {
+      expect(
+        isCacheableStaticRequest(
+          'GET',
+          `https://notify.example/dist/assets/inter-${subset}-wght-normal.woff2`,
+          'https://notify.example',
+        ),
+      ).toBe(true);
+    }
     expect(
       isCacheableStaticRequest(
         'GET',
