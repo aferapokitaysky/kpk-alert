@@ -23,9 +23,7 @@ public static class DeviceCertificateStore
                 normalizedThumbprint,
                 validOnly: false);
 
-            certificate = matches
-                .Cast<X509Certificate2>()
-                .FirstOrDefault(item => item.HasPrivateKey && IsCurrentlyValid(item));
+            certificate = FindUsableCertificate(matches);
 
             return certificate ?? throw new EdgeAgentTransportException("device_certificate_unavailable");
         }
@@ -51,6 +49,11 @@ public static class DeviceCertificateStore
             }
         }
     }
+
+    internal static X509Certificate2? FindUsableCertificate(X509Certificate2Collection certificates) =>
+        certificates
+            .Cast<X509Certificate2>()
+            .FirstOrDefault(certificate => certificate.HasPrivateKey && IsCurrentlyValid(certificate));
 
     private static bool IsCertificateStoreFailure(Exception exception) =>
         exception is CryptographicException or IOException or UnauthorizedAccessException or
