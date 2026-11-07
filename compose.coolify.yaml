@@ -27,6 +27,7 @@ services:
       UkraineAlarm__PublicBaseUrl: https://notify.kgta.edu.ua
       UkraineAlarm__Token: ${UKRAINEALARM_TOKEN:?Set UKRAINEALARM_TOKEN}
       ALERTS_IN_UA_TOKEN: ${ALERTS_IN_UA_TOKEN:?Set ALERTS_IN_UA_TOKEN}
+      AlertSources__Neptun__Realtime__Enabled: "true"
       Authentication__Google__Enabled: ${GOOGLE_AUTH_ENABLED:-false}
       Authentication__Google__ClientId: ${GOOGLE_AUTH_CLIENT_ID:-}
       Authentication__Google__ClientSecret: ${GOOGLE_AUTH_CLIENT_SECRET:-}
