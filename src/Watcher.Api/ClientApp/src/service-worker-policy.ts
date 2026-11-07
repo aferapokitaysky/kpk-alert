@@ -7,6 +7,7 @@ export const staticShellFiles = [
   '/images/kpk-logo.png',
   '/images/kpk-logo-192.png',
   '/images/kpk-logo-512.png',
+  '/images/kpk-logo-maskable.png',
 ] as const;
 
 const staticShellFileSet = new Set<string>(staticShellFiles);

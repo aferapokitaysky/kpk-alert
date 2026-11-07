@@ -7,7 +7,7 @@ namespace Watcher.EdgeAgent.UnitTests.Audio;
 
 public sealed class LocalAudioAssetResolverTests : IDisposable
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "kgta-audio-tests", Guid.NewGuid().ToString("N"));
+    private readonly string _root = TestTemporaryPaths.CreateDirectory("kgta-audio-tests");
     private readonly Guid _locationId = Guid.NewGuid();
     private const string PresetCode = "air_raid";
 

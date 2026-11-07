@@ -25,10 +25,11 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
         (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -65,8 +66,9 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             seed.FirstLocationId, expiresAtUtc: Now.AddSeconds(-1));
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -140,8 +142,9 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
 
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();
@@ -169,14 +172,15 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
         (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
         DeviceCommandSessionRegistry firstSessions = new();
         DeviceCommandSessionRegistry secondSessions = new();
         RecordingWebSocket firstSocket = new();
         RecordingWebSocket secondSocket = new();
         DeviceCommandWebSocketSession firstSession = await firstSessions.RegisterAsync(
-            deviceId, firstSocket, CancellationToken.None);
+            deviceId, presenceSessionId, firstSocket, CancellationToken.None);
         DeviceCommandWebSocketSession secondSession = await secondSessions.RegisterAsync(
-            deviceId, secondSocket, CancellationToken.None);
+            deviceId, presenceSessionId, secondSocket, CancellationToken.None);
         try
         {
             DueDeliveryQueryBarrier barrier = new(expectedQueries: 2);
@@ -201,6 +205,100 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
         Assert.Equal(CommandDeliveryState.InFlight, delivery.State);
         Assert.Equal(1, delivery.AttemptCount);
+    }
+
+    [PostgresFact]
+    public async Task Reconnect_after_presence_snapshot_prevents_dispatch_to_the_superseded_socket()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid oldPresenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, oldPresenceSessionId, socket, CancellationToken.None);
+        DispatchQueryGate queryGate = new();
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext(queryGate);
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+            Task<int> processing = processor.ProcessBatchAsync(CancellationToken.None);
+
+            await queryGate.WaitForDispatchQueryAsync();
+            Guid newPresenceSessionId = await _fixture.DevicePresence.OpenSessionAsync(
+                deviceId, CancellationToken.None);
+            Assert.NotEqual(oldPresenceSessionId, newPresenceSessionId);
+            queryGate.ReleaseDispatchQuery();
+
+            Assert.Equal(1, await processing);
+        }
+        finally
+        {
+            queryGate.ReleaseDispatchQuery();
+            sessions.Unregister(session);
+        }
+
+        Assert.Equal(0, socket.SendCount);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+        Assert.Equal(CommandDeliveryState.Pending, delivery.State);
+        Assert.Equal(1, delivery.AttemptCount);
+        Assert.NotNull(delivery.NextAttemptAtUtc);
+        DeviceSession[] presenceSessions = await verifyDb.DeviceSessions
+            .Where(item => item.DeviceId == deviceId)
+            .ToArrayAsync();
+        Assert.Equal(2, presenceSessions.Length);
+        Assert.Single(presenceSessions, item => item.DisconnectedAtUtc == null);
+        Assert.Contains(presenceSessions, item =>
+            item.Id == oldPresenceSessionId && item.DisconnectedAtUtc is not null);
+    }
+
+    [PostgresFact]
+    public async Task Send_timeout_releases_reconnect_lock_independently_of_acknowledgement_timeout()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new(blockSends: true);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        DeviceCommandTransportOptions options = new()
+        {
+            SendTimeout = TimeSpan.FromSeconds(1),
+            AcknowledgementTimeout = TimeSpan.FromSeconds(60),
+            InitialRetryDelay = TimeSpan.FromSeconds(1),
+            MaximumRetryDelay = TimeSpan.FromSeconds(15),
+            BatchSize = 50
+        };
+
+        Task<int> processing;
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions, options);
+            processing = processor.ProcessBatchAsync(CancellationToken.None);
+            await socket.SendStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Task<Guid> reconnect = _fixture.DevicePresence.OpenSessionAsync(
+                deviceId, CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            Assert.False(reconnect.IsCompleted);
+
+            Assert.Equal(1, await processing.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.NotEqual(presenceSessionId, await reconnect.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        Assert.Equal(WebSocketState.Aborted, socket.State);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+        Assert.Equal(CommandDeliveryState.Pending, delivery.State);
+        Assert.Equal(1, delivery.AttemptCount);
+        Assert.Equal(Now.AddSeconds(1), delivery.NextAttemptAtUtc);
     }
 
     private async Task<(Guid CommandId, Guid DeviceId, Guid DeliveryId)> AddPendingStartAsync(
@@ -258,7 +356,8 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
 
     private static DeviceCommandDispatchBatchProcessor CreateProcessor(
         WatcherDbContext db,
-        DeviceCommandSessionRegistry sessions)
+        DeviceCommandSessionRegistry sessions,
+        DeviceCommandTransportOptions? transportOptions = null)
     {
         DeviceCommandTransportOptions options = new()
         {
@@ -271,8 +370,23 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             db,
             sessions,
             new FixedTimeProvider(Now),
-            Options.Create(options),
+            Options.Create(transportOptions ?? options),
             NullLogger<DeviceCommandDispatchBatchProcessor>.Instance);
+    }
+
+    private async Task<Guid> AddActivePresenceAsync(Guid deviceId)
+    {
+        var sessionId = Guid.NewGuid();
+        await using WatcherDbContext db = _fixture.CreateDbContext();
+        db.DeviceSessions.Add(new DeviceSession
+        {
+            Id = sessionId,
+            DeviceId = deviceId,
+            ConnectedAtUtc = Now,
+            LastSeenAtUtc = Now
+        });
+        await db.SaveChangesAsync();
+        return sessionId;
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
@@ -309,13 +423,44 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         }
     }
 
-    private sealed class RecordingWebSocket : WebSocket
+    private sealed class DispatchQueryGate : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _queryStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseQuery = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitForDispatchQueryAsync() => _queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        public void ReleaseDispatchQuery() => _releaseQuery.TrySetResult();
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("command_deliveries", StringComparison.OrdinalIgnoreCase) &&
+                command.CommandText.Contains("alert_commands", StringComparison.OrdinalIgnoreCase))
+            {
+                _queryStarted.TrySetResult();
+                await _releaseQuery.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            }
+
+            return result;
+        }
+    }
+
+    private sealed class RecordingWebSocket(bool blockSends = false) : WebSocket
     {
         private WebSocketState _state = WebSocketState.Open;
         private byte[] _payload = [];
+        private readonly TaskCompletionSource _sendStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         public int SendCount { get; private set; }
         public byte[] Payload => _payload;
+        public Task SendStarted => _sendStarted.Task;
         public override WebSocketCloseStatus? CloseStatus => null;
         public override string? CloseStatusDescription => null;
         public override WebSocketState State => _state;
@@ -353,7 +498,8 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         {
             SendCount++;
             _payload = buffer.ToArray();
-            return Task.CompletedTask;
+            _sendStarted.TrySetResult();
+            return blockSends ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken) : Task.CompletedTask;
         }
     }
 }

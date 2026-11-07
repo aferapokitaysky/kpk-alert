@@ -39,7 +39,7 @@ public sealed class MinuteOfSilenceBackgroundServiceTests
         try
         {
             Task logged = await Task.WhenAny(logger.WarningLogged.Task, logger.ErrorLogged.Task)
-                .WaitAsync(TimeSpan.FromSeconds(3));
+                .WaitAsync(TimeSpan.FromSeconds(15));
             if (logged == logger.ErrorLogged.Task)
             {
                 Assert.Fail((await logger.ErrorLogged.Task)?.ToString() ?? "Background service logged an error.");

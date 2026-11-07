@@ -1,5 +1,6 @@
 using System.Net;
-using System.Net.WebSockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Watcher.Api.Delivery;
+using Watcher.Api.Security;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -18,6 +20,87 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
     private readonly PostgresApiFixture _fixture;
 
     public DeviceStatusControllerTests(PostgresApiFixture fixture) => _fixture = fixture;
+
+    [PostgresFact]
+    public async Task Open_session_rejects_device_revoked_after_certificate_authentication()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        using X509Certificate2 certificate = CreateDeviceCertificate();
+        await using WatcherDbContext db = _fixture.CreateDbContext();
+        Device device = new()
+        {
+            Id = deviceId,
+            LocationId = seed.FirstLocationId,
+            Name = "Відкликаний вузол",
+            CertificateThumbprint = GetFingerprint(certificate)
+        };
+        db.Devices.Add(device);
+        await db.SaveChangesAsync();
+
+        DeviceCertificateAuthenticator authenticator = new(db, TimeProvider.System);
+        Assert.NotNull(await authenticator.AuthenticateAsync(certificate, CancellationToken.None));
+
+        device.RevokedAtUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+
+        await Assert.ThrowsAnyAsync<DeviceSessionUnavailableException>(() =>
+            _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None));
+        Assert.Empty(await db.DeviceSessions.Where(session => session.DeviceId == deviceId).ToArrayAsync());
+    }
+
+    [PostgresFact]
+    public async Task Registration_rejects_session_after_location_is_deactivated()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        await using WatcherDbContext db = _fixture.CreateDbContext();
+        db.Devices.Add(new Device
+        {
+            Id = deviceId,
+            LocationId = seed.FirstLocationId,
+            Name = "Вузол неактивного корпусу",
+            CertificateThumbprint = new string('a', 64)
+        });
+        await db.SaveChangesAsync();
+
+        Guid sessionId = await _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None);
+        Location location = await db.Locations.SingleAsync(item => item.Id == seed.FirstLocationId);
+        location.IsActive = false;
+        await db.SaveChangesAsync();
+
+        Assert.False(await _fixture.DevicePresence.IsSessionActiveAsync(sessionId, CancellationToken.None));
+    }
+
+    [PostgresFact]
+    public async Task Concurrent_reconnects_leave_only_the_last_database_session_active()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Вузол reconnect",
+                CertificateThumbprint = new string('a', 64)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Guid[] sessionIds = await Task.WhenAll(
+            _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None),
+            _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None));
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        DeviceSession[] sessions = await verifyDb.DeviceSessions
+            .Where(session => session.DeviceId == deviceId)
+            .ToArrayAsync();
+        DeviceSession activeSession = Assert.Single(sessions, session => session.DisconnectedAtUtc == null);
+        Assert.Contains(activeSession.Id, sessionIds);
+        Assert.Equal(2, sessions.Length);
+    }
 
     [PostgresFact]
     public async Task Device_status_is_restricted_no_store_and_does_not_expose_certificate_data()
@@ -60,11 +143,19 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         using HttpResponseMessage operatorResponse = await SendGetAsync(seed.OperatorId, "notificator");
         using HttpResponseMessage anonymous = await _fixture.Client.GetAsync(Path);
 
-        OpenWebSocket socket = new();
-        DeviceCommandWebSocketSession session = await _fixture.DeviceSessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            db.DeviceSessions.Add(new DeviceSession
+            {
+                Id = Guid.NewGuid(),
+                DeviceId = deviceId,
+                ConnectedAtUtc = now,
+                LastSeenAtUtc = now
+            });
+            await db.SaveChangesAsync();
+        }
         using HttpResponseMessage connectedResponse = await SendGetAsync(seed.AdministratorId, "admin");
-        _fixture.DeviceSessions.Unregister(session);
 
         Assert.Equal(HttpStatusCode.OK, administrator.StatusCode);
         Assert.Equal("no-store", administrator.Headers.CacheControl?.ToString());
@@ -73,6 +164,7 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         JsonElement item = Assert.Single(root.GetProperty("items").EnumerateArray());
         Assert.Equal(1, root.GetProperty("pageSize").GetInt32());
         Assert.Equal(1, root.GetProperty("totalCount").GetInt32());
+        Assert.Equal(deviceId, item.GetProperty("deviceId").GetGuid());
         Assert.Equal("Вузол 01", item.GetProperty("name").GetString());
         Assert.Equal("Північний корпус", item.GetProperty("locationName").GetString());
         Assert.True(item.GetProperty("isActive").GetBoolean());
@@ -97,24 +189,17 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
         return await _fixture.Client.SendAsync(request);
     }
 
-    private sealed class OpenWebSocket : WebSocket
+    private static X509Certificate2 CreateDeviceCertificate()
     {
-        public override WebSocketCloseStatus? CloseStatus => null;
-        public override string? CloseStatusDescription => null;
-        public override WebSocketState State => WebSocketState.Open;
-        public override string? SubProtocol => null;
-        public override void Abort() { }
-        public override void Dispose() { }
-        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription,
-            CancellationToken cancellationToken) => Task.CompletedTask;
-        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer,
-            CancellationToken cancellationToken) => Task.FromResult(
-            new WebSocketReceiveResult(0, WebSocketMessageType.Close, true));
-        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType,
-            bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
+        using var key = RSA.Create(2048);
+        CertificateRequest request = new("CN=device-session-lifecycle-test", key,
+            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(5));
     }
+
+    private static string GetFingerprint(X509Certificate2 certificate) =>
+        Convert.ToHexString(SHA256.HashData(certificate.RawData));
+
 }
 
 public sealed class DeviceStatusPaginationTests

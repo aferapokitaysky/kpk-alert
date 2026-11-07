@@ -7,17 +7,22 @@ const clientRoot = resolve(
   fileURLToPath(new URL('.', import.meta.url)),
   'src/Watcher.Api/ClientApp',
 );
+const apiProxyTarget = process.env.VITE_API_PROXY ?? 'https://localhost:5001';
+
+const createApiProxy = () => ({
+  target: apiProxyTarget,
+  changeOrigin: true,
+  secure: false,
+});
 
 export default defineConfig({
   root: clientRoot,
   plugins: [react()],
   server: {
     proxy: {
-      '/api': {
-        target: process.env.VITE_API_PROXY ?? 'https://localhost:5001',
-        changeOrigin: true,
-        secure: false,
-      },
+      '/api': createApiProxy(),
+      '/images': createApiProxy(),
+      '/manifest.webmanifest': createApiProxy(),
     },
   },
   build: {
