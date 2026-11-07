@@ -30,6 +30,8 @@ $testExecutableDirectory = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert $tes
 $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desktop.exe'
 $random = New-Object System.Random
 $interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$($random.Next(100000, 2000000000))"
+$actualUserSid = $null
+$actualUserRunSubKey = $null
 $usersHive = $null
 $runKey = $null
 
@@ -135,6 +137,17 @@ try {
     Write-Host 'Перевірки автозапуску Windows-вузла пройшли.'
 } finally {
     if ($runKey) { $runKey.Dispose() }
+    if ($usersHive -and $actualUserSid -and $actualUserRunSubKey) {
+        $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $true)
+        try {
+            if ($actualUserRunKey) {
+                $actualUserRunKey.DeleteValue('KGTA.Alert.OperatorPanel', $false)
+            }
+        } finally {
+            if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+        }
+        $usersHive.DeleteSubKeyTree("$actualUserSid\$testRootSubKey", $false)
+    }
     if ($usersHive) { $usersHive.Dispose() }
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }
