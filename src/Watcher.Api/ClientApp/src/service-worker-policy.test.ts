@@ -13,6 +13,13 @@ describe('політика кешування PWA', () => {
     expect(
       isCacheableStaticRequest(
         'GET',
+        'https://notify.example/images/kpk-logo-maskable.png',
+        'https://notify.example',
+      ),
+    ).toBe(true);
+    expect(
+      isCacheableStaticRequest(
+        'GET',
         'https://notify.example/api/v1/locations',
         'https://notify.example',
       ),

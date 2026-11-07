@@ -17,7 +17,7 @@ const worker = self as unknown as {
   addEventListener(type: 'activate', listener: (event: ExtendableEventLike) => void): void;
   addEventListener(type: 'fetch', listener: (event: FetchEventLike) => void): void;
 };
-const cacheName = 'kgta-alert-shell-v1';
+const cacheName = 'kgta-alert-shell-v2';
 
 worker.addEventListener('install', (event) => {
   event.waitUntil(
