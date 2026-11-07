@@ -61,8 +61,40 @@ public sealed class DeviceMtlsKestrelTests
             using ClientWebSocket validSocket = CreateWebSocketClient(clientCertificate);
             await validSocket.ConnectAsync(deviceStreamAddress, CancellationToken.None);
             Assert.Equal(WebSocketState.Open, validSocket.State);
+
+            using IServiceScope scope = app.Services.CreateScope();
+            WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+            DeviceSession? session = null;
+            for (var attempt = 0; attempt < 350; attempt++)
+            {
+                session = await db.DeviceSessions.AsNoTracking().SingleOrDefaultAsync(
+                    item => item.DeviceId == deviceId);
+                if (session is not null && session.LastSeenAtUtc > session.ConnectedAtUtc)
+                {
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
+            }
+
+            Assert.NotNull(session);
+            Assert.True(session.LastSeenAtUtc > session.ConnectedAtUtc);
             await validSocket.CloseOutputAsync(
                 WebSocketCloseStatus.NormalClosure, "Тест завершено", CancellationToken.None);
+
+            for (var attempt = 0; attempt < 100; attempt++)
+            {
+                session = await db.DeviceSessions.AsNoTracking().SingleOrDefaultAsync(
+                    item => item.DeviceId == deviceId);
+                if (session?.DisconnectedAtUtc is not null)
+                {
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(20));
+            }
+
+            Assert.NotNull(session?.DisconnectedAtUtc);
         }
     }
 
@@ -190,6 +222,7 @@ public sealed class DeviceMtlsKestrelTests
         builder.Services.AddAuthorization();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<DeviceCommandSessionRegistry>();
+        builder.Services.AddSingleton<DeviceSessionPresenceService>();
         builder.Services.AddDeviceCertificateAuthentication(trustedRoot);
         builder.Services.PostConfigure<CertificateAuthenticationOptions>(DeviceCertificateAuthentication.Scheme,
             options => options.RevocationMode = X509RevocationMode.NoCheck);

@@ -1,4 +1,7 @@
+import { ApiError, getCsrfToken } from '../../api';
+
 export interface DeviceStatus {
+  deviceId: string;
   name: string;
   locationName: string;
   locationIsActive: boolean;
@@ -19,6 +22,18 @@ export class DeviceStatusApiError extends Error {
     super(`Device status API failed with status ${status}`);
     this.name = 'DeviceStatusApiError';
   }
+}
+
+export interface RegisterDeviceInput {
+  name: string;
+  locationId: string;
+  certificateSha256: string;
+}
+
+export interface DeviceMutationResult {
+  deviceId: string;
+  isActive: boolean;
+  revokedAtUtc?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,6 +57,7 @@ function parseDeviceStatusPage(value: unknown): DeviceStatusPage {
   const items = value.items.map((item): DeviceStatus => {
     if (
       !isRecord(item) ||
+      typeof item.deviceId !== 'string' ||
       typeof item.name !== 'string' ||
       typeof item.locationName !== 'string' ||
       typeof item.locationIsActive !== 'boolean' ||
@@ -52,6 +68,7 @@ function parseDeviceStatusPage(value: unknown): DeviceStatusPage {
       throw new Error('invalid-device-status');
     }
     return {
+      deviceId: item.deviceId,
       name: item.name,
       locationName: item.locationName,
       locationIsActive: item.locationIsActive,
@@ -67,6 +84,50 @@ function parseDeviceStatusPage(value: unknown): DeviceStatusPage {
     pageSize: pageSize as number,
     totalCount: totalCount as number,
   };
+}
+
+async function mutateDevice(path: string, body?: unknown): Promise<DeviceMutationResult> {
+  let token: string;
+  try {
+    token = await getCsrfToken();
+  } catch (error) {
+    if (error instanceof ApiError) throw new DeviceStatusApiError(error.status);
+    throw error;
+  }
+  const response = await fetch(path, {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+      'X-CSRF-TOKEN': token,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!response.ok) throw new DeviceStatusApiError(response.status);
+  const result: unknown = await response.json();
+  if (
+    !isRecord(result) ||
+    typeof result.deviceId !== 'string' ||
+    typeof result.isActive !== 'boolean' ||
+    (result.revokedAtUtc !== undefined && typeof result.revokedAtUtc !== 'string')
+  ) {
+    throw new Error('invalid-device-mutation-response');
+  }
+  return {
+    deviceId: result.deviceId,
+    isActive: result.isActive,
+    ...(typeof result.revokedAtUtc === 'string' ? { revokedAtUtc: result.revokedAtUtc } : {}),
+  };
+}
+
+export function registerDevice(input: RegisterDeviceInput): Promise<DeviceMutationResult> {
+  return mutateDevice('/api/v1/admin/devices', input);
+}
+
+export function revokeDevice(deviceId: string): Promise<DeviceMutationResult> {
+  return mutateDevice(`/api/v1/admin/devices/${encodeURIComponent(deviceId)}/revoke`);
 }
 
 export async function getDeviceStatus(

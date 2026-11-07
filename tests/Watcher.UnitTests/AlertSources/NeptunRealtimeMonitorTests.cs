@@ -88,8 +88,13 @@ public sealed class NeptunRealtimeMonitorTests
             Assert.Equal(AlertState.Active, whileConnected.Single(item => item.Scope == AlertScope.Oblast).State);
             Assert.Equal(AlertState.Active, whileConnected.Single(item => item.Scope == AlertScope.Raion).State);
 
-            await WaitForAsync(() => Volatile.Read(ref restRequests) >= 2 && connectionFactory.ConnectionCount >= 2,
-                TimeSpan.FromSeconds(20));
+            await WaitForAsync(async () =>
+            {
+                IReadOnlyList<AlertSourceObservation> current = await provider.ReadAsync(CancellationToken.None);
+                return Volatile.Read(ref restRequests) >= 2 && connectionFactory.ConnectionCount >= 2 &&
+                       current.Count == 2 && current.All(item =>
+                           item.State == AlertState.Inactive && item.Freshness == AlertFreshness.Fresh);
+            }, TimeSpan.FromSeconds(20));
             IReadOnlyList<AlertSourceObservation> afterFallback = await provider.ReadAsync(CancellationToken.None);
             Assert.All(afterFallback, observation => Assert.Equal(AlertState.Inactive, observation.State));
             Assert.Equal(2, Volatile.Read(ref restRequests));
@@ -190,9 +195,9 @@ public sealed class NeptunRealtimeMonitorTests
         }
     }
 
-    private static async Task WaitForAsync(Func<Task<bool>> condition)
+    private static async Task WaitForAsync(Func<Task<bool>> condition, TimeSpan? timeout = null)
     {
-        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(5));
+        using CancellationTokenSource cancellation = new(timeout ?? TimeSpan.FromSeconds(5));
         while (!await condition())
         {
             await Task.Delay(10, cancellation.Token);

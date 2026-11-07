@@ -140,9 +140,7 @@ public sealed class MtlsHttpClientFactoryTests
     {
         using var key = RSA.Create(2048);
         CertificateRequest request = new("CN=Edge Agent Test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        using X509Certificate2 generated = request.CreateSelfSigned(
+        return request.CreateSelfSigned(
             DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(5));
-        return X509CertificateLoader.LoadPkcs12(
-            generated.Export(X509ContentType.Pfx), null, X509KeyStorageFlags.EphemeralKeySet);
     }
 }
