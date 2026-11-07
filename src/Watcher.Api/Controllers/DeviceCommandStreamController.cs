@@ -37,7 +37,16 @@ public sealed class DeviceCommandStreamController(
             return Forbid();
         }
 
-        Guid sessionId = await presence.OpenSessionAsync(deviceId, cancellationToken);
+        Guid sessionId;
+        try
+        {
+            sessionId = await presence.OpenSessionAsync(deviceId, cancellationToken);
+        }
+        catch (DeviceSessionUnavailableException)
+        {
+            return Forbid();
+        }
+
         WebSocket? socket = null;
         DeviceCommandWebSocketSession? commandSession = null;
         using var heartbeatCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

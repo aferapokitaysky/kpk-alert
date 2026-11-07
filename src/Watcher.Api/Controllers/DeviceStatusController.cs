@@ -88,6 +88,7 @@ public sealed class DeviceStatusController(
             .ToHashSetAsync(cancellationToken);
         // The query intentionally returns only operational fields; the certificate fingerprint stays private.
         DeviceStatusItem[] items = rows.Select(row => new DeviceStatusItem(
+            row.Id,
             row.Name,
             row.LocationName,
             row.LocationIsActive,
@@ -106,6 +107,7 @@ public sealed record DeviceStatusPage(
     int TotalCount);
 
 public sealed record DeviceStatusItem(
+    Guid DeviceId,
     string Name,
     string LocationName,
     bool LocationIsActive,

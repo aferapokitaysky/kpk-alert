@@ -92,6 +92,38 @@ public sealed class DeviceCommandSessionRegistry
             .Remove(new KeyValuePair<Guid, DeviceCommandWebSocketSession>(session.DeviceId, session));
     }
 
+    public async Task DisconnectAsync(Guid deviceId, CancellationToken cancellationToken)
+    {
+        if (deviceId == Guid.Empty)
+        {
+            throw new ArgumentException("Ідентифікатор пристрою не може бути порожнім.", nameof(deviceId));
+        }
+
+        DeviceCommandWebSocketSession? session;
+        using (await _registrationGate.EnterAsync(deviceId, cancellationToken))
+        {
+            _sessions.TryRemove(deviceId, out session);
+        }
+
+        if (session is null)
+        {
+            return;
+        }
+
+        using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        closeTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            await session.CloseAsync(WebSocketCloseStatus.PolicyViolation,
+                "Сертифікат пристрою відкликано.", closeTimeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            session.Abort();
+        }
+    }
+
     public void Abort(Guid deviceId, Guid presenceSessionId)
     {
         if (_sessions.TryGetValue(deviceId, out DeviceCommandWebSocketSession? session) &&
