@@ -11,6 +11,12 @@ internal static class Program
 {
     public static async Task Main(string[] args)
     {
+        if (args is ["--backup-database", string sourcePath, string destinationPath])
+        {
+            SqliteDatabaseBackup.Create(sourcePath, destinationPath);
+            return;
+        }
+
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
         builder.Services.AddWindowsService(options => options.ServiceName = "KGTA Alert Edge Agent");
 

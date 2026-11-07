@@ -81,6 +81,12 @@ try {
         $installerText -notmatch 'start=\s+\$previousStartupType') {
         throw 'Невдалий health check має відновлювати попередній пакет і конфігурацію служби.'
     }
+    $backupInvocation = $installerText.IndexOf('--backup-database', [StringComparison]::Ordinal)
+    $packageSwitch = $installerText.IndexOf('Install-EdgeAgentPackageStage -Deployment $packageDeployment', [StringComparison]::Ordinal)
+    if ($backupInvocation -lt 0 -or $packageSwitch -lt 0 -or $backupInvocation -gt $packageSwitch -or
+        $installerText -notmatch 'AreAccessRulesProtected' -or $installerText -notmatch 'FileAttributes\]::ReparsePoint') {
+        throw 'Перед перемиканням пакета інсталятор має створити SQLite-копію в каталозі із захищеним ACL.'
+    }
 
     $serviceSource = Join-Path $testDeploymentRoot 'source-service'
     $desktopSource = Join-Path $testDeploymentRoot 'source-desktop'
@@ -112,7 +118,6 @@ try {
     Restore-EdgeAgentPackage -Deployment $newInstall
     Assert-Equal -Expected $false -Actual (Test-Path -LiteralPath $newInstallTarget) -Message 'Невдала перша інсталяція має прибрати неповний пакет.'
     Complete-EdgeAgentPackageDeployment -Deployment $newInstall
-
     $userStartupScriptText = Get-Content -LiteralPath $userStartupScriptPath -Raw
     if ($userStartupScriptText -notmatch 'Resolve-EdgeAgentInteractiveUserSid\s*(?:\r?\n|$)' -or
         $userStartupScriptText -notmatch 'Get-EdgeAgentInstalledDesktopExecutablePath' -or

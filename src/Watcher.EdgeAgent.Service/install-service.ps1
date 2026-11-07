@@ -144,6 +144,41 @@ try {
         $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'logs') | Out-Null
+    if ($packageDeployment.HadPreviousPackage) {
+        $databasePath = [IO.Path]::GetFullPath([string]$configuration.EdgeAgent.DatabasePath)
+        if (-not [IO.Path]::IsPathFullyQualified([string]$configuration.EdgeAgent.DatabasePath) -or
+            -not (Test-Path -LiteralPath $databasePath -PathType Leaf)) {
+            throw 'Для резервної копії DatabasePath має вказувати на наявний файл за абсолютним шляхом.'
+        }
+
+        $backupDirectory = Join-Path $dataDirectory 'backups'
+        New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+        if ((Get-Item -LiteralPath $backupDirectory -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Каталог резервних копій не може бути посиланням на інше розташування.'
+        }
+        & icacls.exe $backupDirectory /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Не вдалося обмежити доступ до каталогу резервних копій.' }
+        $backupAcl = Get-Acl -LiteralPath $backupDirectory
+        $allowedBackupSids = @('S-1-5-32-544', 'S-1-5-18')
+        $unexpectedBackupAcl = $backupAcl.Access | Where-Object {
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $allowedBackupSids
+        }
+        if (-not $backupAcl.AreAccessRulesProtected -or $unexpectedBackupAcl) {
+            throw 'ACL каталогу резервних копій не обмежений обліковими записами адміністраторів і SYSTEM.'
+        }
+
+        $backupName = 'edge-agent-{0}-{1}.db' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'), [guid]::NewGuid().ToString('N')
+        $databaseBackupPath = Join-Path $backupDirectory $backupName
+        if (Test-Path -LiteralPath $databaseBackupPath) {
+            throw 'Файл резервної копії з таким ім’ям уже існує; наявний файл не перезаписано.'
+        }
+        $backupExecutable = Join-Path $packageDeployment.StageDirectory 'Watcher.EdgeAgent.Service.exe'
+        & $backupExecutable --backup-database $databasePath $databaseBackupPath
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $databaseBackupPath -PathType Leaf)) {
+            throw 'Не вдалося створити узгоджену резервну копію SQLite; оновлення скасовано.'
+        }
+    }
     Install-EdgeAgentPackageStage -Deployment $packageDeployment
 } catch {
     $stageFailure = $_
