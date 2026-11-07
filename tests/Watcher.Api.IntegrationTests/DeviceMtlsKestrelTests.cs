@@ -31,12 +31,12 @@ public sealed class DeviceMtlsKestrelTests
     public async Task Command_stream_is_available_only_on_the_mtls_listener()
     {
         using TestCertificateAuthority trustedAuthority = new();
-        using X509Certificate2 clientCertificate = trustedAuthority.IssueClientCertificate("stream-device");
-        using X509Certificate2 serverCertificate = CreateServerCertificate();
+        using TestKeyCertificate clientCertificate = CreateClientCertificate(trustedAuthority, "stream-device");
+        using TestKeyCertificate serverCertificate = CreateServerCertificate();
         var deviceId = Guid.NewGuid();
         var locationId = Guid.NewGuid();
         (WebApplication app, Uri webAddress, Uri deviceAddress) = await StartStreamKestrelAsync(
-            serverCertificate, trustedAuthority.Root, deviceId, locationId, clientCertificate);
+            serverCertificate.Certificate, trustedAuthority.Root, deviceId, locationId, clientCertificate.Certificate);
         await using (app)
         {
             using HttpClient missingCertificateClient = CreateClient(webAddress, null);
@@ -44,7 +44,7 @@ public sealed class DeviceMtlsKestrelTests
                 "/api/v1/device/commands/stream");
             Assert.Equal(HttpStatusCode.Forbidden, unauthenticatedResponse.StatusCode);
 
-            using HttpClient validWebClient = CreateClient(webAddress, clientCertificate);
+            using HttpClient validWebClient = CreateClient(webAddress, clientCertificate.Certificate);
             using HttpResponseMessage wrongListenerResponse = await validWebClient.GetAsync(
                 "/api/v1/device/commands/stream");
             Assert.Equal(HttpStatusCode.NotFound, wrongListenerResponse.StatusCode);
@@ -58,7 +58,7 @@ public sealed class DeviceMtlsKestrelTests
             await Assert.ThrowsAnyAsync<WebSocketException>(
                 () => missingCertificateSocket.ConnectAsync(deviceStreamAddress, CancellationToken.None));
 
-            using ClientWebSocket validSocket = CreateWebSocketClient(clientCertificate);
+            using ClientWebSocket validSocket = CreateWebSocketClient(clientCertificate.Certificate);
             await validSocket.ConnectAsync(deviceStreamAddress, CancellationToken.None);
             Assert.Equal(WebSocketState.Open, validSocket.State);
 
@@ -103,16 +103,16 @@ public sealed class DeviceMtlsKestrelTests
     {
         using TestCertificateAuthority trustedAuthority = new();
         using TestCertificateAuthority untrustedAuthority = new();
-        using X509Certificate2 registeredCertificate = trustedAuthority.IssueClientCertificate("registered-device");
-        using X509Certificate2 untrustedCertificate = untrustedAuthority.IssueClientCertificate("untrusted-device");
-        using X509Certificate2 serverCertificate = CreateServerCertificate();
+        using TestKeyCertificate registeredCertificate = CreateClientCertificate(trustedAuthority, "registered-device");
+        using TestKeyCertificate untrustedCertificate = CreateClientCertificate(untrustedAuthority, "untrusted-device");
+        using TestKeyCertificate serverCertificate = CreateServerCertificate();
         var deviceId = Guid.NewGuid();
         var locationId = Guid.NewGuid();
         await using WebApplication app = await StartKestrelAsync(
-            serverCertificate, trustedAuthority.Root, deviceId, locationId, registeredCertificate);
+            serverCertificate.Certificate, trustedAuthority.Root, deviceId, locationId, registeredCertificate.Certificate);
         Uri address = GetHttpsAddress(app);
 
-        using HttpClient validClient = CreateClient(address, registeredCertificate);
+        using HttpClient validClient = CreateClient(address, registeredCertificate.Certificate);
         using HttpResponseMessage identityResponse = await validClient.GetAsync("/api/v1/device/identity");
         Assert.Equal(HttpStatusCode.OK, identityResponse.StatusCode);
         using var identity = JsonDocument.Parse(await identityResponse.Content.ReadAsStringAsync());
@@ -124,7 +124,7 @@ public sealed class DeviceMtlsKestrelTests
         await Assert.ThrowsAnyAsync<HttpRequestException>(
             () => missingCertificateClient.GetAsync("/api/v1/device/identity"));
 
-        using HttpClient untrustedClient = CreateClient(address, untrustedCertificate);
+        using HttpClient untrustedClient = CreateClient(address, untrustedCertificate.Certificate);
         await Assert.ThrowsAnyAsync<HttpRequestException>(
             () => untrustedClient.GetAsync("/api/v1/device/identity"));
     }
@@ -312,18 +312,105 @@ public sealed class DeviceMtlsKestrelTests
         return socket;
     }
 
-    private static X509Certificate2 CreateServerCertificate()
+    private static TestKeyCertificate CreateServerCertificate()
     {
-        using var key = RSA.Create(2048);
-        var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
-        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
-        var enhancedKeyUsage = new OidCollection { new("1.3.6.1.5.5.7.3.1") };
-        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(enhancedKeyUsage, true));
-        var subjectAlternativeNames = new SubjectAlternativeNameBuilder();
-        subjectAlternativeNames.AddDnsName("localhost");
-        request.CertificateExtensions.Add(subjectAlternativeNames.Build());
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var testKey = CreateTestRsaKey();
+        RSA key = testKey.Key;
+        string? keyName = testKey.KeyName;
+        try
+        {
+            var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256,
+                RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+            var enhancedKeyUsage = new OidCollection { new("1.3.6.1.5.5.7.3.1") };
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(enhancedKeyUsage, true));
+            var subjectAlternativeNames = new SubjectAlternativeNameBuilder();
+            subjectAlternativeNames.AddDnsName("localhost");
+            request.CertificateExtensions.Add(subjectAlternativeNames.Build());
+            X509Certificate2 certificate = request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddDays(1));
+            return new TestKeyCertificate(certificate, key, keyName);
+        }
+        catch
+        {
+            key.Dispose();
+            DeleteTestRsaKey(keyName);
+            throw;
+        }
+    }
+
+    private static TestKeyCertificate CreateClientCertificate(
+        TestCertificateAuthority authority,
+        string commonName)
+    {
+        var testKey = CreateTestRsaKey();
+        RSA clientKey = testKey.Key;
+        string? keyName = testKey.KeyName;
+        try
+        {
+            var request = new CertificateRequest(
+                $"CN={commonName}", clientKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+            var enhancedKeyUsage = new OidCollection { new("1.3.6.1.5.5.7.3.2") };
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(enhancedKeyUsage, true));
+            request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+            using X509Certificate2 issued = request.Create(
+                authority.Root,
+                DateTimeOffset.UtcNow.AddMinutes(-1),
+                DateTimeOffset.UtcNow.AddDays(7),
+                RandomNumberGenerator.GetBytes(16));
+            return new TestKeyCertificate(issued.CopyWithPrivateKey(clientKey), clientKey, keyName);
+        }
+        catch
+        {
+            clientKey.Dispose();
+            DeleteTestRsaKey(keyName);
+            throw;
+        }
+    }
+
+    private static (RSA Key, string? KeyName) CreateTestRsaKey()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return (RSA.Create(2048), null);
+        }
+
+        var keyName = $"KgtaAlertIntegrationTest-{Guid.NewGuid():N}";
+        var keyParameters = new CngKeyCreationParameters
+        {
+            KeyUsage = CngKeyUsages.Signing,
+            Provider = CngProvider.MicrosoftSoftwareKeyStorageProvider
+        };
+        return (new RSACng(CngKey.Create(CngAlgorithm.Rsa, keyName, keyParameters)), keyName);
+    }
+
+    private static void DeleteTestRsaKey(string? keyName)
+    {
+        if (keyName is null || !OperatingSystem.IsWindows() ||
+            !CngKey.Exists(keyName, CngProvider.MicrosoftSoftwareKeyStorageProvider))
+        {
+            return;
+        }
+
+        using var cngKey = CngKey.Open(keyName, CngProvider.MicrosoftSoftwareKeyStorageProvider);
+        cngKey.Delete();
+    }
+
+    private sealed class TestKeyCertificate(
+        X509Certificate2 certificate,
+        RSA privateKey,
+        string? keyName) : IDisposable
+    {
+        public X509Certificate2 Certificate { get; } = certificate;
+
+        public void Dispose()
+        {
+            Certificate.Dispose();
+            privateKey.Dispose();
+            DeleteTestRsaKey(keyName);
+        }
     }
 }
