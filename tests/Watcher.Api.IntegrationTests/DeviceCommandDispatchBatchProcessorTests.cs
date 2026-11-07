@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Watcher.Api.AudioAssets;
 using Watcher.Api.Delivery;
 using Watcher.Contracts.DeviceCommands;
 using Watcher.Domain.Entities;
@@ -56,6 +57,51 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         Assert.Equal(1, delivery.AttemptCount);
         Assert.Equal(Now, delivery.LastAttemptAtUtc);
         Assert.Equal(Now.AddSeconds(10), delivery.NextAttemptAtUtc);
+    }
+
+    [PostgresFact]
+    public async Task Process_batch_uses_the_manifest_hash_for_the_delivery_location()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, Guid deviceId, _) = await AddPendingStartAsync(seed.FirstLocationId);
+        LocationAudioAsset asset = new()
+        {
+            Id = Guid.NewGuid(),
+            LocationId = seed.FirstLocationId,
+            PresetCode = "evacuation",
+            Sha256 = new('b', 64),
+            SizeBytes = 16_044,
+            DurationSeconds = 1,
+            CreatedAtUtc = Now
+        };
+        await using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            db.LocationAudioAssets.Add(asset);
+            await db.SaveChangesAsync();
+        }
+
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+
+            Assert.Equal(1, await processor.ProcessBatchAsync(CancellationToken.None));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        CommandDispatch? dispatch = JsonSerializer.Deserialize<CommandDispatch>(socket.Payload);
+        Assert.NotNull(dispatch);
+        Assert.Equal(commandId, dispatch.CommandId);
+        Assert.Equal(DeviceAudioManifestFactory.Create(seed.FirstLocationId, asset).Sha256,
+            dispatch.ManifestHash);
     }
 
     [PostgresFact]

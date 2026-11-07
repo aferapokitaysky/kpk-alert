@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using Watcher.Contracts.DeviceCommands;
+using Watcher.Domain.Audio;
 using Watcher.EdgeAgent.Core;
 
 namespace Watcher.EdgeAgent.Infrastructure.Audio;

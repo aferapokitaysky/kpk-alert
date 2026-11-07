@@ -23,6 +23,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<UkraineAlarmWebhookOperation> UkraineAlarmWebhookOperations => Set<UkraineAlarmWebhookOperation>();
     public DbSet<ExternalIntegrationState> ExternalIntegrationStates => Set<ExternalIntegrationState>();
     public DbSet<AutomaticAlertDispatchState> AutomaticAlertDispatchStates => Set<AutomaticAlertDispatchState>();
+    public DbSet<LocationAudioAsset> LocationAudioAssets => Set<LocationAudioAsset>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -48,11 +49,27 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
         {
             entity.ToTable("sound_presets");
             entity.HasKey(x => x.Id);
-            entity.HasIndex(x => x.Code).IsUnique();
+            entity.HasAlternateKey(x => x.Code);
             entity.Property(x => x.Code).HasMaxLength(80).IsRequired();
             entity.Property(x => x.Name).HasMaxLength(160).IsRequired();
             entity.Property(x => x.ManifestHash).HasMaxLength(64).IsRequired();
             entity.Property(x => x.IsPublished).IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<LocationAudioAsset>(entity =>
+        {
+            entity.ToTable("location_audio_assets", table =>
+            {
+                table.HasCheckConstraint("CK_location_audio_assets_size", "\"SizeBytes\" BETWEEN 1 AND 104857600");
+                table.HasCheckConstraint("CK_location_audio_assets_duration", "\"DurationSeconds\" BETWEEN 1 AND 900");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.PresetCode).HasMaxLength(80).IsRequired();
+            entity.Property(x => x.Sha256).HasMaxLength(64).IsRequired();
+            entity.HasIndex(x => new { x.LocationId, x.PresetCode }).IsUnique();
+            entity.HasOne<Location>().WithMany().HasForeignKey(x => x.LocationId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<SoundPreset>().WithMany().HasForeignKey(x => x.PresetCode)
+                .HasPrincipalKey(x => x.Code).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<AlertCommand>(entity =>

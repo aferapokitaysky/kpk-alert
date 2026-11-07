@@ -15,6 +15,8 @@ erDiagram
   users ||--o{ user_roles : має
   roles ||--o{ user_roles : надає
   locations ||--o{ devices : містить
+  locations ||--o{ location_audio_assets : зберігає
+  sound_presets ||--o{ location_audio_assets : має
   locations ||--o{ location_presets : дозволяє
   sound_presets ||--o{ location_presets : призначений
   alert_commands ||--o{ command_targets : надсилається
@@ -33,6 +35,7 @@ erDiagram
 | `user_roles`                 | `user_id`, `role_id`, `location_id?`                                                          | Глобальні права або права в конкретній локації                |
 | `locations`                  | `id`, `code`, `name`, `is_active`                                                             | Корпус або окрема зона трансляції                             |
 | `devices`                    | `id`, `location_id`, `certificate_thumbprint`, `pending_certificate_thumbprint?`, `pending_certificate_created_at_utc?`, `revoked_at_utc?` | Вузли, активний сертифікат і очікування його ротації           |
+| `location_audio_assets`      | `id`, `location_id`, `preset_code`, `sha256`, `size_bytes`, `duration_seconds`                | WAV-сценарій, призначений конкретній локації                  |
 | `sound_presets`              | `id`, `code`, `priority`, `manifest_hash`, `status`                                           | Погоджені сценарії відтворення                                |
 | `location_presets`           | `location_id`, `preset_id`, `is_enabled`                                                      | Сценарії, дозволені для локації                               |
 | `alert_commands`             | `id`, `kind`, `preset_id`, `initiated_by_user_id`, `created_at`                               | Створені команди та ініціатор                                 |

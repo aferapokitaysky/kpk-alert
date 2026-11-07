@@ -29,9 +29,9 @@ ENV ASPNETCORE_HTTP_PORTS=8080
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /var/lib/kgta-alert/data-protection-keys \
+    && mkdir -p /var/lib/kgta-alert/data-protection-keys /var/lib/kgta-alert/audio-assets \
     && chown -R $APP_UID:$APP_UID /var/lib/kgta-alert \
-    && chmod 700 /var/lib/kgta-alert/data-protection-keys
+    && chmod 700 /var/lib/kgta-alert/data-protection-keys /var/lib/kgta-alert/audio-assets
 EXPOSE 8080
 EXPOSE 8443
 COPY --from=build /app/publish .

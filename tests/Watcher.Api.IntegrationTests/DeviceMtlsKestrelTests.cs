@@ -17,6 +17,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Watcher.Api.AudioAssets;
 using Watcher.Api.Controllers;
 using Watcher.Api.Delivery;
 using Watcher.Api.Security;
@@ -156,13 +158,79 @@ public sealed class DeviceMtlsKestrelTests
         Assert.Equal(HttpStatusCode.OK, oldIdentity.StatusCode);
     }
 
+    [Fact]
+    public async Task Device_downloads_only_its_published_location_audio_manifest_and_asset()
+    {
+        using TestCertificateAuthority trustedAuthority = new();
+        using TestKeyCertificate deviceCertificate = CreateClientCertificate(trustedAuthority, "audio-device");
+        using TestKeyCertificate serverCertificate = CreateServerCertificate();
+        var deviceId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        var assetId = Guid.NewGuid();
+        var audioBytes = CreatePcmWave();
+        LocationAudioAsset audioAsset = new()
+        {
+            Id = assetId,
+            LocationId = locationId,
+            PresetCode = "evacuation",
+            Sha256 = Convert.ToHexString(SHA256.HashData(audioBytes)),
+            SizeBytes = audioBytes.Length,
+            DurationSeconds = 1,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        };
+        using var storageRoot = new TemporaryDirectory();
+        PhysicalAudioAssetStore store = new(Options.Create(new AudioAssetStorageOptions
+        {
+            StoragePath = storageRoot.Path
+        }));
+        await using (MemoryStream audioStream = new(audioBytes))
+        {
+            _ = await store.SaveAsync(locationId, assetId, audioStream, CancellationToken.None);
+        }
+
+        await using WebApplication app = await StartKestrelAsync(
+            serverCertificate.Certificate,
+            trustedAuthority.Root,
+            deviceId,
+            locationId,
+            deviceCertificate.Certificate,
+            audioStoragePath: storageRoot.Path,
+            audioAsset: audioAsset);
+        using HttpClient client = CreateClient(GetHttpsAddress(app), deviceCertificate.Certificate);
+
+        using HttpResponseMessage manifestResponse = await client.GetAsync(
+            "/api/v1/device/audio/presets/evacuation/manifest");
+        Assert.Equal(HttpStatusCode.OK, manifestResponse.StatusCode);
+        Assert.True(manifestResponse.Headers.CacheControl?.Private);
+        Assert.True(manifestResponse.Headers.CacheControl?.NoStore);
+        var manifestBytes = await manifestResponse.Content.ReadAsByteArrayAsync();
+        var manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes));
+        Assert.Equal($"\"{manifestHash}\"", manifestResponse.Headers.ETag?.ToString());
+        using var manifest = JsonDocument.Parse(manifestBytes);
+        Assert.Equal(locationId,
+            manifest.RootElement.GetProperty("locationId").GetGuid());
+        JsonElement preset = Assert.Single(manifest.RootElement.GetProperty("presets").EnumerateArray());
+        Assert.Equal("evacuation", preset.GetProperty("presetCode").GetString());
+        Assert.Equal("evacuation.wav", preset.GetProperty("fileName").GetString());
+        Assert.Equal(assetId, preset.GetProperty("assetId").GetGuid());
+        Assert.Equal(audioAsset.Sha256, preset.GetProperty("sha256").GetString());
+
+        using HttpResponseMessage audioResponse = await client.GetAsync(
+            $"/api/v1/device/audio/assets/{assetId}");
+        Assert.Equal(HttpStatusCode.OK, audioResponse.StatusCode);
+        Assert.Equal("audio/wav", audioResponse.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(audioBytes, await audioResponse.Content.ReadAsByteArrayAsync());
+    }
+
     private static async Task<WebApplication> StartKestrelAsync(
         X509Certificate2 serverCertificate,
         X509Certificate2 trustedRoot,
         Guid deviceId,
         Guid locationId,
         X509Certificate2 registeredCertificate,
-        X509Certificate2? pendingCertificate = null)
+        X509Certificate2? pendingCertificate = null,
+        string? audioStoragePath = null,
+        LocationAudioAsset? audioAsset = null)
     {
         var databaseName = Guid.NewGuid().ToString();
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -186,6 +254,9 @@ public sealed class DeviceMtlsKestrelTests
             options => options.RevocationMode = X509RevocationMode.NoCheck);
         builder.Services.AddDbContext<WatcherDbContext>(options => options.UseInMemoryDatabase(databaseName));
         builder.Services.AddScoped<DeviceCertificateAuthenticator>();
+        builder.Services.Configure<AudioAssetStorageOptions>(options =>
+            options.StoragePath = audioStoragePath ?? Path.Combine(Path.GetTempPath(), $"kgta-audio-{databaseName}"));
+        builder.Services.AddSingleton<PhysicalAudioAssetStore>();
 
         WebApplication app = builder.Build();
         using (IServiceScope scope = app.Services.CreateScope())
@@ -210,6 +281,20 @@ public sealed class DeviceMtlsKestrelTests
                     : Convert.ToHexString(SHA256.HashData(pendingCertificate.RawData)),
                 PendingCertificateCreatedAtUtc = pendingCertificate is null ? null : DateTimeOffset.UtcNow
             });
+            if (audioAsset is not null)
+            {
+                db.SoundPresets.Add(new SoundPreset
+                {
+                    Id = Guid.NewGuid(),
+                    Code = audioAsset.PresetCode,
+                    Name = "Евакуація",
+                    Priority = 1,
+                    ManifestHash = new('a', 64),
+                    IsPublished = true
+                });
+                db.LocationAudioAssets.Add(audioAsset);
+            }
+
             await db.SaveChangesAsync();
         }
 
@@ -372,6 +457,39 @@ public sealed class DeviceMtlsKestrelTests
             key.Dispose();
             DeleteTestRsaKey(keyName);
             throw;
+        }
+    }
+
+    private static byte[] CreatePcmWave()
+    {
+        const int sampleRate = 8_000;
+        const int dataLength = sampleRate * 2;
+        var wave = new byte[44 + dataLength];
+        "RIFF"u8.CopyTo(wave);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(wave.AsSpan(4, 4), wave.Length - 8);
+        "WAVEfmt "u8.CopyTo(wave.AsSpan(8));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(wave.AsSpan(16, 4), 16);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(wave.AsSpan(20, 2), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(wave.AsSpan(22, 2), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(wave.AsSpan(24, 4), sampleRate);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(wave.AsSpan(28, 4), sampleRate * 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(wave.AsSpan(32, 2), 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(wave.AsSpan(34, 2), 16);
+        "data"u8.CopyTo(wave.AsSpan(36));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(wave.AsSpan(40, 4), dataLength);
+        return wave;
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"kgta-audio-{Guid.NewGuid():N}");
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
         }
     }
 

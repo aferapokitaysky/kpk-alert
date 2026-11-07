@@ -11,6 +11,7 @@
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Watcher.Domain\Watcher.Domain.csproj" />
     <ProjectReference Include="..\Watcher.Contracts\Watcher.Contracts.csproj" />
     <ProjectReference Include="..\Watcher.EdgeAgent.Contracts\Watcher.EdgeAgent.Contracts.csproj" />
     <ProjectReference Include="..\Watcher.EdgeAgent.Core\Watcher.EdgeAgent.Core.csproj" />

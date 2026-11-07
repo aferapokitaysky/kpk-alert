@@ -16,6 +16,7 @@ services:
       DataProtection__KeysPath: /var/lib/kgta-alert/data-protection-keys
       DataProtection__CertificatePath: /run/secrets/data-protection.pfx
       DataProtection__CertificatePassword: ${DATAPROTECTION_CERTIFICATE_PASSWORD:?Set DATAPROTECTION_CERTIFICATE_PASSWORD}
+      AudioAssets__StoragePath: /var/lib/kgta-alert/audio-assets
       ReverseProxy__KnownProxies__0: ${REVERSE_PROXY_IP:?Set REVERSE_PROXY_IP}
       ReverseProxy__HttpsPort: '443'
       DeviceListener__Enabled: 'true'
@@ -36,6 +37,7 @@ services:
         condition: service_healthy
     volumes:
       - data-protection-keys:/var/lib/kgta-alert/data-protection-keys
+      - audio-assets:/var/lib/kgta-alert/audio-assets
       - ${DATAPROTECTION_CERTIFICATE_FILE:?Set DATAPROTECTION_CERTIFICATE_FILE}:/run/secrets/data-protection.pfx:ro
       - ${DEVICE_SERVER_CERTIFICATE_FILE:?Set DEVICE_SERVER_CERTIFICATE_FILE}:/run/secrets/device-server.pfx:ro
       - ${DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE:?Set DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE}:/run/secrets/device-server-password:ro
@@ -94,3 +96,4 @@ services:
 volumes:
   postgres-data:
   data-protection-keys:
+  audio-assets:

@@ -12,6 +12,7 @@ services:
       DataProtection__KeysPath: /var/lib/kgta-alert/data-protection-keys
       DataProtection__CertificatePath: ${DATAPROTECTION_CERTIFICATE_PATH:-}
       DataProtection__CertificatePassword: ${DATAPROTECTION_CERTIFICATE_PASSWORD:-}
+      AudioAssets__StoragePath: /var/lib/kgta-alert/audio-assets
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -19,6 +20,7 @@ services:
         condition: service_healthy
     volumes:
       - data-protection-keys:/var/lib/kgta-alert/data-protection-keys
+      - audio-assets:/var/lib/kgta-alert/audio-assets
   postgres:
     image: postgres:16.15-alpine
     restart: unless-stopped
@@ -40,3 +42,4 @@ services:
 volumes:
   postgres-data:
   data-protection-keys:
+  audio-assets:

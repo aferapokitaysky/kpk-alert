@@ -30,10 +30,12 @@ public sealed class WatcherDbContextModelTests
         Assert.Contains("location_command_sequences", entityNames);
         Assert.Contains("device_command_receipts", entityNames);
 
-        IIndex codeIndex = db.Model.FindEntityType("Watcher.Domain.Entities.Location")!
-            .GetIndexes()
-            .Single(index => index.Properties.Select(property => property.Name).SequenceEqual(["Code"]));
-        Assert.True(codeIndex.IsUnique);
+        IEntityType location = db.Model.FindEntityType("Watcher.Domain.Entities.Location")!;
+        IIndex? codeIndex = location.GetIndexes()
+            .SingleOrDefault(index => index.Properties.Select(property => property.Name).SequenceEqual(["Code"]));
+        Assert.True(codeIndex is not null, string.Join(", ", location.GetIndexes()
+            .Select(index => string.Join("+", index.Properties.Select(property => property.Name)))));
+        Assert.True(codeIndex!.IsUnique);
     }
 
     [Fact]

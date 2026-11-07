@@ -1,8 +1,8 @@
 using System.Buffers.Binary;
 
-namespace Watcher.EdgeAgent.Infrastructure.Audio;
+namespace Watcher.Domain.Audio;
 
-internal static class PcmWaveFileValidator
+public static class PcmWaveFileValidator
 {
     private const int MinimumSampleRate = 8_000;
     private const int MaximumSampleRate = 192_000;

@@ -96,10 +96,11 @@ Coolify трактує `${NAME:?}` як обов’язкову змінну і 
 1. Перевірити staging, конфігурацію секретів, сертифікати та адресу proxy. Переконатися, що для релізу є перевірений шлях повернення попереднього image.
 2. Зупинити або перевести систему в погоджений режим обслуговування, якщо зміна схеми не є сумісною з попереднім кодом.
 3. Зробити резервну копію PostgreSQL та перевірити, що файл не порожній і доступний поза сервером.
-4. У SSH-сесії Coolify-сервера знайти робочу директорію та env-файл саме цього ресурсу; не виводити їхній вміст у термінал чи журнал. Визначити ім’я поточного Compose project за label `com.docker.compose.project` запущеного контейнера `watcher`. Запустити `docker compose -p <ім’я-проєкту> --env-file <env-файл-ресурсу> --profile migration -f <шлях-до-джерела>/compose.coolify.yaml run --build --rm migrate`. Параметр `--build` потрібен, бо migration profile не запускається під час звичайного deploy. Сервіс сам виконує `database update` для `Watcher.Infrastructure` з `Watcher.Api` як startup project. Перед запуском перевірити `docker compose ... config --quiet` із тими самими параметрами. Не запускайте команду з локального комп’ютера або без `-p`: вона має використати поточний stack project та його приватну мережу, а не створити новий стек із порожньою БД.
-5. Переконатися за кодом завершення та журналом, що міграція пройшла; перевірити таблицю `__EFMigrationsHistory`.
-6. Розгорнути commit у Coolify. Дочекатися healthy `watcher` і `postgres`; відкрити `https://notify.kgta.edu.ua`, перевірити `GET /api/v1/health/ready`, вхід, callback provider та критичний сценарій тестової команди.
-7. Перевірити, що PostgreSQL і порт `8443` не доступні з публічної мережі, а доступ вузлів проходить лише за mTLS.
+4. Зробити резервну копію named volume `audio-assets` тим самим backup runner-ом або окремим перевіреним snapshot. Відновлюйте asset volume й PostgreSQL як одну пару: в БД зберігаються `assetId` та hash файлів.
+5. У SSH-сесії Coolify-сервера знайти робочу директорію та env-файл саме цього ресурсу; не виводити їхній вміст у термінал чи журнал. Визначити ім’я поточного Compose project за label `com.docker.compose.project` запущеного контейнера `watcher`. Запустити `docker compose -p <ім’я-проєкту> --env-file <env-файл-ресурсу> --profile migration -f <шлях-до-джерела>/compose.coolify.yaml run --build --rm migrate`. Параметр `--build` потрібен, бо migration profile не запускається під час звичайного deploy. Сервіс сам виконує `database update` для `Watcher.Infrastructure` з `Watcher.Api` як startup project. Перед запуском перевірити `docker compose ... config --quiet` із тими самими параметрами. Не запускайте команду з локального комп’ютера або без `-p`: вона має використати поточний stack project та його приватну мережу, а не створити новий стек із порожньою БД.
+6. Переконатися за кодом завершення та журналом, що міграція пройшла; перевірити таблицю `__EFMigrationsHistory`.
+7. Розгорнути commit у Coolify. Дочекатися healthy `watcher` і `postgres`; відкрити `https://notify.kgta.edu.ua`, перевірити `GET /api/v1/health/ready`, вхід, callback provider та критичний сценарій тестової команди.
+8. Перевірити, що PostgreSQL і порт `8443` не доступні з публічної мережі, а доступ вузлів проходить лише за mTLS.
 
 Не запускайте міграцію, якщо не підтверджено, що команда підключена до production Compose network і тієї самої БД. Якщо розташування активного source/env-файла або stack project не можна однозначно визначити за даними ресурсу та Docker labels, зупиніться й узгодьте release runner, підключений до приватної мережі. Не вгадуйте шлях, не запускайте команду без потрібного `.env` і не відкривайте PostgreSQL в інтернет для зручності.
 
@@ -121,7 +122,7 @@ Endpoint готовності відповідає `200` лише коли Postg
 3. Якщо потрібен відкат схеми, зупиніть записи, оцініть наслідки, відновіть перевірений dump в окрему БД і переключайтеся на неї лише після валідації. Не виконуйте руйнівний `database update <older-migration>` на робочих даних без окремого плану.
 4. Перевірте `https://notify.kgta.edu.ua`, endpoint готовності, авторизацію та журнал аудиту. Зафіксуйте commit/image, причину та результат.
 
-Після rollback зберігайте обидва volume. Coolify image rollback не повертає зміни в persistent storage чи БД; це потрібно планувати окремо.
+Після rollback зберігайте всі volume (`postgres-data`, `data-protection-keys`, `audio-assets`). Coolify image rollback не повертає зміни в persistent storage чи БД; це потрібно планувати окремо.
 
 ## Перевірки до production
 

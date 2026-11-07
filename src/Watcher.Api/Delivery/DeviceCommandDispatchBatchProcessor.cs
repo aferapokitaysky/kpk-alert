@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
+using Watcher.Api.AudioAssets;
 using Watcher.Api.Security;
 using Watcher.Contracts.DeviceCommands;
 using Watcher.Domain.Entities;
@@ -279,6 +280,14 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 return null;
             }
 
+            LocationAudioAsset? audioAsset = await db.LocationAudioAssets.AsNoTracking()
+                .SingleOrDefaultAsync(asset => asset.LocationId == target.LocationId &&
+                                                asset.PresetCode == preset.Code,
+                    cancellationToken);
+            var manifestHash = audioAsset is null
+                ? preset.ManifestHash
+                : DeviceAudioManifestFactory.Create(target.LocationId, audioAsset).Sha256;
+
             return new CommandDispatch(
                 DeviceCommandValidator.CurrentSchemaVersion,
                 command.Id,
@@ -287,7 +296,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 target.Sequence,
                 DeviceCommandAction.Start,
                 preset.Code,
-                preset.ManifestHash,
+                manifestHash,
                 now,
                 command.ExpiresAtUtc,
                 command.MaximumPlaybackDurationSeconds,

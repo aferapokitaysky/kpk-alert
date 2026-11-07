@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Watcher.Api.AlertSources;
+using Watcher.Api.AudioAssets;
 using Watcher.Api.Commands;
 using Watcher.Api.Delivery;
 using Watcher.Api.Scheduling;
@@ -19,6 +20,10 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllersWithViews();
 builder.Services.AddAuthorization();
 builder.Services.AddAlertSources(builder.Configuration);
+builder.Services.Configure<AudioAssetStorageOptions>(options =>
+    options.StoragePath = builder.Configuration["AudioAssets:StoragePath"] ??
+                         Path.Combine(builder.Environment.ContentRootPath, "data", "audio-assets"));
+builder.Services.AddSingleton<PhysicalAudioAssetStore>();
 var dataProtectionPath = builder.Configuration["DataProtection:KeysPath"];
 X509Certificate2? dataProtectionCertificate = null;
 if (builder.Environment.IsProduction())

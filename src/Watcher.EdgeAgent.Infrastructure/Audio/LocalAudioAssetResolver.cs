@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Watcher.Domain.Audio;
 using Watcher.EdgeAgent.Core;
 
 namespace Watcher.EdgeAgent.Infrastructure.Audio;

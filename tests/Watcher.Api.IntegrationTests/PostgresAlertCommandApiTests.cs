@@ -929,6 +929,7 @@ public sealed class PostgresApiFixture : IAsyncLifetime
 {
     private readonly string? _connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__Watcher");
     private readonly string _schema = $"api_test_{Guid.NewGuid():N}";
+    private readonly string _audioAssetStoragePath = Path.Combine(Path.GetTempPath(), $"kgta-audio-{Guid.NewGuid():N}");
     private string? _isolatedConnectionString;
     private WebApplicationFactory<Program>? _factory;
     private HttpClient? _client;
@@ -943,6 +944,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
     public Watcher.Api.Delivery.DeviceSessionPresenceService DevicePresence =>
         _factory?.Services.GetRequiredService<Watcher.Api.Delivery.DeviceSessionPresenceService>()
         ?? throw new InvalidOperationException("API fixture is unavailable.");
+
+    public string AudioAssetStoragePath => _audioAssetStoragePath;
 
     public async Task InitializeAsync()
     {
@@ -968,7 +971,8 @@ public sealed class PostgresApiFixture : IAsyncLifetime
                     ["ConnectionStrings:Watcher"] = _isolatedConnectionString,
                     ["Authentication:Google:Enabled"] = "false",
                     ["CommandOutboxWorker:Enabled"] = "false",
-                    ["DeviceCommandTransport:Enabled"] = "false"
+                    ["DeviceCommandTransport:Enabled"] = "false",
+                    ["AudioAssets:StoragePath"] = _audioAssetStoragePath
                 }));
             builder.ConfigureTestServices(services =>
             {
@@ -1260,6 +1264,11 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         if (_factory is not null)
         {
             await _factory.DisposeAsync();
+        }
+
+        if (Directory.Exists(_audioAssetStoragePath))
+        {
+            Directory.Delete(_audioAssetStoragePath, recursive: true);
         }
 
         if (_connectionString is null)
