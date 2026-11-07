@@ -18,10 +18,18 @@ COPY --from=frontend /workspace/src/Watcher.Api/wwwroot/dist src/Watcher.Api/www
 COPY --from=frontend /workspace/src/Watcher.Api/wwwroot/service-worker.js src/Watcher.Api/wwwroot/service-worker.js
 RUN dotnet publish src/Watcher.Api/Watcher.Api.csproj -c Release -o /app/publish --no-restore
 
+FROM build AS migration
+RUN dotnet tool install --global dotnet-ef --version 10.0.4
+ENV PATH="$PATH:/root/.dotnet/tools"
+ENTRYPOINT ["dotnet", "ef"]
+
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 ENV ASPNETCORE_HTTP_PORTS=8080
-RUN mkdir -p /var/lib/kgta-alert/data-protection-keys \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/kgta-alert/data-protection-keys \
     && chown -R $APP_UID:$APP_UID /var/lib/kgta-alert \
     && chmod 700 /var/lib/kgta-alert/data-protection-keys
 EXPOSE 8080

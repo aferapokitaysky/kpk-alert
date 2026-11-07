@@ -33,6 +33,8 @@ $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desk
 $testProgramFilesPath = Join-Path ([IO.Path]::GetTempPath()) "KGTA Program Files $testId"
 $random = New-Object System.Random
 $interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$($random.Next(100000, 2000000000))"
+$actualUserSid = $null
+$actualUserRunSubKey = $null
 $usersHive = $null
 $runKey = $null
 
@@ -71,7 +73,6 @@ try {
         $failureFlagCommands.Count -ne 1) {
         throw 'Інсталятор має застосовувати автозапуск і відновлення після помилок служби.'
     }
-
     $userStartupScriptText = Get-Content -LiteralPath $userStartupScriptPath -Raw
     if ($userStartupScriptText -notmatch 'Resolve-EdgeAgentInteractiveUserSid\s*(?:\r?\n|$)' -or
         $userStartupScriptText -notmatch 'Get-EdgeAgentInstalledDesktopExecutablePath' -or
@@ -182,16 +183,16 @@ try {
 
     $uninstallerText = Get-Content -LiteralPath $uninstallerPath -Raw
     $cleanupModuleText = Get-Content -LiteralPath $modulePath -Raw
+    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
     $prepareProfilesPosition = $uninstallerText.IndexOf('New-EdgeAgentStartupCleanupPlan', [StringComparison]::Ordinal)
     $removeProfilesPosition = $uninstallerText.IndexOf('Remove-EdgeAgentDesktopStartupEntriesForProfiles', [StringComparison]::Ordinal)
-    $deleteServicePosition = $uninstallerText.IndexOf('& sc.exe delete $serviceName', [StringComparison]::Ordinal)
     $removeFilesPosition = $uninstallerText.IndexOf('Remove-Item -LiteralPath $resolvedDirectory -Recurse -Force', [StringComparison]::Ordinal)
     if ($uninstallerText -notmatch 'Get-CimInstance\s+-ClassName\s+Win32_UserProfile' -or
         $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+load' -or
         $cleanupModuleText -notmatch '&\s+\$RegExecutablePath\s+unload' -or
-        $prepareProfilesPosition -lt 0 -or $removeProfilesPosition -le $prepareProfilesPosition -or
-        $deleteServicePosition -le $removeProfilesPosition -or $removeFilesPosition -le $deleteServicePosition) {
-        throw 'Видалення має очистити лише власний Run-запис у профілях до видалення файлів і безпечного відключення hive.'
+        $prepareProfilesPosition -lt 0 -or $deleteServicePosition -le $prepareProfilesPosition -or
+        $removeProfilesPosition -le $deleteServicePosition -or $removeFilesPosition -le $removeProfilesPosition) {
+        throw 'Видалення має спочатку видалити службу, потім очистити власний Run-запис у профілях і лише після відключення hive прибрати файли.'
     }
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Default)
@@ -248,9 +249,36 @@ try {
         $baseKey.Dispose()
     }
 
+    $actualUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $actualUserRunSubKey = "$actualUserSid\$testRunSubKey"
+    $actualHiveCommand = Set-EdgeAgentDesktopStartupEntry `
+        -InteractiveUserSid $actualUserSid `
+        -ExecutablePath $testExecutablePath `
+        -RunSubKeyPath $actualUserRunSubKey
+    Assert-Equal -Expected $expectedCommand -Actual $actualHiveCommand -Message 'Запис через HKEY_USERS цільового профілю має повертати ту саму команду.'
+    $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
+    try {
+        if (-not $actualUserRunKey) { throw 'Запис через HKEY_USERS не створив підрозділ у профілі цільового користувача.' }
+        Assert-Equal -Expected $expectedCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'HKEY_USERS має містити команду панелі у Run цільового профілю.'
+    } finally {
+        if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+    }
+    Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey
+
     Write-Host 'Перевірки автозапуску Windows-вузла пройшли.'
 } finally {
     if ($runKey) { $runKey.Dispose() }
+    if ($usersHive -and $actualUserSid -and $actualUserRunSubKey) {
+        $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $true)
+        try {
+            if ($actualUserRunKey) {
+                $actualUserRunKey.DeleteValue('KGTA.Alert.OperatorPanel', $false)
+            }
+        } finally {
+            if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+        }
+        $usersHive.DeleteSubKeyTree("$actualUserSid\$testRootSubKey", $false)
+    }
     if ($usersHive) { $usersHive.Dispose() }
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }

@@ -8,7 +8,7 @@
     "build": "npm run typecheck && vite build --config vite.config.ts && vite build --config vite.sw.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json",
     "lint": "eslint src/Watcher.Api/ClientApp/src vite.config.ts vite.sw.config.ts eslint.config.js",
-    "format:check": "prettier --check package.json tsconfig.json tsconfig.worker.json vite.config.ts vite.sw.config.ts eslint.config.js .prettierrc.json src/Watcher.Api/ClientApp/index.html src/Watcher.Api/wwwroot/index.html src/Watcher.Api/ClientApp/src README.md docs/testing.md docs/ui-journal.md docs/api-contracts.md docs/deployment.md docs/adr/README.md docs/adr/0006-operator-frontend.md docs/adr/0007-alert-source-monitor.md",
+    "format:check": "prettier --check package.json tsconfig.json tsconfig.worker.json vite.config.ts vite.sw.config.ts eslint.config.js .prettierrc.json src/Watcher.Api/ClientApp/index.html src/Watcher.Api/wwwroot/index.html src/Watcher.Api/ClientApp/src README.md docs/testing.md docs/ui-journal.md docs/api-contracts.md docs/deployment.md docs/runbooks/README.md docs/runbooks/coolify-deployment.md docs/adr/README.md docs/adr/0006-operator-frontend.md docs/adr/0007-alert-source-monitor.md",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$RemoveLocalData,
     [string]$InteractiveUser
@@ -22,21 +22,13 @@ if (-not (Test-Path -LiteralPath $regExecutable -PathType Leaf)) {
     throw 'Не знайдено системну утиліту керування реєстром. Службу й файли не змінено.'
 }
 
-$profileCleanupPlan = $null
-$removedStartupEntries = @()
-$serviceWasRunning = $false
+$profileCleanupPlan = New-EdgeAgentStartupCleanupPlan `
+    -Profiles @(Get-CimInstance -ClassName Win32_UserProfile -Filter 'Special = FALSE') `
+    -RequiredInteractiveUserSid $interactiveUserSid `
+    -RegExecutablePath $regExecutable
 try {
-    $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -Filter 'Special = FALSE')
-    $profileCleanupPlan = New-EdgeAgentStartupCleanupPlan `
-        -Profiles $profiles `
-        -RequiredInteractiveUserSid $interactiveUserSid `
-        -RegExecutablePath $regExecutable
-    $removedStartupEntries = @(Remove-EdgeAgentDesktopStartupEntriesForProfiles `
-        -Profiles $profileCleanupPlan.Profiles)
-
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
         $service = Get-Service -Name $serviceName
-        $serviceWasRunning = $service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped
         if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
             Stop-Service -Name $serviceName -Force
             $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
@@ -44,31 +36,16 @@ try {
         & sc.exe delete $serviceName | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'Не вдалося видалити службу.' }
     }
-} catch {
-    $uninstallFailure = $_
-    $recoveryFailures = @()
-    if ($removedStartupEntries.Count -gt 0) {
-        try {
-            Restore-EdgeAgentDesktopStartupEntriesForProfiles -Entries $removedStartupEntries
-        } catch {
-            $recoveryFailures += "Не вдалося відновити Run-записи: $($_.Exception.Message)"
-        }
-    }
-    if ($serviceWasRunning -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
-        try { Start-Service -Name $serviceName -ErrorAction Stop }
-        catch { $recoveryFailures += "Не вдалося повторно запустити службу: $($_.Exception.Message)" }
-    }
-    if ($recoveryFailures.Count -gt 0) {
-        throw "$($uninstallFailure.Exception.Message) $($recoveryFailures -join ' ') Локальні файли не видалено."
-    }
-    throw $uninstallFailure
+
+    Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles $profileCleanupPlan.Profiles
 } finally {
-    if ($profileCleanupPlan -and $profileCleanupPlan.MountedHiveNames.Count -gt 0) {
+    if ($profileCleanupPlan.MountedHiveNames.Count -gt 0) {
         Release-EdgeAgentProfileHives `
             -MountedHiveNames $profileCleanupPlan.MountedHiveNames `
             -RegExecutablePath $regExecutable
     }
 }
+
 foreach ($directory in @($installDirectory, $startMenu)) {
     if (Test-Path -LiteralPath $directory) {
         $resolvedDirectory = (Resolve-Path -LiteralPath $directory).Path
