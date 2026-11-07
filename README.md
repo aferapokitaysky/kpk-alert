@@ -27,6 +27,7 @@
 - [Структура бази даних](docs/database.md)
 - [Контракти API та доставки команд](docs/api-contracts.md)
 - [Безпека](docs/security.md)
+- [Журнал аудиту та технічна діагностика](docs/audit-and-observability.md)
 - [Автоматизовані перевірки](docs/testing.md)
 - [Вузол оповіщення й резервна робота](docs/edge-agent.md)
 - [Розгортання та домени](docs/deployment.md)
