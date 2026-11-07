@@ -18,6 +18,7 @@ import {
 } from './api';
 import { getCommandDeliveries } from './features/command-deliveries/api';
 import { getMinuteOfSilenceHistory } from './features/minute-of-silence/history-api';
+import { getSoundPresets } from './features/sound-presets/api';
 
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
@@ -60,6 +61,13 @@ vi.mock('./features/minute-of-silence/history-api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./features/minute-of-silence/history-api')>();
   return { ...actual, getMinuteOfSilenceHistory: vi.fn() };
 });
+
+vi.mock('./features/sound-presets/api', () => ({
+  createSoundPreset: vi.fn(),
+  getSoundPresets: vi.fn(),
+  setSoundPresetPublication: vi.fn(),
+  updateSoundPreset: vi.fn(),
+}));
 
 const location = { id: 'location-1', name: 'Головний корпус', code: 'main' };
 const preset = { code: 'evacuation', name: 'Евакуація' };
@@ -136,6 +144,7 @@ beforeEach(() => {
     },
   });
   vi.mocked(getAuditEvents).mockResolvedValue({ items: [], page: 1, pageSize: 25, totalCount: 0 });
+  vi.mocked(getSoundPresets).mockResolvedValue([]);
   vi.mocked(createAlertCommand).mockResolvedValue(command);
   vi.mocked(createStopCommand).mockResolvedValue(stoppedCommand);
   vi.mocked(getAlertCommand).mockResolvedValue(command);
@@ -143,6 +152,18 @@ beforeEach(() => {
 });
 
 describe('пульт оператора', () => {
+  it('показує інструкцію встановлення PWA в оболонці застосунку', async () => {
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Додайте систему на головний екран' }),
+    ).toBeInTheDocument();
+    expect(document.querySelector('.pwa-install__logo')).toHaveAttribute(
+      'src',
+      '/images/kpk-logo.png',
+    );
+  });
+
   it('показує керування webhook лише адміністратору', async () => {
     render(<App />);
     expect(await screen.findByTestId('ukrainealarm-webhook-management')).toBeInTheDocument();
@@ -157,6 +178,29 @@ describe('пульт оператора', () => {
     render(<App />);
     await screen.findByRole('heading', { name: 'Пульт керування' });
     expect(screen.queryByTestId('ukrainealarm-webhook-management')).not.toBeInTheDocument();
+  });
+
+  it('відкриває керування звуковими сценаріями адміністратору з меню', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('link', { name: 'Звукові сценарії' }));
+    expect(await screen.findByRole('heading', { name: 'Звукові сценарії' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Новий сценарій' })).toBeInTheDocument();
+    expect(getSoundPresets).toHaveBeenCalledOnce();
+  });
+
+  it('не дає аудитору відкрити керування сценаріями прямим переходом', async () => {
+    window.history.replaceState(null, '', '/#presets');
+    vi.mocked(getSession).mockResolvedValue({
+      authenticated: true,
+      roles: ['auditor'],
+      capabilities: { canOperate: false, canViewAudit: true },
+    });
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Журнал дій' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Новий сценарій' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Звукові сценарії' })).not.toBeInTheDocument();
+    expect(getSoundPresets).not.toHaveBeenCalled();
   });
 
   it('показує завантаження й окрему помилку списку корпусів', async () => {

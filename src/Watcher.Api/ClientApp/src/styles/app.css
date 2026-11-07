@@ -1520,7 +1520,12 @@ h3 {
 
   .sidebar {
     z-index: 20;
+    height: 100vh;
+    height: 100dvh;
     padding-top: max(18px, env(safe-area-inset-top));
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
     box-shadow: 15px 0 40px rgb(15 23 42 / 12%);
     transform: translateX(-105%);
     transition: transform 0.2s ease;

@@ -940,6 +940,10 @@ public sealed class PostgresApiFixture : IAsyncLifetime
         _factory?.Services.GetRequiredService<Watcher.Api.Delivery.DeviceCommandSessionRegistry>()
         ?? throw new InvalidOperationException("API fixture is unavailable.");
 
+    public Watcher.Api.Delivery.DeviceSessionPresenceService DevicePresence =>
+        _factory?.Services.GetRequiredService<Watcher.Api.Delivery.DeviceSessionPresenceService>()
+        ?? throw new InvalidOperationException("API fixture is unavailable.");
+
     public async Task InitializeAsync()
     {
         if (string.IsNullOrWhiteSpace(_connectionString))

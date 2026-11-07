@@ -66,10 +66,23 @@ public sealed class DeviceCommandDispatchFailureTests : IClassFixture<PostgresAp
             await setupDb.SaveChangesAsync();
         }
 
+        var presenceSessionId = Guid.NewGuid();
+        await using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+        {
+            setupDb.DeviceSessions.Add(new DeviceSession
+            {
+                Id = presenceSessionId,
+                DeviceId = deviceId,
+                ConnectedAtUtc = Now.AddMinutes(-1),
+                LastSeenAtUtc = Now
+            });
+            await setupDb.SaveChangesAsync();
+        }
+
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
         DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
-            deviceId, socket, CancellationToken.None);
+            deviceId, presenceSessionId, socket, CancellationToken.None);
         try
         {
             await using WatcherDbContext db = _fixture.CreateDbContext();

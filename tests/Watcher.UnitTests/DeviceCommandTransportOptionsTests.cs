@@ -7,7 +7,48 @@ public sealed class DeviceCommandTransportOptionsTests
     [Fact]
     public void Default_options_are_valid()
     {
-        Assert.True(new DeviceCommandTransportOptions().IsValid());
+        DeviceCommandTransportOptions options = new();
+
+        Assert.Equal(TimeSpan.FromSeconds(5), options.SendTimeout);
+        Assert.True(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(16)]
+    public void Send_timeout_outside_supported_range_is_rejected(int seconds)
+    {
+        DeviceCommandTransportOptions options = new()
+        {
+            SendTimeout = TimeSpan.FromSeconds(seconds)
+        };
+
+        Assert.False(options.IsValid());
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(15)]
+    public void Send_timeout_at_supported_bounds_is_valid(int seconds)
+    {
+        DeviceCommandTransportOptions options = new()
+        {
+            SendTimeout = TimeSpan.FromSeconds(seconds)
+        };
+
+        Assert.True(options.IsValid());
+    }
+
+    [Fact]
+    public void Acknowledgement_timeout_remains_independent_from_send_timeout()
+    {
+        DeviceCommandTransportOptions options = new()
+        {
+            SendTimeout = TimeSpan.FromSeconds(1),
+            AcknowledgementTimeout = TimeSpan.FromMinutes(1)
+        };
+
+        Assert.True(options.IsValid());
     }
 
     [Theory]

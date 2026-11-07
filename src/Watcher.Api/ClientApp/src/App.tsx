@@ -16,9 +16,12 @@ import {
 import { AuditPage } from './features/audit/AuditPage';
 import { GoogleLoginLink } from './features/auth/GoogleLoginLink';
 import { Dashboard } from './features/dashboard/Dashboard';
+import { DeviceStatusPage } from './features/device-status/DeviceStatusPage';
 import { CommandDialog } from './features/dashboard/CommandDialog';
 import { StopCommandDialog } from './features/dashboard/StopCommandDialog';
 import { UserAccessPanel } from './features/user-access/UserAccessPanel';
+import { SoundPresetsPage } from './features/sound-presets/SoundPresetsPage';
+import { PwaInstallGuidance } from './features/pwa-install';
 import {
   clearLastCommandId,
   readLastCommandId,
@@ -34,11 +37,13 @@ import {
   type SessionState,
 } from './state';
 
-type Page = 'dashboard' | 'audit' | 'users';
+type Page = 'dashboard' | 'audit' | 'devices' | 'users' | 'presets';
 
 function pageFromHash(): Page {
   if (window.location.hash === '#audit') return 'audit';
+  if (window.location.hash === '#devices') return 'devices';
   if (window.location.hash === '#users') return 'users';
+  if (window.location.hash === '#presets') return 'presets';
   return 'dashboard';
 }
 
@@ -94,6 +99,11 @@ function App() {
   const sidebarRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const handleSessionExpired = useCallback(() => {
+    setSession({ status: 'unauthenticated' });
+    setLocations({ status: 'unauthenticated' });
+    setPresets({ status: 'unauthenticated' });
+  }, []);
   const isMobile = useMobileViewport(closeMenu);
 
   const refreshData = useCallback(async () => {
@@ -235,8 +245,12 @@ function App() {
   useEffect(() => {
     if (session.status !== 'authenticated') return;
     const { canOperate, canViewAudit } = session.capabilities;
-    if (page === 'users' && !session.roles.includes('admin')) {
+    if ((page === 'users' || page === 'presets') && !session.roles.includes('admin')) {
       window.location.hash = canViewAudit ? 'audit' : 'dashboard';
+      return;
+    }
+    if (page === 'devices' && !canViewAudit) {
+      window.location.hash = 'dashboard';
       return;
     }
     if (!canOperate && canViewAudit && page === 'dashboard') window.location.hash = 'audit';
@@ -394,8 +408,19 @@ function App() {
   const canOperate = isAuthenticated && session.capabilities.canOperate;
   const canViewAudit = isAuthenticated && session.capabilities.canViewAudit;
   const canManageUsers = isAuthenticated && session.roles.includes('admin');
+  const canManagePresets = isAuthenticated && session.roles.includes('admin');
+  const canViewDevices = isAuthenticated && session.capabilities.canViewAudit;
+  const canManageDevices = isAuthenticated && session.roles.includes('admin');
   const activeTitle =
-    page === 'audit' ? 'Журнал дій' : page === 'users' ? 'Облікові записи' : 'Пульт оповіщення';
+    page === 'audit'
+      ? 'Журнал дій'
+      : page === 'devices'
+        ? 'Пристрої'
+        : page === 'users'
+          ? 'Облікові записи'
+          : page === 'presets'
+            ? 'Звукові сценарії'
+            : 'Пульт оповіщення';
 
   return (
     <div className={`app-shell${menuOpen && isMobile ? ' is-menu-open' : ''}`}>
@@ -437,6 +462,21 @@ function App() {
               <span>Журнал дій</span>
             </a>
           )}
+          {canViewDevices && (
+            <a
+              className={`nav-link${page === 'devices' ? ' active' : ''}`}
+              aria-current={page === 'devices' ? 'page' : undefined}
+              href="#devices"
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 6.5h16v11H4zM9 21h6M12 17.5V21M7.5 10h3M13.5 10h3M7.5 14h9" />
+                </svg>
+              </span>
+              <span>Пристрої</span>
+            </a>
+          )}
           {canManageUsers && (
             <a
               className={`nav-link${page === 'users' ? ' active' : ''}`}
@@ -450,6 +490,21 @@ function App() {
                 </svg>
               </span>
               <span>Облікові записи</span>
+            </a>
+          )}
+          {canManagePresets && (
+            <a
+              className={`nav-link${page === 'presets' ? ' active' : ''}`}
+              aria-current={page === 'presets' ? 'page' : undefined}
+              href="#presets"
+              onClick={() => setMenuOpen(false)}
+            >
+              <span className="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 5h16v14H4zM8 9h8M8 13h5M8 17h2" />
+                </svg>
+              </span>
+              <span>Звукові сценарії</span>
             </a>
           )}
         </nav>
@@ -547,6 +602,8 @@ function App() {
             </section>
           )}
 
+          <PwaInstallGuidance />
+
           {page === 'dashboard' ? (
             <Dashboard
               session={session}
@@ -577,8 +634,22 @@ function App() {
               }}
               onSessionRetry={() => void refreshData()}
             />
-          ) : canManageUsers ? (
+          ) : page === 'devices' && canViewDevices ? (
+            <DeviceStatusPage
+              canManage={canManageDevices}
+              onSessionExpired={handleSessionExpired}
+            />
+          ) : page === 'users' && canManageUsers ? (
             <UserAccessPanel />
+          ) : page === 'presets' && canManagePresets ? (
+            <SoundPresetsPage
+              session={session}
+              onSessionExpired={() => {
+                setSession({ status: 'unauthenticated' });
+                setLocations({ status: 'unauthenticated' });
+                setPresets({ status: 'unauthenticated' });
+              }}
+            />
           ) : null}
 
           <footer className="page-footer">
