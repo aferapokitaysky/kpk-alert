@@ -67,6 +67,10 @@
 
 Для Google OAuth зареєструйте callback URI `https://notify.kgta.edu.ua/signin-google` у Google Cloud Console. Для UkraineAlarm callback має бути `https://notify.kgta.edu.ua/api/v1/alert-sources/ukrainealarm/webhook`; реєстрацію callback у провайдера виконайте окремою погодженою операцією. `UkraineAlarm__PublicBaseUrl` вже задається Compose як `https://notify.kgta.edu.ua`.
 
+### Джерела тривог
+
+Production Compose вмикає `AlertSources__Neptun__Realtime__Enabled=true`: Watcher відкриває один WebSocket до NEPTUN і використовує REST для початкового знімка та відновлення з’єднання. Це вихідний WebSocket-потік, не HTTP webhook. Не масштабуйте сервіс `watcher` на кілька реплік: локальні кеші та з’єднання джерел не мають спільної координації. UkraineAlarm webhook потрібно зареєструвати через адміністративний endpoint після перевірки домену; callback лише запускає позачерговий авторизований запит до API. Alerts.in.ua у цій схемі опитується через REST.
+
 Coolify трактує `${NAME:?}` як обов’язкову змінну і блокує розгортання без неї. Файлові mount-и не копіюють сертифікат у образ: шлях має існувати на сервері, а UID `1654` повинен мати читання. Перевірте це до першого запуску.
 
 ## Порти, база та постійні дані

@@ -117,7 +117,11 @@ jobs:
           GOOGLE_AUTH_ENABLED: 'false'
           GOOGLE_AUTH_CLIENT_ID: ''
           GOOGLE_AUTH_CLIENT_SECRET: ''
-        run: docker compose -f compose.coolify.yaml config --quiet
+        run: >-
+          docker compose -f compose.coolify.yaml config --format json |
+          jq --exit-status
+          '.services.watcher.environment.AlertSources__Neptun__Realtime__Enabled == "true"
+          and .services.postgres.ports == null'
 
   documentation:
     name: Перевірка посилань у документації
