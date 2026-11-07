@@ -121,6 +121,24 @@ function Get-EdgeAgentServiceStartupType {
     return 'auto'
 }
 
+function Get-EdgeAgentInstalledDesktopExecutablePath {
+    [CmdletBinding()]
+    param([string]$ProgramFilesDirectory = $env:ProgramFiles)
+
+    if ([string]::IsNullOrWhiteSpace($ProgramFilesDirectory) -or
+        -not [IO.Path]::IsPathRooted($ProgramFilesDirectory)) {
+        throw 'Не вдалося визначити абсолютний каталог Program Files.'
+    }
+
+    $installDirectory = Join-Path ([IO.Path]::GetFullPath($ProgramFilesDirectory)) 'KGTA\Alert\EdgeAgent'
+    $executablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
+    if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+        throw 'Не знайдено встановлену панель KGTA Alert. Спочатку адміністратор має встановити Windows-вузол.'
+    }
+
+    return [IO.Path]::GetFullPath($executablePath)
+}
+
 function Set-EdgeAgentDesktopStartupEntry {
     [CmdletBinding()]
     param(
@@ -248,6 +266,7 @@ Export-ModuleMember -Function @(
     'Get-EdgeAgentStartupRegistrySubKeyPath',
     'Test-EdgeAgentInteractiveUserProfileLoaded',
     'Get-EdgeAgentServiceStartupType',
+    'Get-EdgeAgentInstalledDesktopExecutablePath',
     'Set-EdgeAgentDesktopStartupEntry',
     'Remove-EdgeAgentDesktopStartupEntry'
 )

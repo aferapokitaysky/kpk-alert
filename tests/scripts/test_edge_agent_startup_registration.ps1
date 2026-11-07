@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
 $installerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\install-service.ps1'
+$userStartupScriptPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\set-operator-panel-startup.ps1'
 Import-Module -Name $modulePath -Force
 
 function Assert-Equal {
@@ -28,6 +29,7 @@ $testRunSubKey = "$testRootSubKey\Run"
 $testRegistryPath = "HKCU:\$testRootSubKey"
 $testExecutableDirectory = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert $testId"
 $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desktop.exe'
+$testProgramFilesPath = Join-Path ([IO.Path]::GetTempPath()) "KGTA Program Files $testId"
 $random = New-Object System.Random
 $interactiveUserSid = "S-1-5-21-1111111111-2222222222-3333333333-$($random.Next(100000, 2000000000))"
 $usersHive = $null
@@ -68,6 +70,23 @@ try {
         $failureFlagCommands.Count -ne 1) {
         throw 'Інсталятор має застосовувати автозапуск і відновлення після помилок служби.'
     }
+
+    $userStartupScriptText = Get-Content -LiteralPath $userStartupScriptPath -Raw
+    if ($userStartupScriptText -notmatch 'Resolve-EdgeAgentInteractiveUserSid\s*(?:\r?\n|$)' -or
+        $userStartupScriptText -notmatch 'Get-EdgeAgentInstalledDesktopExecutablePath' -or
+        $userStartupScriptText -notmatch 'Set-EdgeAgentDesktopStartupEntry' -or
+        $userStartupScriptText -notmatch 'Remove-EdgeAgentDesktopStartupEntry' -or
+        $userStartupScriptText -match 'sc\.exe|Add-LocalGroupMember|HKLM:') {
+        throw 'Команда користувача має змінювати лише Run-запис поточного профілю.'
+    }
+
+    $testDesktopDirectory = Join-Path $testProgramFilesPath 'KGTA\Alert\EdgeAgent'
+    $testDesktopExecutable = Join-Path $testDesktopDirectory 'Watcher.EdgeAgent.Desktop.exe'
+    New-Item -ItemType Directory -Path $testDesktopDirectory -Force | Out-Null
+    [IO.File]::WriteAllBytes($testDesktopExecutable, [byte[]]@())
+    Assert-Equal -Expected ([IO.Path]::GetFullPath($testDesktopExecutable)) -Actual (Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory $testProgramFilesPath) -Message 'Команда користувача має використовувати exe лише з каталогу встановлення.'
+    Assert-Throws { Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory $testExecutableDirectory } 'Відсутня встановлена панель має відхилятися.'
+    Assert-Throws { Get-EdgeAgentInstalledDesktopExecutablePath -ProgramFilesDirectory 'relative-path' } 'Відносний каталог Program Files має відхилятися.'
 
     $usersHive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Default)
     Assert-Equal -Expected $false -Actual (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid) -Message 'Відсутній профіль користувача має розпізнаватися як незавантажений.'
@@ -129,4 +148,9 @@ try {
     if ($usersHive) { $usersHive.Dispose() }
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }
+    $expectedProgramFilesPath = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "KGTA Program Files $testId"))
+    if ((Test-Path -LiteralPath $expectedProgramFilesPath) -and
+        [IO.Path]::GetFullPath($testProgramFilesPath) -eq $expectedProgramFilesPath) {
+        Remove-Item -LiteralPath $expectedProgramFilesPath -Recurse -Force
+    }
 }
