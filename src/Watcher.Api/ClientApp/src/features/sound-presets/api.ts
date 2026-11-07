@@ -1,4 +1,5 @@
 import { ApiError, getCsrfToken } from '../../api';
+import type { Location } from '../../api';
 
 export interface SoundPreset {
   code: string;
@@ -6,6 +7,15 @@ export interface SoundPreset {
   priority: number;
   manifestHash: string;
   isPublished: boolean;
+}
+
+export interface LocationAudioAsset {
+  assetId: string;
+  locationId: string;
+  presetCode: string;
+  sha256: string;
+  sizeBytes: number;
+  durationSeconds: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -85,4 +95,88 @@ export function setSoundPresetPublication(
   return mutate(`/api/v1/presets/${encodeURIComponent(code)}/publication`, 'PUT', {
     isPublished,
   });
+}
+
+export async function getLocationAudioAsset(
+  locationId: string,
+  presetCode: string,
+  signal?: AbortSignal,
+): Promise<LocationAudioAsset | null> {
+  const response = await fetch(
+    `/api/v1/admin/locations/${encodeURIComponent(locationId)}/sound-presets/${encodeURIComponent(presetCode)}/asset`,
+    {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+      ...(signal ? { signal } : {}),
+    },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new ApiError(response.status);
+  return parseAudioAsset(await response.json(), locationId, presetCode);
+}
+
+export async function uploadLocationAudioAsset(
+  location: Location,
+  presetCode: string,
+  file: File,
+): Promise<LocationAudioAsset> {
+  const token = await getCsrfToken();
+  const formData = new FormData();
+  formData.append('File', file);
+  const response = await fetch(
+    `/api/v1/admin/locations/${encodeURIComponent(location.id)}/sound-presets/${encodeURIComponent(presetCode)}/asset`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'X-CSRF-TOKEN': token },
+      body: formData,
+    },
+  );
+  if (!response.ok) throw new ApiError(response.status);
+  return parseAudioAsset(await response.json(), location.id, presetCode);
+}
+
+export async function deleteLocationAudioAsset(
+  location: Location,
+  presetCode: string,
+): Promise<void> {
+  const token = await getCsrfToken();
+  const response = await fetch(
+    `/api/v1/admin/locations/${encodeURIComponent(location.id)}/sound-presets/${encodeURIComponent(presetCode)}/asset`,
+    {
+      method: 'DELETE',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'X-CSRF-TOKEN': token },
+    },
+  );
+  if (!response.ok) throw new ApiError(response.status);
+}
+
+function parseAudioAsset(
+  value: unknown,
+  locationId: string,
+  presetCode: string,
+): LocationAudioAsset {
+  if (
+    !isRecord(value) ||
+    typeof value.assetId !== 'string' ||
+    value.locationId !== locationId ||
+    value.presetCode !== presetCode ||
+    typeof value.sha256 !== 'string' ||
+    typeof value.sizeBytes !== 'number' ||
+    typeof value.durationSeconds !== 'number'
+  ) {
+    throw new Error('invalid-location-audio-asset-response');
+  }
+  return {
+    assetId: value.assetId,
+    locationId,
+    presetCode,
+    sha256: value.sha256,
+    sizeBytes: value.sizeBytes,
+    durationSeconds: value.durationSeconds,
+  };
 }

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSoundPreset, getSoundPresets, setSoundPresetPublication } from './api';
+import {
+  createSoundPreset,
+  deleteLocationAudioAsset,
+  getLocationAudioAsset,
+  getSoundPresets,
+  setSoundPresetPublication,
+  uploadLocationAudioAsset,
+} from './api';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -87,5 +94,76 @@ describe('API звукових сценаріїв', () => {
       vi.fn().mockResolvedValue(new Response(JSON.stringify([{ code: 'bad' }]), { status: 200 })),
     );
     await expect(getSoundPresets()).rejects.toThrow('invalid-sound-preset-response');
+  });
+
+  it('читає відомості про аудіофайл і трактує 404 як відсутність файла', async () => {
+    const asset = {
+      assetId: 'asset-1',
+      locationId: 'location-1',
+      presetCode: 'air_alert',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 2048,
+      durationSeconds: 12,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(asset), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getLocationAudioAsset('location-1', 'air_alert')).resolves.toEqual(asset);
+    await expect(getLocationAudioAsset('location-1', 'air_alert')).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/admin/locations/location-1/sound-presets/air_alert/asset',
+      expect.objectContaining({ cache: 'no-store', credentials: 'same-origin' }),
+    );
+  });
+
+  it('завантажує файл як multipart і не задає Content-Type вручну', async () => {
+    const asset = {
+      assetId: 'asset-1',
+      locationId: 'location-1',
+      presetCode: 'air_alert',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 2048,
+      durationSeconds: 12,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'csrf-value' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(asset), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const location = { id: 'location-1', name: 'Кременчук', code: 'kremenchuk' };
+    const file = new File(['wav'], 'alarm.wav', { type: 'audio/wav' });
+
+    await expect(uploadLocationAudioAsset(location, 'air_alert', file)).resolves.toEqual(asset);
+
+    const options = fetchMock.mock.calls.at(1)?.[1];
+    expect(options?.method).toBe('POST');
+    expect(options?.headers).toEqual({ Accept: 'application/json', 'X-CSRF-TOKEN': 'csrf-value' });
+    expect(options?.body).toBeInstanceOf(FormData);
+    if (options?.body instanceof FormData) expect(options.body.get('File')).toBe(file);
+  });
+
+  it('видаляє аудіофайл із CSRF-заголовком', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'csrf-value' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      deleteLocationAudioAsset(
+        { id: 'location-1', name: 'Кременчук', code: 'kremenchuk' },
+        'air_alert',
+      ),
+    ).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/admin/locations/location-1/sound-presets/air_alert/asset',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { Accept: 'application/json', 'X-CSRF-TOKEN': 'csrf-value' },
+      }),
+    );
   });
 });

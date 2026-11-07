@@ -4,22 +4,31 @@ import { ApiError } from '../../api';
 import { SoundPresetsPage } from './SoundPresetsPage';
 import {
   createSoundPreset,
+  deleteLocationAudioAsset,
+  getLocationAudioAsset,
   getSoundPresets,
   setSoundPresetPublication,
+  uploadLocationAudioAsset,
   updateSoundPreset,
 } from './api';
 
 vi.mock('./api', () => ({
   createSoundPreset: vi.fn(),
+  deleteLocationAudioAsset: vi.fn(),
+  getLocationAudioAsset: vi.fn(),
   getSoundPresets: vi.fn(),
   setSoundPresetPublication: vi.fn(),
+  uploadLocationAudioAsset: vi.fn(),
   updateSoundPreset: vi.fn(),
 }));
 
 const api = {
   create: vi.mocked(createSoundPreset),
+  deleteAudio: vi.mocked(deleteLocationAudioAsset),
+  getAudio: vi.mocked(getLocationAudioAsset),
   get: vi.mocked(getSoundPresets),
   publication: vi.mocked(setSoundPresetPublication),
+  uploadAudio: vi.mocked(uploadLocationAudioAsset),
   update: vi.mocked(updateSoundPreset),
 };
 const adminSession = {
@@ -34,6 +43,7 @@ const preset = {
   manifestHash: 'a'.repeat(64),
   isPublished: false,
 };
+const location = { id: 'location-1', name: 'Кременчук', code: 'kremenchuk' };
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -78,6 +88,52 @@ describe('керування звуковими сценаріями', () => {
     expect(
       within(publishedItem as HTMLElement).getByRole('button', { name: 'Зняти публікацію' }),
     ).toBeInTheDocument();
+  });
+
+  it('завантажує WAV для вибраної локації та сценарію', async () => {
+    api.get.mockResolvedValue([preset]);
+    api.getAudio.mockResolvedValue(null);
+    const audioAsset = {
+      assetId: 'asset-1',
+      locationId: location.id,
+      presetCode: preset.code,
+      sha256: 'b'.repeat(64),
+      sizeBytes: 2048,
+      durationSeconds: 12,
+    };
+    api.uploadAudio.mockResolvedValue(audioAsset);
+    render(
+      <SoundPresetsPage session={adminSession} locations={[location]} onSessionExpired={vi.fn()} />,
+    );
+
+    const upload = await screen.findByLabelText(/Завантажити WAV-файл/);
+    await waitFor(() => expect(upload).toBeEnabled());
+    const file = new File(['wav data'], 'alarm.wav', { type: 'audio/wav' });
+    fireEvent.change(upload, { target: { files: [file] } });
+
+    await waitFor(() => expect(api.uploadAudio).toHaveBeenCalledWith(location, preset.code, file));
+    expect(await screen.findByText(/Файл додано/)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Аудіофайл завантажено та перевірено.');
+  });
+
+  it('видаляє наявний файл і повідомляє про результат', async () => {
+    api.get.mockResolvedValue([preset]);
+    api.getAudio.mockResolvedValue({
+      assetId: 'asset-1',
+      locationId: location.id,
+      presetCode: preset.code,
+      sha256: 'b'.repeat(64),
+      sizeBytes: 2048,
+      durationSeconds: 12,
+    });
+    api.deleteAudio.mockResolvedValue();
+    render(
+      <SoundPresetsPage session={adminSession} locations={[location]} onSessionExpired={vi.fn()} />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Видалити аудіофайл' }));
+    await waitFor(() => expect(api.deleteAudio).toHaveBeenCalledWith(location, preset.code));
+    expect(await screen.findByText('Аудіофайл видалено.')).toBeInTheDocument();
   });
 
   it('створює чернетку із валідованими полями та оновлює список', async () => {

@@ -644,6 +644,7 @@ function App() {
           ) : page === 'presets' && canManagePresets ? (
             <SoundPresetsPage
               session={session}
+              locations={locations.status === 'ready' ? locations.data : []}
               onSessionExpired={() => {
                 setSession({ status: 'unauthenticated' });
                 setLocations({ status: 'unauthenticated' });

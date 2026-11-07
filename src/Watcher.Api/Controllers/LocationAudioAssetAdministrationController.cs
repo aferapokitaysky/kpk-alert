@@ -27,6 +27,33 @@ public sealed class LocationAudioAssetAdministrationController(
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    [HttpGet]
+    public async Task<IActionResult> GetAsync(
+        Guid locationId,
+        string presetCode,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        if (!await IsGlobalAdministratorAsync(cancellationToken))
+        {
+            return Forbid();
+        }
+
+        if (!PresetCodePattern.IsMatch(presetCode) || locationId == Guid.Empty)
+        {
+            return ValidationProblem("Перевірте код сценарію та ідентифікатор локації.");
+        }
+
+        LocationAudioAsset? asset = await db.LocationAudioAssets.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.LocationId == locationId && item.PresetCode == presetCode,
+                cancellationToken);
+        return asset is null
+            ? NotFound()
+            : Ok(new LocationAudioAssetResponse(
+                asset.Id, asset.LocationId, asset.PresetCode, asset.Sha256, asset.SizeBytes,
+                asset.DurationSeconds));
+    }
+
     [HttpPost]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(PhysicalAudioAssetStore.MaximumFileBytes + 1024 * 1024)]

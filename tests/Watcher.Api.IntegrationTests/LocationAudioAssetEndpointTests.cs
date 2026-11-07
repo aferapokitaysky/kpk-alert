@@ -58,6 +58,15 @@ public sealed class LocationAudioAssetEndpointTests(PostgresApiFixture fixture)
             audit.EventType == "audio_asset.uploaded" && audit.ActorId == seed.AdministratorId &&
             audit.Payload.Contains(result.AssetId.ToString(), StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain("outside.wav", result.AssetId.ToString());
+
+        using HttpRequestMessage statusRequest = new(HttpMethod.Get,
+            $"/api/v1/admin/locations/{seed.FirstLocationId}/sound-presets/evacuation/asset");
+        AddUserHeaders(statusRequest, seed.AdministratorId);
+        using HttpResponseMessage statusResponse = await fixture.Client.SendAsync(statusRequest);
+        Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
+        LocationAudioAssetResponse? status =
+            await statusResponse.Content.ReadFromJsonAsync<LocationAudioAssetResponse>();
+        Assert.Equal(result.AssetId, status?.AssetId);
     }
 
     [PostgresFact]
