@@ -9,8 +9,8 @@ public static class SqliteDatabaseBackup
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
 
-        string source = Path.GetFullPath(sourcePath);
-        string destination = Path.GetFullPath(destinationPath);
+        var source = Path.GetFullPath(sourcePath);
+        var destination = Path.GetFullPath(destinationPath);
         if (string.Equals(source, destination, OperatingSystem.IsWindows()
                 ? StringComparison.OrdinalIgnoreCase
                 : StringComparison.Ordinal))

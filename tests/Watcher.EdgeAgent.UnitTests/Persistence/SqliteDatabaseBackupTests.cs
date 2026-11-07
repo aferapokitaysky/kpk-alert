@@ -8,9 +8,9 @@ public sealed class SqliteDatabaseBackupTests
     [Fact]
     public void Create_CopiesCommittedWalDataWithoutIncludingAnOpenTransaction()
     {
-        string directory = CreateTemporaryDirectory();
-        string sourcePath = Path.Combine(directory, "edge-agent.db");
-        string destinationPath = Path.Combine(directory, "backups", "edge-agent.db");
+        var directory = CreateTemporaryDirectory();
+        var sourcePath = Path.Combine(directory, "edge-agent.db");
+        var destinationPath = Path.Combine(directory, "backups", "edge-agent.db");
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
 
         try
@@ -46,9 +46,9 @@ public sealed class SqliteDatabaseBackupTests
     [Fact]
     public void Create_DoesNotOverwriteExistingDestination()
     {
-        string directory = CreateTemporaryDirectory();
-        string sourcePath = Path.Combine(directory, "edge-agent.db");
-        string destinationPath = Path.Combine(directory, "backup.db");
+        var directory = CreateTemporaryDirectory();
+        var sourcePath = Path.Combine(directory, "edge-agent.db");
+        var destinationPath = Path.Combine(directory, "backup.db");
 
         try
         {
@@ -88,7 +88,7 @@ public sealed class SqliteDatabaseBackupTests
 
     private static string CreateTemporaryDirectory()
     {
-        string path = Path.Combine(Path.GetTempPath(), "kgta-sqlite-backup-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(Path.GetTempPath(), "kgta-sqlite-backup-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
     }
