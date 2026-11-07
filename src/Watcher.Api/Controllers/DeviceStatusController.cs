@@ -14,7 +14,7 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/admin/devices")]
 public sealed class DeviceStatusController(
     WatcherDbContext db,
-    DeviceCommandSessionRegistry sessions) : ControllerBase
+    TimeProvider timeProvider) : ControllerBase
 {
     private const int DefaultPageSize = 50;
     private const int MaximumPageSize = 100;
@@ -81,7 +81,11 @@ public sealed class DeviceStatusController(
             .Take(pageSize)
             .ToArrayAsync(cancellationToken);
 
-        var connectedDeviceIds = sessions.ConnectedDeviceIds.ToHashSet();
+        Guid[] pageDeviceIds = rows.Select(row => row.Id).ToArray();
+        HashSet<Guid> connectedDeviceIds = await DeviceSessionPresenceService
+            .ConnectedDeviceIds(db, timeProvider.GetUtcNow())
+            .Where(deviceId => pageDeviceIds.Contains(deviceId))
+            .ToHashSetAsync(cancellationToken);
         // The query intentionally returns only operational fields; the certificate fingerprint stays private.
         DeviceStatusItem[] items = rows.Select(row => new DeviceStatusItem(
             row.Name,

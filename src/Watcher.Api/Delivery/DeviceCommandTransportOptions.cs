@@ -6,6 +6,7 @@ public sealed class DeviceCommandTransportOptions
 
     public bool Enabled { get; set; } = true;
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan SendTimeout { get; set; } = TimeSpan.FromSeconds(5);
     public TimeSpan AcknowledgementTimeout { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan InitialRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan MaximumRetryDelay { get; set; } = TimeSpan.FromSeconds(15);
@@ -14,6 +15,8 @@ public sealed class DeviceCommandTransportOptions
     public bool IsValid() =>
         PollInterval >= TimeSpan.FromMilliseconds(50) &&
         PollInterval <= TimeSpan.FromSeconds(5) &&
+        SendTimeout >= TimeSpan.FromSeconds(1) &&
+        SendTimeout <= TimeSpan.FromSeconds(15) &&
         AcknowledgementTimeout >= TimeSpan.FromSeconds(1) &&
         AcknowledgementTimeout <= TimeSpan.FromMinutes(1) &&
         InitialRetryDelay >= TimeSpan.FromMilliseconds(100) &&

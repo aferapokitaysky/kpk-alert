@@ -241,7 +241,11 @@ WebApplication app = builder.Build();
 app.UseForwardedHeaders();
 app.UseContentSecurityPolicy();
 app.UseHttpsRedirection();
-app.UseWebSockets();
+app.UseWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(15),
+    KeepAliveTimeout = TimeSpan.FromSeconds(30)
+});
 app.UseRouting();
 app.UseMiddleware<NoStoreResponseMiddleware>();
 app.UseAuthentication();

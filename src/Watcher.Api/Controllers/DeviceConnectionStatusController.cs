@@ -15,7 +15,7 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/device-status")]
 public sealed class DeviceConnectionStatusController(
     WatcherDbContext db,
-    DeviceCommandSessionRegistry sessions) : ControllerBase
+    TimeProvider timeProvider) : ControllerBase
 {
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
@@ -93,7 +93,11 @@ public sealed class DeviceConnectionStatusController(
                 "offline"))
             .ToListAsync(cancellationToken);
 
-        var connectedDeviceIds = sessions.ConnectedDeviceIds.ToHashSet();
+        Guid[] deviceIds = devices.Select(device => device.DeviceId).ToArray();
+        HashSet<Guid> connectedDeviceIds = await DeviceSessionPresenceService
+            .ConnectedDeviceIds(db, timeProvider.GetUtcNow())
+            .Where(deviceId => deviceIds.Contains(deviceId))
+            .ToHashSetAsync(cancellationToken);
         DeviceConnectionStatusResponse[] response = devices
             .Select(device => device with
             {

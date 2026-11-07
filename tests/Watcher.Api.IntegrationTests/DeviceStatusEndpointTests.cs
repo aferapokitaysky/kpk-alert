@@ -43,15 +43,15 @@ public sealed class DeviceStatusEndpointTests
             new LocationSeed(inactiveLocationId, "Неактивний корпус", false,
                 [NewDevice(inactiveLocationDeviceId, inactiveLocationId)]));
 
-        DeviceCommandSessionRegistry sessions = factory.Services.GetRequiredService<DeviceCommandSessionRegistry>();
-        DeviceCommandWebSocketSession connectedSession = await sessions.RegisterAsync(
-            connectedDeviceId, new OpenWebSocket(), CancellationToken.None);
-        DeviceCommandWebSocketSession foreignSession = await sessions.RegisterAsync(
-            foreignDeviceId, new OpenWebSocket(), CancellationToken.None);
-        DeviceCommandWebSocketSession revokedSession = await sessions.RegisterAsync(
-            revokedDeviceId, new OpenWebSocket(), CancellationToken.None);
-        DeviceCommandWebSocketSession inactiveSession = await sessions.RegisterAsync(
-            inactiveLocationDeviceId, new OpenWebSocket(), CancellationToken.None);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await SeedSessionsAsync(factory,
+        [
+            (connectedDeviceId, now, null),
+            (foreignDeviceId, now, null),
+            (revokedDeviceId, now, null),
+            (inactiveLocationDeviceId, now, null),
+            (disconnectedDeviceId, now.AddMinutes(-1), null)
+        ]);
 
         using HttpClient client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
@@ -76,7 +76,7 @@ public sealed class DeviceStatusEndpointTests
         Assert.DoesNotContain(items, item => item.GetProperty("deviceId").GetGuid() == revokedDeviceId);
         Assert.DoesNotContain(items, item => item.GetProperty("deviceId").GetGuid() == inactiveLocationDeviceId);
 
-        sessions.Unregister(connectedSession);
+        await SetDisconnectedAsync(factory, connectedDeviceId, now.AddSeconds(1));
         using HttpRequestMessage disconnectedRequest = CreateRequest(userId);
         using HttpResponseMessage disconnectedResponse = await client.SendAsync(disconnectedRequest);
         using var disconnectedBody = JsonDocument.Parse(
@@ -85,9 +85,6 @@ public sealed class DeviceStatusEndpointTests
             item.GetProperty("deviceId").GetGuid() == connectedDeviceId);
         Assert.Equal("offline", disconnectedItem.GetProperty("connectionState").GetString());
 
-        sessions.Unregister(foreignSession);
-        sessions.Unregister(revokedSession);
-        sessions.Unregister(inactiveSession);
     }
 
     [Fact]
@@ -264,6 +261,36 @@ public sealed class DeviceStatusEndpointTests
         WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
         UserAccount user = await db.Users.SingleAsync(account => account.Id == userId);
         user.IsActive = false;
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task SeedSessionsAsync(
+        WebApplicationFactory<Program> factory,
+        IReadOnlyList<(Guid DeviceId, DateTimeOffset LastSeenAtUtc, DateTimeOffset? DisconnectedAtUtc)> sessions)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        db.DeviceSessions.AddRange(sessions.Select(session => new DeviceSession
+        {
+            Id = Guid.NewGuid(),
+            DeviceId = session.DeviceId,
+            ConnectedAtUtc = session.LastSeenAtUtc,
+            LastSeenAtUtc = session.LastSeenAtUtc,
+            DisconnectedAtUtc = session.DisconnectedAtUtc
+        }));
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task SetDisconnectedAsync(
+        WebApplicationFactory<Program> factory,
+        Guid deviceId,
+        DateTimeOffset disconnectedAtUtc)
+    {
+        using IServiceScope scope = factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        DeviceSession session = await db.DeviceSessions.SingleAsync(item =>
+            item.DeviceId == deviceId && item.DisconnectedAtUtc == null);
+        session.DisconnectedAtUtc = disconnectedAtUtc;
         await db.SaveChangesAsync();
     }
 

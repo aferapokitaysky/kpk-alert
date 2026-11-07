@@ -10,6 +10,7 @@ public static class DeviceCommandTransportServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddSingleton<DeviceCommandSessionRegistry>();
+        services.AddSingleton<DeviceSessionPresenceService>();
         services.AddScoped<DeviceCommandDispatchBatchProcessor>();
         services.AddOptions<DeviceCommandTransportOptions>()
             .Bind(configuration.GetSection(DeviceCommandTransportOptions.SectionName))
