@@ -152,6 +152,18 @@ beforeEach(() => {
 });
 
 describe('пульт оператора', () => {
+  it('показує інструкцію встановлення PWA в оболонці застосунку', async () => {
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Додайте систему на головний екран' }),
+    ).toBeInTheDocument();
+    expect(document.querySelector('.pwa-install__logo')).toHaveAttribute(
+      'src',
+      '/images/kpk-logo.png',
+    );
+  });
+
   it('показує керування webhook лише адміністратору', async () => {
     render(<App />);
     expect(await screen.findByTestId('ukrainealarm-webhook-management')).toBeInTheDocument();

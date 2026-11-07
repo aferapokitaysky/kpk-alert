@@ -21,6 +21,7 @@ import { CommandDialog } from './features/dashboard/CommandDialog';
 import { StopCommandDialog } from './features/dashboard/StopCommandDialog';
 import { UserAccessPanel } from './features/user-access/UserAccessPanel';
 import { SoundPresetsPage } from './features/sound-presets/SoundPresetsPage';
+import { PwaInstallGuidance } from './features/pwa-install';
 import {
   clearLastCommandId,
   readLastCommandId,
@@ -600,6 +601,8 @@ function App() {
               <span> Зверніться до адміністратора закладу.</span>
             </section>
           )}
+
+          <PwaInstallGuidance />
 
           {page === 'dashboard' ? (
             <Dashboard
