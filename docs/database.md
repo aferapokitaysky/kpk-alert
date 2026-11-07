@@ -32,7 +32,7 @@ erDiagram
 | `roles`                      | `id`, `code`                                                                                  | Ролі `admin`, `sound_engineer`, `notificator`, `auditor`      |
 | `user_roles`                 | `user_id`, `role_id`, `location_id?`                                                          | Глобальні права або права в конкретній локації                |
 | `locations`                  | `id`, `code`, `name`, `is_active`                                                             | Корпус або окрема зона трансляції                             |
-| `devices`                    | `id`, `location_id`, `certificate_thumbprint`, `status`                                       | Зареєстровані вузли та стан сертифіката                       |
+| `devices`                    | `id`, `location_id`, `certificate_thumbprint`, `pending_certificate_thumbprint?`, `pending_certificate_created_at_utc?`, `revoked_at_utc?` | Вузли, активний сертифікат і очікування його ротації           |
 | `sound_presets`              | `id`, `code`, `priority`, `manifest_hash`, `status`                                           | Погоджені сценарії відтворення                                |
 | `location_presets`           | `location_id`, `preset_id`, `is_enabled`                                                      | Сценарії, дозволені для локації                               |
 | `alert_commands`             | `id`, `kind`, `preset_id`, `initiated_by_user_id`, `created_at`                               | Створені команди та ініціатор                                 |

@@ -129,12 +129,40 @@ public sealed class DeviceMtlsKestrelTests
             () => untrustedClient.GetAsync("/api/v1/device/identity"));
     }
 
+    [Fact]
+    public async Task Pending_certificate_cannot_access_general_device_identity_endpoint()
+    {
+        using TestCertificateAuthority trustedAuthority = new();
+        using TestKeyCertificate oldCertificate = CreateClientCertificate(trustedAuthority, "old-device");
+        using TestKeyCertificate pendingCertificate = CreateClientCertificate(trustedAuthority, "new-device");
+        using TestKeyCertificate serverCertificate = CreateServerCertificate();
+        var deviceId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        await using WebApplication app = await StartKestrelAsync(
+            serverCertificate.Certificate,
+            trustedAuthority.Root,
+            deviceId,
+            locationId,
+            oldCertificate.Certificate,
+            pendingCertificate.Certificate);
+        Uri address = GetHttpsAddress(app);
+
+        using HttpClient pendingClient = CreateClient(address, pendingCertificate.Certificate);
+        using HttpResponseMessage beforeConfirmation = await pendingClient.GetAsync("/api/v1/device/identity");
+        Assert.Equal(HttpStatusCode.Forbidden, beforeConfirmation.StatusCode);
+
+        using HttpClient oldClient = CreateClient(address, oldCertificate.Certificate);
+        using HttpResponseMessage oldIdentity = await oldClient.GetAsync("/api/v1/device/identity");
+        Assert.Equal(HttpStatusCode.OK, oldIdentity.StatusCode);
+    }
+
     private static async Task<WebApplication> StartKestrelAsync(
         X509Certificate2 serverCertificate,
         X509Certificate2 trustedRoot,
         Guid deviceId,
         Guid locationId,
-        X509Certificate2 registeredCertificate)
+        X509Certificate2 registeredCertificate,
+        X509Certificate2? pendingCertificate = null)
     {
         var databaseName = Guid.NewGuid().ToString();
         WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -150,8 +178,11 @@ public sealed class DeviceMtlsKestrelTests
             .AddApplicationPart(typeof(DeviceIdentityController).Assembly);
         builder.Services.AddAuthorization();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<DeviceCommandSessionRegistry>();
         builder.Services.AddDeviceCertificateAuthentication(trustedRoot);
         builder.Services.PostConfigure<CertificateAuthenticationOptions>(DeviceCertificateAuthentication.Scheme,
+            options => options.RevocationMode = X509RevocationMode.NoCheck);
+        builder.Services.PostConfigure<CertificateAuthenticationOptions>(DeviceCertificateAuthentication.PendingScheme,
             options => options.RevocationMode = X509RevocationMode.NoCheck);
         builder.Services.AddDbContext<WatcherDbContext>(options => options.UseInMemoryDatabase(databaseName));
         builder.Services.AddScoped<DeviceCertificateAuthenticator>();
@@ -173,7 +204,11 @@ public sealed class DeviceMtlsKestrelTests
                 Id = deviceId,
                 LocationId = locationId,
                 Name = "Тестовий вузол",
-                CertificateThumbprint = Convert.ToHexString(SHA256.HashData(registeredCertificate.RawData))
+                CertificateThumbprint = Convert.ToHexString(SHA256.HashData(registeredCertificate.RawData)),
+                PendingCertificateThumbprint = pendingCertificate is null
+                    ? null
+                    : Convert.ToHexString(SHA256.HashData(pendingCertificate.RawData)),
+                PendingCertificateCreatedAtUtc = pendingCertificate is null ? null : DateTimeOffset.UtcNow
             });
             await db.SaveChangesAsync();
         }
@@ -314,9 +349,9 @@ public sealed class DeviceMtlsKestrelTests
 
     private static TestKeyCertificate CreateServerCertificate()
     {
-        var testKey = CreateTestRsaKey();
+        (RSA Key, string? KeyName) testKey = CreateTestRsaKey();
         RSA key = testKey.Key;
-        string? keyName = testKey.KeyName;
+        var keyName = testKey.KeyName;
         try
         {
             var request = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256,
@@ -344,9 +379,9 @@ public sealed class DeviceMtlsKestrelTests
         TestCertificateAuthority authority,
         string commonName)
     {
-        var testKey = CreateTestRsaKey();
+        (RSA Key, string? KeyName) testKey = CreateTestRsaKey();
         RSA clientKey = testKey.Key;
-        string? keyName = testKey.KeyName;
+        var keyName = testKey.KeyName;
         try
         {
             var request = new CertificateRequest(

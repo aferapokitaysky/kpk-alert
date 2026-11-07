@@ -44,6 +44,7 @@ public static class DeviceClientCertificateTrust
 public static class DeviceCertificateAuthentication
 {
     public const string Scheme = "DeviceCertificate";
+    public const string PendingScheme = "PendingDeviceCertificate";
     public const string DeviceIdClaim = "kgta_device_id";
     public const string LocationIdClaim = "kgta_location_id";
 
@@ -52,53 +53,60 @@ public static class DeviceCertificateAuthentication
         X509Certificate2? clientCaCertificate)
     {
         services.AddAuthentication()
-            .AddCertificate(Scheme, options =>
-            {
-                options.AllowedCertificateTypes = CertificateTypes.Chained;
-                options.ValidateCertificateUse = true;
-                options.ValidateValidityPeriod = true;
-                options.RevocationMode = X509RevocationMode.Online;
-                options.ChainTrustValidationMode = clientCaCertificate is null
-                    ? X509ChainTrustMode.System
-                    : X509ChainTrustMode.CustomRootTrust;
-                if (clientCaCertificate is not null)
-                {
-                    options.CustomTrustStore.Add(clientCaCertificate);
-                }
-
-                options.Events = new CertificateAuthenticationEvents
-                {
-                    OnCertificateValidated = async context =>
-                    {
-                        DeviceCertificateAuthenticator? authenticator = context.HttpContext.RequestServices
-                            .GetService<DeviceCertificateAuthenticator>();
-                        if (authenticator is null)
-                        {
-                            context.Fail("Device certificate authentication is unavailable.");
-                            return;
-                        }
-
-                        DeviceIdentity? device = await authenticator.AuthenticateAsync(
-                            context.ClientCertificate,
-                            context.HttpContext.RequestAborted);
-                        if (device is null)
-                        {
-                            context.Fail("The device certificate is not registered or has been revoked.");
-                            return;
-                        }
-
-                        List<Claim> claims =
-                        [
-                            new(DeviceIdClaim, device.DeviceId.ToString()),
-                            new(LocationIdClaim, device.LocationId.ToString())
-                        ];
-                        context.Principal = new ClaimsPrincipal(
-                            new ClaimsIdentity(claims, context.Scheme.Name));
-                        context.Success();
-                    }
-                };
-            });
+            .AddCertificate(Scheme, options => Configure(options, clientCaCertificate, pending: false))
+            .AddCertificate(PendingScheme, options => Configure(options, clientCaCertificate, pending: true));
 
         return services;
+    }
+
+    private static void Configure(
+        CertificateAuthenticationOptions options,
+        X509Certificate2? clientCaCertificate,
+        bool pending)
+    {
+        options.AllowedCertificateTypes = CertificateTypes.Chained;
+        options.ValidateCertificateUse = true;
+        options.ValidateValidityPeriod = true;
+        options.RevocationMode = X509RevocationMode.Online;
+        options.ChainTrustValidationMode = clientCaCertificate is null
+            ? X509ChainTrustMode.System
+            : X509ChainTrustMode.CustomRootTrust;
+        if (clientCaCertificate is not null)
+        {
+            options.CustomTrustStore.Add(clientCaCertificate);
+        }
+
+        options.Events = new CertificateAuthenticationEvents
+        {
+            OnCertificateValidated = async context =>
+            {
+                DeviceCertificateAuthenticator? authenticator = context.HttpContext.RequestServices
+                    .GetService<DeviceCertificateAuthenticator>();
+                if (authenticator is null)
+                {
+                    context.Fail("Device certificate authentication is unavailable.");
+                    return;
+                }
+
+                DeviceIdentity? device = pending
+                    ? await authenticator.AuthenticatePendingAsync(context.ClientCertificate,
+                        context.HttpContext.RequestAborted)
+                    : await authenticator.AuthenticateAsync(context.ClientCertificate,
+                        context.HttpContext.RequestAborted);
+                if (device is null)
+                {
+                    context.Fail("The device certificate is not registered or has been revoked.");
+                    return;
+                }
+
+                List<Claim> claims =
+                [
+                    new(DeviceIdClaim, device.DeviceId.ToString()),
+                    new(LocationIdClaim, device.LocationId.ToString())
+                ];
+                context.Principal = new ClaimsPrincipal(new ClaimsIdentity(claims, context.Scheme.Name));
+                context.Success();
+            }
+        };
     }
 }

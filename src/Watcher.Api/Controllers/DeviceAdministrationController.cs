@@ -63,12 +63,25 @@ public sealed class DeviceAdministrationController(
                 title: "Оберіть наявний активний корпус.");
         }
 
+        var normalizedFingerprint = fingerprint.ToUpperInvariant();
+        if (await db.Devices.AnyAsync(device =>
+                device.CertificateThumbprint.ToUpper() == normalizedFingerprint ||
+                (device.PendingCertificateThumbprint != null &&
+                 device.PendingCertificateThumbprint.ToUpper() == normalizedFingerprint), cancellationToken))
+        {
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Цей сертифікат уже призначено вузлу або очікується для ротації."
+            });
+        }
+
         Device device = new()
         {
             Id = Guid.NewGuid(),
             LocationId = request.LocationId,
             Name = name,
-            CertificateThumbprint = fingerprint.ToUpperInvariant()
+            CertificateThumbprint = normalizedFingerprint
         };
         db.Devices.Add(device);
         AddAuditEvent("device.registered", new
@@ -149,6 +162,135 @@ public sealed class DeviceAdministrationController(
         return Ok(new DeviceRevocationResponse(deviceId, IsActive: false, revokedAtUtc));
     }
 
+    [HttpPost("{deviceId:guid}/certificate-rotations")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> StageCertificateRotationAsync(
+        Guid deviceId,
+        [FromBody] StageDeviceCertificateRotationRequest request,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        if (!await IsGlobalAdministratorAsync(cancellationToken))
+        {
+            return Forbid();
+        }
+
+        var fingerprint = request.CertificateSha256?.Trim() ?? string.Empty;
+        if (!CertificateFingerprintPattern.IsMatch(fingerprint))
+        {
+            return Problem(statusCode: StatusCodes.Status400BadRequest,
+                title: "Вкажіть SHA-256 відбиток сертифіката у форматі з 64 шістнадцяткових символів.");
+        }
+
+        DateTimeOffset createdAtUtc = timeProvider.GetUtcNow();
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await LockUserAccessMutationsAsync(cancellationToken);
+        if (!await IsGlobalAdministratorAsync(cancellationToken))
+        {
+            return Forbid();
+        }
+
+        Device? device = await db.Devices
+            .FromSqlInterpolated($"SELECT * FROM devices WHERE \"Id\" = {deviceId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        if (device is null)
+        {
+            return NotFound();
+        }
+
+        if (device.RevokedAtUtc is not null ||
+            !await db.Locations.AnyAsync(location => location.Id == device.LocationId && location.IsActive,
+                cancellationToken))
+        {
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Для відкликаного вузла або неактивного корпусу ротація недоступна."
+            });
+        }
+
+        var normalizedFingerprint = fingerprint.ToUpperInvariant();
+        if (device.PendingCertificateThumbprint is not null)
+        {
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Для вузла вже очікується підтвердження ротації. Спочатку скасуйте його."
+            });
+        }
+
+        if (device.CertificateThumbprint.ToUpper() == normalizedFingerprint ||
+            await db.Devices.AnyAsync(existing => existing.Id != deviceId &&
+                (existing.CertificateThumbprint.ToUpper() == normalizedFingerprint ||
+                 (existing.PendingCertificateThumbprint != null &&
+                  existing.PendingCertificateThumbprint.ToUpper() == normalizedFingerprint)), cancellationToken))
+        {
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Цей сертифікат уже призначено іншому вузлу або він є активним."
+            });
+        }
+
+        device.PendingCertificateThumbprint = normalizedFingerprint;
+        device.PendingCertificateCreatedAtUtc = createdAtUtc;
+        AddAuditEvent("device.certificate_rotation_staged", new
+        {
+            deviceId = device.Id,
+            device.Name,
+            device.LocationId,
+            createdAtUtc
+        });
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return Accepted(new DeviceCertificateRotationResponse(device.Id, createdAtUtc));
+    }
+
+    [HttpDelete("{deviceId:guid}/certificate-rotations")]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> CancelCertificateRotationAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        if (!await IsGlobalAdministratorAsync(cancellationToken))
+        {
+            return Forbid();
+        }
+
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await LockUserAccessMutationsAsync(cancellationToken);
+        if (!await IsGlobalAdministratorAsync(cancellationToken))
+        {
+            return Forbid();
+        }
+
+        Device? device = await db.Devices
+            .FromSqlInterpolated($"SELECT * FROM devices WHERE \"Id\" = {deviceId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+        if (device is null)
+        {
+            return NotFound();
+        }
+
+        if (device.PendingCertificateThumbprint is not null)
+        {
+            device.PendingCertificateThumbprint = null;
+            device.PendingCertificateCreatedAtUtc = null;
+            AddAuditEvent("device.certificate_rotation_cancelled", new
+            {
+                deviceId = device.Id,
+                device.Name,
+                device.LocationId
+            });
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return NoContent();
+    }
+
     private async Task<bool> IsGlobalAdministratorAsync(CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(User.FindFirstValue("kgta_user_id"), out Guid userId))
@@ -194,3 +336,7 @@ public sealed record RegisterDeviceRequest(string Name, Guid LocationId, string 
 public sealed record DeviceRegistrationResponse(Guid DeviceId, string Name, Guid LocationId, bool IsActive);
 
 public sealed record DeviceRevocationResponse(Guid DeviceId, bool IsActive, DateTimeOffset RevokedAtUtc);
+
+public sealed record StageDeviceCertificateRotationRequest(string CertificateSha256);
+
+public sealed record DeviceCertificateRotationResponse(Guid DeviceId, DateTimeOffset PendingAtUtc);

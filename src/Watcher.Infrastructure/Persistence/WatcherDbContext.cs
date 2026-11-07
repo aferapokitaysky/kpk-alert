@@ -145,7 +145,9 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.HasOne<Location>().WithMany().HasForeignKey(x => x.LocationId);
             entity.Property(x => x.Name).HasMaxLength(120).IsRequired();
             entity.Property(x => x.CertificateThumbprint).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.PendingCertificateThumbprint).HasMaxLength(128);
             entity.HasIndex(x => x.CertificateThumbprint).IsUnique();
+            entity.HasIndex(x => x.PendingCertificateThumbprint).IsUnique();
         });
 
         modelBuilder.Entity<DeviceSession>(entity =>

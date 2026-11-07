@@ -111,6 +111,95 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
     }
 
     [PostgresFact]
+    public async Task Certificate_rotation_stages_and_cancels_without_changing_active_certificate()
+    {
+        SeedData seed = await fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        string activeFingerprint = new('a', 64);
+        string pendingFingerprint = new('b', 64);
+        await using (WatcherDbContext db = fixture.CreateDbContext())
+        {
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Вузол для ротації",
+                CertificateThumbprint = activeFingerprint
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using HttpResponseMessage staged = await SendAsync(fixture.Client, seed.AdministratorId,
+            HttpMethod.Post, $"{Endpoint}/{deviceId}/certificate-rotations",
+            new StageDeviceCertificateRotationRequest(pendingFingerprint));
+        Assert.Equal(HttpStatusCode.Accepted, staged.StatusCode);
+        Assert.Equal("no-store", staged.Headers.CacheControl?.ToString());
+        var stagedPayload = await staged.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(pendingFingerprint, stagedPayload);
+
+        using WatcherDbContext verifyDb = fixture.CreateDbContext();
+        Device stagedDevice = await verifyDb.Devices.SingleAsync(device => device.Id == deviceId);
+        Assert.Equal(activeFingerprint, stagedDevice.CertificateThumbprint);
+        Assert.Equal(pendingFingerprint.ToUpperInvariant(), stagedDevice.PendingCertificateThumbprint);
+        Assert.NotNull(stagedDevice.PendingCertificateCreatedAtUtc);
+        Assert.Contains(await verifyDb.AuditEvents.ToArrayAsync(), audit =>
+            audit.EventType == "device.certificate_rotation_staged" &&
+            !audit.Payload.Contains(pendingFingerprint, StringComparison.OrdinalIgnoreCase));
+
+        using HttpResponseMessage cancelled = await SendAsync(fixture.Client, seed.AdministratorId,
+            HttpMethod.Delete, $"{Endpoint}/{deviceId}/certificate-rotations");
+        Assert.Equal(HttpStatusCode.NoContent, cancelled.StatusCode);
+
+        await verifyDb.Entry(stagedDevice).ReloadAsync();
+        Assert.Equal(activeFingerprint, stagedDevice.CertificateThumbprint);
+        Assert.Null(stagedDevice.PendingCertificateThumbprint);
+        Assert.Null(stagedDevice.PendingCertificateCreatedAtUtc);
+        Assert.Contains(await verifyDb.AuditEvents.ToArrayAsync(), audit =>
+            audit.EventType == "device.certificate_rotation_cancelled");
+    }
+
+    [PostgresFact]
+    public async Task Certificate_rotation_rejects_duplicate_or_second_pending_fingerprint()
+    {
+        SeedData seed = await fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        await using WatcherDbContext db = fixture.CreateDbContext();
+        Device first = new()
+        {
+            Id = Guid.NewGuid(),
+            LocationId = seed.FirstLocationId,
+            Name = "Перший вузол",
+            CertificateThumbprint = new('a', 64),
+            PendingCertificateThumbprint = new('b', 64),
+            PendingCertificateCreatedAtUtc = DateTimeOffset.UtcNow
+        };
+        Device second = new()
+        {
+            Id = Guid.NewGuid(),
+            LocationId = seed.SecondLocationId,
+            Name = "Другий вузол",
+            CertificateThumbprint = new('c', 64)
+        };
+        db.Devices.AddRange(first, second);
+        await db.SaveChangesAsync();
+
+        using HttpResponseMessage duplicatePending = await SendAsync(fixture.Client, seed.AdministratorId,
+            HttpMethod.Post, $"{Endpoint}/{second.Id}/certificate-rotations",
+            new StageDeviceCertificateRotationRequest(new string('b', 64)));
+        using HttpResponseMessage existingActive = await SendAsync(fixture.Client, seed.AdministratorId,
+            HttpMethod.Post, $"{Endpoint}/{second.Id}/certificate-rotations",
+            new StageDeviceCertificateRotationRequest(new string('a', 64)));
+        using HttpResponseMessage registrationWithPending = await SendAsync(fixture.Client,
+            seed.AdministratorId, HttpMethod.Post, Endpoint,
+            new RegisterDeviceRequest("Третій вузол", seed.FirstLocationId, new string('b', 64)));
+
+        Assert.Equal(HttpStatusCode.Conflict, duplicatePending.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, existingActive.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, registrationWithPending.StatusCode);
+        Assert.Null(second.PendingCertificateThumbprint);
+        Assert.Empty(await db.AuditEvents.ToArrayAsync());
+    }
+
+    [PostgresFact]
     public async Task Device_mutations_require_a_current_global_administrator_and_csrf()
     {
         SeedData seed = await fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);

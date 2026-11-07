@@ -51,6 +51,39 @@ public sealed class DeviceCertificateAuthenticatorTests
         Assert.Null(await authenticator.AuthenticateAsync(certificate, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task AuthenticatePending_accepts_only_a_staged_certificate_for_an_active_device()
+    {
+        DateTimeOffset now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+        using X509Certificate2 certificate = CreateCertificate(now.AddMinutes(-1), now.AddMinutes(5));
+        await using WatcherDbContext db = CreateDbContext();
+        var deviceId = Guid.NewGuid();
+        var locationId = Guid.NewGuid();
+        await AddDeviceAsync(db, deviceId, locationId, new string('a', 64),
+            pendingThumbprint: GetFingerprint(certificate));
+
+        var authenticator = new DeviceCertificateAuthenticator(db, new FixedTimeProvider(now));
+        DeviceIdentity? identity = await authenticator.AuthenticatePendingAsync(certificate, CancellationToken.None);
+        DeviceIdentity? regularIdentity = await authenticator.AuthenticateAsync(certificate, CancellationToken.None);
+
+        Assert.Equal(new DeviceIdentity(deviceId, locationId), identity);
+        Assert.Null(regularIdentity);
+    }
+
+    [Fact]
+    public async Task AuthenticatePending_rejects_a_revoked_device()
+    {
+        DateTimeOffset now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+        using X509Certificate2 certificate = CreateCertificate(now.AddMinutes(-1), now.AddMinutes(5));
+        await using WatcherDbContext db = CreateDbContext();
+        await AddDeviceAsync(db, Guid.NewGuid(), Guid.NewGuid(), new string('a', 64),
+            now, pendingThumbprint: GetFingerprint(certificate));
+
+        var authenticator = new DeviceCertificateAuthenticator(db, new FixedTimeProvider(now));
+
+        Assert.Null(await authenticator.AuthenticatePendingAsync(certificate, CancellationToken.None));
+    }
+
     [Theory]
     [InlineData(-10, -1)]
     [InlineData(1, 10)]
@@ -73,7 +106,8 @@ public sealed class DeviceCertificateAuthenticatorTests
         Guid locationId,
         string thumbprint,
         DateTimeOffset? revokedAtUtc = null,
-        bool locationIsActive = true)
+        bool locationIsActive = true,
+        string? pendingThumbprint = null)
     {
         db.Locations.Add(new Location
         {
@@ -89,6 +123,8 @@ public sealed class DeviceCertificateAuthenticatorTests
             LocationId = locationId,
             Name = "Тестовий вузол",
             CertificateThumbprint = thumbprint,
+            PendingCertificateThumbprint = pendingThumbprint,
+            PendingCertificateCreatedAtUtc = pendingThumbprint is null ? null : DateTimeOffset.UtcNow,
             RevokedAtUtc = revokedAtUtc
         });
         await db.SaveChangesAsync();

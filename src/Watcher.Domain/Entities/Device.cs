@@ -6,6 +6,8 @@ public sealed class Device
     public Guid LocationId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string CertificateThumbprint { get; set; } = string.Empty;
+    public string? PendingCertificateThumbprint { get; set; }
+    public DateTimeOffset? PendingCertificateCreatedAtUtc { get; set; }
     public DateTimeOffset? RevokedAtUtc { get; set; }
 }
 

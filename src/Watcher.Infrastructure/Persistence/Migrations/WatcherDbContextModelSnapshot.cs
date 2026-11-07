@@ -250,6 +250,13 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasMaxLength(120)
                         .HasColumnType("character varying(120)");
 
+                    b.Property<DateTimeOffset?>("PendingCertificateCreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PendingCertificateThumbprint")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
                     b.Property<DateTimeOffset?>("RevokedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -259,6 +266,9 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.HasIndex("LocationId");
+
+                    b.HasIndex("PendingCertificateThumbprint")
+                        .IsUnique();
 
                     b.ToTable("devices", (string)null);
                 });
@@ -497,6 +507,7 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(80)");
 
                     b.Property<bool>("IsPublished")
+                        .IsConcurrencyToken()
                         .HasColumnType("boolean");
 
                     b.Property<string>("ManifestHash")
