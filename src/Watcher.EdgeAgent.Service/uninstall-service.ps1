@@ -19,7 +19,6 @@ $interactiveUserSid = Resolve-EdgeAgentInteractiveUserSid -InteractiveUser $Inte
 if (-not (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid)) {
     throw "Профіль користувача $interactiveUserSid не завантажено. Увійдіть у цей обліковий запис і повторіть видалення; службу та файли не змінено."
 }
-Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $interactiveUserSid
 if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
     $service = Get-Service -Name $serviceName
     if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -29,6 +28,9 @@ if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
     & sc.exe delete $serviceName | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Не вдалося видалити службу.' }
 }
+# Залишаємо панель у автозапуску, доки служба не буде видалена: якщо SCM відмовить,
+# чинна інсталяція зможе відновити панель після перезавантаження.
+Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $interactiveUserSid
 foreach ($directory in @($installDirectory, $startMenu)) {
     if (Test-Path -LiteralPath $directory) {
         $resolvedDirectory = (Resolve-Path -LiteralPath $directory).Path
