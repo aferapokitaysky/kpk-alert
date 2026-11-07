@@ -453,19 +453,23 @@ function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
 
     $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Default)
     try {
+        $restoreFailures = @()
         foreach ($entry in $Entries) {
-            if (-not $entry.Sid -or -not $entry.RunSubKeyPath) {
-                throw 'Список відновлення автозапуску містить неповний запис профілю.'
-            }
-
-            $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath `
-                -InteractiveUserSid ([string]$entry.Sid) `
-                -RunSubKeyPath ([string]$entry.RunSubKeyPath)
-            $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
-            if (-not $runKey) { $runKey = $baseKey.CreateSubKey($subKeyPath, $true) }
-            if (-not $runKey) { throw "Не вдалося відкрити Run-розділ профілю $($entry.Sid) для відновлення." }
-
+            $sid = '<невідомий SID>'
+            $runKey = $null
             try {
+                if ($entry.Sid) { $sid = [string]$entry.Sid }
+                if (-not $entry.Sid -or -not $entry.RunSubKeyPath) {
+                    throw 'Список відновлення автозапуску містить неповний запис профілю.'
+                }
+
+                $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath `
+                    -InteractiveUserSid $sid `
+                    -RunSubKeyPath ([string]$entry.RunSubKeyPath)
+                $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
+                if (-not $runKey) { $runKey = $baseKey.CreateSubKey($subKeyPath, $true) }
+                if (-not $runKey) { throw "Не вдалося відкрити Run-розділ профілю $sid для відновлення." }
+
                 if ($runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName) {
                     $currentValue = $runKey.GetValue(
                         $script:EdgeAgentStartupValueName,
@@ -476,13 +480,18 @@ function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
                         $runKey.GetValueKind($script:EdgeAgentStartupValueName) -eq $entry.Kind) {
                         continue
                     }
-                    throw "Значення автозапуску профілю $($entry.Sid) змінилося під час видалення; його не перезаписано."
+                    throw 'Значення автозапуску змінилося під час видалення; його не перезаписано.'
                 }
 
                 $runKey.SetValue($script:EdgeAgentStartupValueName, $entry.Value, $entry.Kind)
+            } catch {
+                $restoreFailures += "SID ${sid}: $($_.Exception.Message)"
             } finally {
-                $runKey.Dispose()
+                if ($runKey) { $runKey.Dispose() }
             }
+        }
+        if ($restoreFailures.Count -gt 0) {
+            throw "Не вдалося відновити Run-записи для профілів: $($restoreFailures -join '; ')"
         }
     } finally {
         $baseKey.Dispose()

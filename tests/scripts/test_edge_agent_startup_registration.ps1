@@ -164,6 +164,45 @@ try {
         $baseKey.Dispose()
     }
 
+    $concurrentRunValue = 'C:\Concurrent\OperatorPanel.exe'
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $true)
+        $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $true)
+        $firstProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', $concurrentRunValue, [Microsoft.Win32.RegistryValueKind]::String)
+        $secondProfileRunKey.DeleteValue('KGTA.Alert.OperatorPanel', $false)
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        if ($secondProfileRunKey) { $secondProfileRunKey.Dispose(); $secondProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+    $restoreFailureMessage = $null
+    try {
+        Restore-EdgeAgentDesktopStartupEntriesForProfiles `
+            -Entries $removedStartupEntries `
+            -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser)
+    } catch {
+        $restoreFailureMessage = $_.Exception.Message
+    }
+    if (-not $restoreFailureMessage -or -not $restoreFailureMessage.Contains($currentIdentitySid)) {
+        throw 'Конфлікт відновлення має повернути помилку з SID профілю.'
+    }
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Default)
+    try {
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
+        $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $false)
+        Assert-Equal -Expected $concurrentRunValue -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Rollback не має перезаписувати конкурентну зміну першого профілю.'
+        Assert-Equal -Expected '"C:\Other\Panel.exe"' -Actual $secondProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Конфлікт першого профілю не має перешкоджати відновленню другого.'
+        $firstProfileRunKey.Dispose()
+        $firstProfileRunKey = $null
+        $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $true)
+        $firstProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', $expectedDesktopCommand, [Microsoft.Win32.RegistryValueKind]::String)
+    } finally {
+        if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
+        if ($secondProfileRunKey) { $secondProfileRunKey.Dispose(); $secondProfileRunKey = $null }
+        $baseKey.Dispose()
+    }
+
     Assert-Throws {
         Remove-EdgeAgentDesktopStartupEntriesForProfiles `
             -Profiles @(
