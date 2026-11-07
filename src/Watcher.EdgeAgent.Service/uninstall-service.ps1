@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [switch]$RemoveLocalData,
     [string]$InteractiveUser
@@ -10,27 +10,44 @@ $serviceName = 'KGTA.Alert.EdgeAgent'
 $dataDirectory = Join-Path $env:ProgramData 'KGTA\Alert'
 $installDirectory = Join-Path $env:ProgramFiles 'KGTA\Alert\EdgeAgent'
 $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
+$regExecutable = Join-Path $env:SystemRoot 'System32\reg.exe'
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Запустіть видалення від імені адміністратора.'
 }
 $interactiveUserSid = Resolve-EdgeAgentInteractiveUserSid -InteractiveUser $InteractiveUser
-if (-not (Test-EdgeAgentInteractiveUserProfileLoaded -InteractiveUserSid $interactiveUserSid)) {
-    throw "Профіль користувача $interactiveUserSid не завантажено. Увійдіть у цей обліковий запис і повторіть видалення; службу та файли не змінено."
+if (-not (Test-Path -LiteralPath $regExecutable -PathType Leaf)) {
+    throw 'Не знайдено системну утиліту керування реєстром. Службу й файли не змінено.'
 }
-if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
-    $service = Get-Service -Name $serviceName
-    if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
-        Stop-Service -Name $serviceName -Force
-        $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+
+$profileCleanupPlan = New-EdgeAgentStartupCleanupPlan `
+    -Profiles @(Get-CimInstance -ClassName Win32_UserProfile -Filter 'Special = FALSE') `
+    -RequiredInteractiveUserSid $interactiveUserSid `
+    -RegExecutablePath $regExecutable
+try {
+    Invoke-EdgeAgentUninstallServiceRemoval `
+        -Profiles $profileCleanupPlan.Profiles `
+        -GetServiceAction { Get-Service -Name $serviceName -ErrorAction SilentlyContinue } `
+        -StopServiceAction {
+            $service = Get-Service -Name $serviceName
+            Stop-Service -Name $serviceName -Force
+            $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+        } `
+        -DeleteServiceAction {
+        & sc.exe delete $serviceName | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Не вдалося видалити службу.' }
+        } `
+        -StartServiceAction { Start-Service -Name $serviceName -ErrorAction Stop }
+} finally {
+    if ($profileCleanupPlan.MountedHiveNames.Count -gt 0) {
+        Release-EdgeAgentProfileHives `
+            -MountedHiveNames $profileCleanupPlan.MountedHiveNames `
+            -RegExecutablePath $regExecutable
     }
-    & sc.exe delete $serviceName | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Не вдалося видалити службу.' }
 }
-# Залишаємо панель у автозапуску, доки служба не буде видалена: якщо SCM відмовить,
-# чинна інсталяція зможе відновити панель після перезавантаження.
-Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $interactiveUserSid
+
 foreach ($directory in @($installDirectory, $startMenu)) {
     if (Test-Path -LiteralPath $directory) {
         $resolvedDirectory = (Resolve-Path -LiteralPath $directory).Path
