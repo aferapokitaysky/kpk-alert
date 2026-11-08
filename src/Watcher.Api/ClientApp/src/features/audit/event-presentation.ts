@@ -540,6 +540,10 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
         response_too_large: 'відповідь джерела завелика',
         heartbeat_timeout: 'вичерпано час очікування heartbeat',
         retry_backoff: 'очікується повторний запит',
+        action_index_rollback: 'провайдер повернув менший індекс подій',
+        action_index_not_advanced: 'після callback індекс подій не змінився',
+        snapshot_changed_during_read: 'стан змінився під час читання даних',
+        region_not_found: 'у відповіді провайдера не знайдено область або громаду',
       };
       const errorCode = safeText(payload, 'errorCode');
       if (errorCode && errors[errorCode]) details.push(`Причина: ${errors[errorCode]}`);

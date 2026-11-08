@@ -333,7 +333,7 @@ describe('сторінка аудиту', () => {
           Level: 'inactive',
           Freshness: 'fresh',
           PreviousFreshness: 'stale',
-          PreviousErrorCode: 'request_failed',
+          PreviousErrorCode: 'action_index_not_advanced',
           LastKnownLevel: 'active',
           LastKnownAlertLevel: 'red',
           CheckedAtUtc: '2026-11-06T07:21:00Z',
@@ -472,7 +472,9 @@ describe('сторінка аудиту', () => {
     expect(screen.getByText('Попередній стан: тривога активна')).toBeInTheDocument();
     expect(screen.getByText('Попередній рівень API: червоний (не гучність)')).toBeInTheDocument();
     expect(screen.getByText('Попередня актуальність: застарілі дані')).toBeInTheDocument();
-    expect(screen.getByText('Попередня причина: запит до джерела не виконано')).toBeInTheDocument();
+    expect(
+      screen.getByText('Попередня причина: після callback індекс подій не змінився'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Останній відомий стан: тривога активна')).toBeInTheDocument();
     expect(
       screen.getByText('Останній відомий рівень API: червоний (не гучність)'),
