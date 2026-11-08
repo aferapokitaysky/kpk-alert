@@ -189,6 +189,7 @@ describe('сторінка аудиту', () => {
         payload: {
           OperationId: commandId,
           Action: 'unsubscribe',
+          Outcome: 'provider_request_started',
           CallbackUrl: 'https://callback.private.example/path?token=private',
         },
       },
@@ -295,6 +296,30 @@ describe('сторінка аудиту', () => {
           DeliveryStateAfter: 'Stopped',
         },
       },
+      {
+        id: '22',
+        eventType: 'integration.ukrainealarm_webhook.rejected',
+        actorType: 'user',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:19:00Z',
+        payload: {
+          OperationId: 'b6b2f302-0675-4a4d-88eb-cf18c9022920',
+          Action: 'subscribe',
+          Outcome: 'provider_rejected',
+        },
+      },
+      {
+        id: '23',
+        eventType: 'integration.ukrainealarm_webhook.state_reconciled',
+        actorType: 'user',
+        actorId: targetUserId,
+        occurredAtUtc: '2026-11-06T07:20:00Z',
+        payload: {
+          IntegrationCode: 'ukrainealarm',
+          IsRegistered: false,
+          Outcome: 'operator_confirmed',
+        },
+      },
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
@@ -324,6 +349,10 @@ describe('сторінка аудиту', () => {
     expect(screen.getByRole('heading', { name: 'Термін доставки минув' })).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Вузол повідомив про зупинку' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Запит вебхука відхилено' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Оновлено стан підписки на вебхук' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Вхід відхилено' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Надано роль' })).toBeInTheDocument();
@@ -407,6 +436,10 @@ describe('сторінка аудиту', () => {
     expect(screen.getByText('Частину спостережень не показано.')).toBeInTheDocument();
     expect(screen.getAllByText('Зовнішня інтеграція · системна дія')).toHaveLength(1);
     expect(screen.getByText('Дія: скасування підписки')).toBeInTheDocument();
+    expect(screen.getByText('Результат: запит надіслано провайдеру')).toBeInTheDocument();
+    expect(screen.getByText('Результат: провайдер відхилив запит')).toBeInTheDocument();
+    expect(screen.getByText('Стан підписки: не зареєстрована')).toBeInTheDocument();
+    expect(screen.getByText('Результат: адміністратор звірив стан підписки')).toBeInTheDocument();
     expect(screen.getAllByText('Інший суб’єкт · системна дія')).toHaveLength(1);
     expect(screen.getAllByText('Система · системна дія').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Вузол · системна дія').length).toBeGreaterThan(0);

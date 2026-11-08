@@ -433,6 +433,25 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       const action = safeText(payload, 'action');
       if (action && ['subscribe', 'unsubscribe'].includes(action))
         details.push(`Дія: ${action === 'subscribe' ? 'підписка' : 'скасування підписки'}`);
+      const registered = value(payload, 'isRegistered');
+      if (typeof registered === 'boolean')
+        details.push(
+          registered ? 'Стан підписки: зареєстрована' : 'Стан підписки: не зареєстрована',
+        );
+      const outcome = safeText(payload, 'outcome') ?? safeText(payload, 'outcomeCode');
+      const outcomes: Record<string, string> = {
+        requested: 'операцію прийнято сервером',
+        provider_request_started: 'запит надіслано провайдеру',
+        provider_accepted: 'провайдер підтвердив запит',
+        provider_rejected: 'провайдер відхилив запит',
+        upstream_indeterminate: 'провайдер не підтвердив результат',
+        transport_indeterminate: 'не вдалося підтвердити результат мережевого запиту',
+        configuration_invalid: 'конфігурація інтеграції некоректна',
+        manually_confirmed_registered: 'адміністратор підтвердив наявність підписки',
+        manually_confirmed_absent: 'адміністратор підтвердив відсутність підписки',
+        operator_confirmed: 'адміністратор звірив стан підписки',
+      };
+      if (outcome && outcomes[outcome]) details.push(`Результат: ${outcomes[outcome]}`);
       break;
     }
     default:
