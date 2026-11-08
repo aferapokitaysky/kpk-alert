@@ -54,6 +54,31 @@ function safeTimestamp(record: Record<string, unknown>, key: string): string | u
   }).format(timestamp);
 }
 
+function deliveryStateLabel(state: string): string | undefined {
+  const states: Record<string, string> = {
+    Pending: 'очікує надсилання',
+    InFlight: 'надсилається',
+    Accepted: 'прийнято вузлом',
+    Playing: 'запущено програмний шлях відтворення',
+    Completed: 'виконано',
+    Stopped: 'зупинено',
+    Rejected: 'відхилено вузлом',
+    Failed: 'не виконано',
+    Expired: 'строк дії минув',
+  };
+  return states[state];
+}
+
+function addDeliveryTransitionDetails(details: string[], payload: Record<string, unknown>): void {
+  const before = safeText(payload, 'deliveryStateBefore') ?? safeText(payload, 'stateBefore');
+  const after = safeText(payload, 'deliveryStateAfter') ?? safeText(payload, 'stateAfter');
+  if (!before || !after) return;
+
+  const beforeLabel = deliveryStateLabel(before);
+  const afterLabel = deliveryStateLabel(after);
+  if (beforeLabel && afterLabel) details.push(`Стан доставки: ${beforeLabel} → ${afterLabel}`);
+}
+
 function addMinuteOfSilenceScheduleDetails(
   details: string[],
   payload: Record<string, unknown>,
@@ -168,6 +193,7 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
     safeId(payload, 'commandId') ?? safeId(payload, 'id') ?? safeId(payload, 'targetCommandId');
   if (commandId) details.push(`Команда: ${commandId}`);
   if (safeId(payload, 'deliveryId')) details.push(`Доставка: ${safeId(payload, 'deliveryId')}`);
+  addDeliveryTransitionDetails(details, payload);
 
   switch (eventType) {
     case 'alert_command.created': {
@@ -267,6 +293,11 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
         invalid_command: 'команда не пройшла перевірку',
       };
       if (reason && reasons[reason]) details.push(`Причина: ${reasons[reason]}`);
+      break;
+    }
+    case 'alert_command.delivery_expired': {
+      if (safeText(payload, 'reason') === 'command_expired')
+        details.push('Причина: строк дії команди минув');
       break;
     }
     case 'auth.login.succeeded':

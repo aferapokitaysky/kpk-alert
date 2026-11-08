@@ -69,7 +69,13 @@ describe('сторінка аудиту', () => {
         actorType: 'device',
         actorId: null,
         occurredAtUtc: '2026-11-06T07:02:00Z',
-        payload: { CommandId: commandId, State: 'Playing' },
+        payload: {
+          CommandId: commandId,
+          DeliveryId: 'd6b2f302-0675-4a4d-88eb-cf18c9022920',
+          State: 'Playing',
+          DeliveryStateBefore: 'InFlight',
+          DeliveryStateAfter: 'Playing',
+        },
       },
       {
         id: '4',
@@ -259,6 +265,21 @@ describe('сторінка аудиту', () => {
           Reason: 'preset_unavailable',
         },
       },
+      {
+        id: '20',
+        eventType: 'alert_command.delivery_expired',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:17:00Z',
+        payload: {
+          CommandId: commandId,
+          DeliveryId: 'e6b2f302-0675-4a4d-88eb-cf18c9022920',
+          AttemptCount: 2,
+          StateBefore: 'InFlight',
+          StateAfter: 'Expired',
+          Reason: 'command_expired',
+        },
+      },
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
@@ -285,6 +306,7 @@ describe('сторінка аудиту', () => {
     expect(
       screen.getByRole('heading', { name: 'Отримано підтвердження від вузла' }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Термін доставки минув' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Вхід відхилено' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Надано роль' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Подія системи' })).toBeInTheDocument();
@@ -318,6 +340,11 @@ describe('сторінка аудиту', () => {
     expect(
       screen.getByText('Підтвердження вузла: запущено програмний шлях відтворення'),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText('Стан доставки: надсилається → запущено програмний шлях відтворення'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Стан доставки: надсилається → строк дії минув')).toBeInTheDocument();
+    expect(screen.getByText('Причина: строк дії команди минув')).toBeInTheDocument();
     expect(screen.getAllByText('Причина: сесія вузла змінилася')).toHaveLength(2);
     expect(screen.getByText('Спосіб: Google')).toBeInTheDocument();
     expect(screen.getByText('Роль: admin')).toBeInTheDocument();
