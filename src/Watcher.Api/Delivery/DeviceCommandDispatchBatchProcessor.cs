@@ -491,6 +491,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
     private void MarkExpired(CommandDelivery delivery, DateTimeOffset now)
     {
+        CommandDeliveryState previousState = delivery.State;
         delivery.State = CommandDeliveryState.Expired;
         delivery.NextAttemptAtUtc = null;
         db.AuditEvents.Add(new AuditEvent
@@ -498,7 +499,16 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             Id = Guid.NewGuid(),
             EventType = "alert_command.delivery_expired",
             ActorType = "system",
-            Payload = JsonSerializer.Serialize(new { delivery.CommandId, delivery.DeviceId }),
+            Payload = JsonSerializer.Serialize(new
+            {
+                delivery.CommandId,
+                DeliveryId = delivery.Id,
+                delivery.DeviceId,
+                delivery.AttemptCount,
+                StateBefore = previousState.ToString(),
+                StateAfter = delivery.State.ToString(),
+                Reason = "command_expired"
+            }),
             OccurredAtUtc = now
         });
     }
@@ -536,6 +546,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
     private void MarkFailed(CommandDelivery delivery, DateTimeOffset now, string reason)
     {
+        CommandDeliveryState previousState = delivery.State;
         delivery.State = CommandDeliveryState.Failed;
         delivery.NextAttemptAtUtc = null;
         db.AuditEvents.Add(new AuditEvent
@@ -543,7 +554,16 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             Id = Guid.NewGuid(),
             EventType = "alert_command.delivery_failed",
             ActorType = "system",
-            Payload = JsonSerializer.Serialize(new { delivery.CommandId, delivery.DeviceId, Reason = reason }),
+            Payload = JsonSerializer.Serialize(new
+            {
+                delivery.CommandId,
+                DeliveryId = delivery.Id,
+                delivery.DeviceId,
+                delivery.AttemptCount,
+                StateBefore = previousState.ToString(),
+                StateAfter = delivery.State.ToString(),
+                Reason = reason
+            }),
             OccurredAtUtc = now
         });
     }

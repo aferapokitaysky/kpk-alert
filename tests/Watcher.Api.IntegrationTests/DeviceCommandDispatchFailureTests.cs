@@ -115,7 +115,11 @@ public sealed class DeviceCommandDispatchFailureTests : IClassFixture<PostgresAp
             item => item.EventType == "alert_command.delivery_failed");
         using var payload = JsonDocument.Parse(auditEvent.Payload);
         Assert.Equal(commandId, payload.RootElement.GetProperty("CommandId").GetGuid());
+        Assert.Equal(deliveryId, payload.RootElement.GetProperty("DeliveryId").GetGuid());
         Assert.Equal(deviceId, payload.RootElement.GetProperty("DeviceId").GetGuid());
+        Assert.Equal(0, payload.RootElement.GetProperty("AttemptCount").GetInt32());
+        Assert.Equal("Pending", payload.RootElement.GetProperty("StateBefore").GetString());
+        Assert.Equal("Failed", payload.RootElement.GetProperty("StateAfter").GetString());
         Assert.Equal("device_unavailable", payload.RootElement.GetProperty("Reason").GetString());
     }
 

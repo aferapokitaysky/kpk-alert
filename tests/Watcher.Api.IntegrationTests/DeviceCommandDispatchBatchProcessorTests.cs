@@ -122,7 +122,7 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     public async Task Process_batch_expires_stale_delivery_without_sending_it()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
-        (_, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(
+        (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(
             seed.FirstLocationId, expiresAtUtc: Now.AddSeconds(-1));
         DeviceCommandSessionRegistry sessions = new();
         RecordingWebSocket socket = new();
@@ -151,8 +151,15 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
         Assert.Equal(CommandDeliveryState.Expired, delivery.State);
         Assert.Null(delivery.NextAttemptAtUtc);
-        Assert.Contains(await verifyDb.AuditEvents.ToListAsync(), item =>
-            item.EventType == "alert_command.delivery_expired");
+        AuditEvent expiredEvent = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_expired")
+            .ToArrayAsync());
+        using var expiredPayload = JsonDocument.Parse(expiredEvent.Payload);
+        Assert.Equal(deliveryId, expiredPayload.RootElement.GetProperty("DeliveryId").GetGuid());
+        Assert.Equal(commandId, expiredPayload.RootElement.GetProperty("CommandId").GetGuid());
+        Assert.Equal("Pending", expiredPayload.RootElement.GetProperty("StateBefore").GetString());
+        Assert.Equal("Expired", expiredPayload.RootElement.GetProperty("StateAfter").GetString());
+        Assert.Equal("command_expired", expiredPayload.RootElement.GetProperty("Reason").GetString());
     }
 
     [PostgresFact]
