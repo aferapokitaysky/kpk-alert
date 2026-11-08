@@ -54,6 +54,24 @@ function safeTimestamp(record: Record<string, unknown>, key: string): string | u
   }).format(timestamp);
 }
 
+function addMinuteOfSilenceScheduleDetails(
+  details: string[],
+  payload: Record<string, unknown>,
+): void {
+  const date = safeText(payload, 'scheduledDate') ?? safeText(payload, 'runDate');
+  if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) details.push(`Дата розкладу: ${date}`);
+
+  const localTime = safeText(payload, 'scheduledLocalTime');
+  if (localTime && /^\d{2}:\d{2}$/.test(localTime))
+    details.push(`Місцевий час запуску: ${localTime}`);
+
+  const timeZone = value(payload, 'scheduleTimeZoneId') ?? value(payload, 'timeZone');
+  if (timeZone === 'Europe/Kyiv') details.push('Часовий пояс: Київ');
+
+  const scheduledAt = safeTimestamp(payload, 'scheduledAtUtc');
+  if (scheduledAt) details.push(`Заплановано за київським часом: ${scheduledAt}`);
+}
+
 function addObservationDetails(details: string[], payload: Record<string, unknown>): void {
   const alertLevel = safeText(payload, 'alertLevel')?.toLowerCase();
   const alertLevels: Record<string, string> = {
@@ -157,6 +175,8 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       if (safeText(payload, 'action') === 'stop') details.push('Дія: зупинка сигналу');
       if (safeText(payload, 'presetCode'))
         details.push(`Сценарій: ${safeText(payload, 'presetCode')}`);
+      if (safeText(payload, 'presetCode') === 'minute_of_silence')
+        addMinuteOfSilenceScheduleDetails(details, payload);
       addObservationDetails(details, payload);
       break;
     }
@@ -307,8 +327,7 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       break;
     }
     case 'minute_of_silence.skipped': {
-      const date = safeText(payload, 'runDate');
-      if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) details.push(`Дата розкладу: ${date}`);
+      addMinuteOfSilenceScheduleDetails(details, payload);
       const reason = safeText(payload, 'reason') ?? safeText(payload, 'skipReason');
       const reasons: Record<string, string> = {
         preset_unavailable: 'сценарій звуку недоступний',

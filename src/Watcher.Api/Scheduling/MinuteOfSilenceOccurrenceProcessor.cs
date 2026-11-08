@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -75,7 +76,8 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
         }
 
         DateTimeOffset createdAtUtc = clock.GetUtcNow();
-        DateTimeOffset expiresAtUtc = MinuteOfSilenceSchedule.GetOccurrenceUtc(runDate, KyivTimeZone) +
+        ScheduleAuditDetails schedule = CreateScheduleAuditDetails(runDate);
+        DateTimeOffset expiresAtUtc = schedule.ScheduledAtUtc +
                                       MinuteOfSilenceSchedule.ExecutionWindow;
         AlertCommand command = new()
         {
@@ -107,7 +109,10 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
             command.PresetCode,
             command.ExpiresAtUtc,
             LocationIds = command.Targets.Select(target => target.LocationId),
-            ScheduledDate = runDate
+            ScheduledDate = runDate,
+            schedule.ScheduledLocalTime,
+            schedule.ScheduledAtUtc,
+            schedule.ScheduleTimeZoneId
         });
 
         db.AlertCommands.Add(command);
@@ -154,13 +159,21 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
         occurrence.Outcome = "skipped";
         occurrence.SkipReason = reason;
         occurrence.ProcessedAtUtc = clock.GetUtcNow();
+        ScheduleAuditDetails schedule = CreateScheduleAuditDetails(occurrence.RunDate);
         db.AuditEvents.Add(new AuditEvent
         {
             Id = Guid.NewGuid(),
             EventType = "minute_of_silence.skipped",
             ActorType = "system",
             ActorId = null,
-            Payload = JsonSerializer.Serialize(new { occurrence.RunDate, reason }),
+            Payload = JsonSerializer.Serialize(new
+            {
+                occurrence.RunDate,
+                schedule.ScheduledLocalTime,
+                schedule.ScheduledAtUtc,
+                schedule.ScheduleTimeZoneId,
+                reason
+            }),
             OccurredAtUtc = occurrence.ProcessedAtUtc
         });
 
@@ -206,13 +219,21 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
             return MinuteOfSilenceProcessingResult.AlreadyProcessed;
         }
 
+        ScheduleAuditDetails schedule = CreateScheduleAuditDetails(runDate);
         db.AuditEvents.Add(new AuditEvent
         {
             Id = Guid.NewGuid(),
             EventType = "minute_of_silence.skipped",
             ActorType = "system",
             ActorId = null,
-            Payload = JsonSerializer.Serialize(new { occurrence.RunDate, reason }),
+            Payload = JsonSerializer.Serialize(new
+            {
+                occurrence.RunDate,
+                schedule.ScheduledLocalTime,
+                schedule.ScheduledAtUtc,
+                schedule.ScheduleTimeZoneId,
+                reason
+            }),
             OccurredAtUtc = processedAtUtc
         });
         await db.SaveChangesAsync(cancellationToken);
@@ -226,6 +247,11 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
         return MinuteOfSilenceSchedule.GetLocalDate(now, KyivTimeZone) == runDate &&
                MinuteOfSilenceSchedule.IsWithinExecutionWindow(now, runDate, KyivTimeZone);
     }
+
+    private static ScheduleAuditDetails CreateScheduleAuditDetails(DateOnly runDate) => new(
+        TimeOnly.FromTimeSpan(MinuteOfSilenceSchedule.StartTime).ToString("HH:mm", CultureInfo.InvariantCulture),
+        MinuteOfSilenceSchedule.GetOccurrenceUtc(runDate, KyivTimeZone),
+        MinuteOfSilenceSchedule.TimeZoneId);
 
     private bool HasMissedWindow(DateOnly runDate)
     {
@@ -247,4 +273,9 @@ public sealed class MinuteOfSilenceOccurrenceProcessor(
             SqlState: Npgsql.PostgresErrorCodes.UniqueViolation,
             ConstraintName: "PK_minute_of_silence_occurrences"
         };
+
+    private sealed record ScheduleAuditDetails(
+        string ScheduledLocalTime,
+        DateTimeOffset ScheduledAtUtc,
+        string ScheduleTimeZoneId);
 }

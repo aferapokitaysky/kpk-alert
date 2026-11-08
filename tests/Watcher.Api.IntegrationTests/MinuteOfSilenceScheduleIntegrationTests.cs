@@ -54,11 +54,13 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         using var outboxPayload = JsonDocument.Parse(outbox.Payload);
         Assert.Equal(expectedExpiryUtc,
             outboxPayload.RootElement.GetProperty("ExpiresAtUtc").GetDateTimeOffset());
+        AssertScheduleAuditPayload(outboxPayload.RootElement, runDate);
         Assert.Equal("system", audit.ActorType);
         Assert.Null(audit.ActorId);
         Assert.Equal("alert_command.created", audit.EventType);
         using var payload = JsonDocument.Parse(audit.Payload);
         Assert.Equal(runDate.ToString("yyyy-MM-dd"), payload.RootElement.GetProperty("ScheduledDate").GetString());
+        AssertScheduleAuditPayload(payload.RootElement, runDate);
     }
 
     [PostgresFact]
@@ -86,6 +88,8 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         Assert.Equal("minute_of_silence.skipped", audit.EventType);
         Assert.Equal("system", audit.ActorType);
         Assert.Null(audit.ActorId);
+        using var payload = JsonDocument.Parse(audit.Payload);
+        AssertScheduleAuditPayload(payload.RootElement, runDate);
     }
 
     [PostgresFact]
@@ -114,6 +118,8 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         Assert.Empty(readDb.AlertCommands);
         Assert.Empty(readDb.OutboxMessages);
         Assert.Equal("minute_of_silence.skipped", audit.EventType);
+        using var payload = JsonDocument.Parse(audit.Payload);
+        AssertScheduleAuditPayload(payload.RootElement, runDate);
     }
 
     [PostgresFact]
@@ -331,6 +337,18 @@ public sealed class MinuteOfSilenceScheduleIntegrationTests : IClassFixture<Post
         var timeZone = TimeZoneInfo.FindSystemTimeZoneById(MinuteOfSilenceSchedule.TimeZoneId);
         return new FixedTimeProvider(
             MinuteOfSilenceSchedule.GetOccurrenceUtc(runDate, timeZone) + (offset ?? TimeSpan.Zero));
+    }
+
+    private static void AssertScheduleAuditPayload(JsonElement payload, DateOnly runDate)
+    {
+        var kyivTimeZone = TimeZoneInfo.FindSystemTimeZoneById(MinuteOfSilenceSchedule.TimeZoneId);
+        DateTimeOffset expectedScheduledAtUtc = MinuteOfSilenceSchedule.GetOccurrenceUtc(runDate, kyivTimeZone);
+
+        Assert.Equal("09:00", payload.GetProperty("ScheduledLocalTime").GetString());
+        Assert.Equal(expectedScheduledAtUtc,
+            payload.GetProperty("ScheduledAtUtc").GetDateTimeOffset());
+        Assert.Equal(MinuteOfSilenceSchedule.TimeZoneId,
+            payload.GetProperty("ScheduleTimeZoneId").GetString());
     }
 
     private async Task AddMinuteOfSilencePresetAsync()

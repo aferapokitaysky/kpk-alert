@@ -226,6 +226,35 @@ describe('сторінка аудиту', () => {
           ReasonCode: 'socket_write_timed_out_result_unknown',
         },
       },
+      {
+        id: '18',
+        eventType: 'alert_command.created',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:00:00Z',
+        payload: {
+          Action: 'start',
+          PresetCode: 'minute_of_silence',
+          ScheduledDate: '2026-11-06',
+          ScheduledLocalTime: '09:00',
+          ScheduledAtUtc: '2026-11-06T07:00:00Z',
+          ScheduleTimeZoneId: 'Europe/Kyiv',
+        },
+      },
+      {
+        id: '19',
+        eventType: 'minute_of_silence.skipped',
+        actorType: 'system',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:01:00Z',
+        payload: {
+          RunDate: '2026-11-06',
+          ScheduledLocalTime: '09:00',
+          ScheduledAtUtc: '2026-11-06T07:00:00Z',
+          ScheduleTimeZoneId: 'Europe/Kyiv',
+          Reason: 'preset_unavailable',
+        },
+      },
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
@@ -247,7 +276,7 @@ describe('сторінка аудиту', () => {
       <AuditPage session={auditSession} onSessionExpired={vi.fn()} onSessionRetry={vi.fn()} />,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Створено команду' })).toBeInTheDocument();
+    expect(await screen.findAllByRole('heading', { name: 'Створено команду' })).toHaveLength(2);
     expect(screen.getByRole('heading', { name: 'Запитано зупинку команди' })).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Отримано підтвердження від вузла' }),
@@ -267,8 +296,14 @@ describe('сторінка аудиту', () => {
     expect(screen.getByRole('heading', { name: 'Підключено сесію вузла' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Автоматичну дію відкладено' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Запит вебхука обробляється' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Пропущено запуск хвилини мовчання' }),
+    ).toBeInTheDocument();
     for (const summary of screen.getAllByText('Деталі події')) fireEvent.click(summary);
-    expect(screen.getAllByText(`Дія: запуск сигналу`)).toHaveLength(2);
+    expect(screen.getAllByText(`Дія: запуск сигналу`)).toHaveLength(3);
+    expect(screen.getAllByText('Місцевий час запуску: 09:00')).toHaveLength(2);
+    expect(screen.getAllByText('Часовий пояс: Київ')).toHaveLength(2);
+    expect(screen.getAllByText('Дата розкладу: 2026-11-06')).toHaveLength(2);
     expect(
       screen.getByText('Рівень спостереження джерела: червоний (не гучність)'),
     ).toBeInTheDocument();
