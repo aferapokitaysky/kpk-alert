@@ -1,6 +1,7 @@
 using System.Diagnostics.Metrics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Watcher.Api.AlertSources;
 
 namespace Watcher.Api.Controllers;
@@ -12,9 +13,11 @@ namespace Watcher.Api.Controllers;
 public sealed class UkraineAlarmWebhookController(
     IUkraineAlarmRefreshSignal refreshSignal,
     AlertSourcesStatusService statusService,
-    TimeProvider timeProvider) : ControllerBase
+    TimeProvider timeProvider,
+    ILogger<UkraineAlarmWebhookController> logger) : ControllerBase
 {
     private const int MaximumBodyLength = 8 * 1024;
+    private static readonly EventId RefreshQueuedEvent = new(4200, "UkraineAlarmRefreshQueued");
     private static readonly Meter Meter = new("Watcher.Api.AlertSources");
     private static readonly Counter<long> Requests = Meter.CreateCounter<long>("ukrainealarm.webhook.requests");
 
@@ -55,9 +58,16 @@ public sealed class UkraineAlarmWebhookController(
             }
         }
 
-        refreshSignal.TrySignal(now);
+        var refreshQueued = refreshSignal.TrySignal(now);
         statusService.InvalidateCache();
         Requests.Add(1, new KeyValuePair<string, object?>("result", "accepted"));
+        if (refreshQueued)
+        {
+            logger.LogInformation(
+                RefreshQueuedEvent,
+                "Прийнято callback UkraineAlarm; запитано позачергове оновлення стану.");
+        }
+
         return Accepted();
     }
 }

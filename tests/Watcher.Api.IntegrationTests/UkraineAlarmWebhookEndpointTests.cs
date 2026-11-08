@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Net;
 using System.Text;
@@ -7,6 +8,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Watcher.Api.AlertSources;
 
 namespace Watcher.Api.IntegrationTests;
@@ -41,6 +43,28 @@ public sealed class UkraineAlarmWebhookEndpointTests
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
         Assert.True(signal.Consume());
+    }
+
+    [Fact]
+    public async Task Coalesced_callbacks_log_only_the_refresh_signal_that_was_queued()
+    {
+        UkraineAlarmRefreshSignal signal = new();
+        CapturingLoggerProvider loggerProvider = new();
+        using WebApplicationFactory<Program> factory = CreateFactory(signal, loggerProvider);
+        using HttpClient client = factory.CreateClient();
+        using StringContent firstBody = new("""{"secret":"must-not-log"}""");
+        using StringContent coalescedBody = new("""{"secret":"must-not-log"}""");
+
+        using HttpResponseMessage first = await client.PostAsync(CallbackPath, firstBody);
+        using HttpResponseMessage coalesced = await client.PostAsync(CallbackPath, coalescedBody);
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, coalesced.StatusCode);
+        CapturedLog log = Assert.Single(loggerProvider.Entries, entry => entry.EventId == 4200);
+        Assert.Equal(LogLevel.Information, log.Level);
+        Assert.Contains("позачергове оновлення стану", log.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(loggerProvider.Entries,
+            entry => entry.Message.Contains("must-not-log", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -123,10 +147,16 @@ public sealed class UkraineAlarmWebhookEndpointTests
     }
 
     private static WebApplicationFactory<Program> CreateFactory(
-        UkraineAlarmRefreshSignal signal) =>
+        UkraineAlarmRefreshSignal signal,
+        ILoggerProvider? loggerProvider = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
             {
+                if (loggerProvider is not null)
+                {
+                    services.AddLogging(logging => logging.AddProvider(loggerProvider));
+                }
+
                 services.AddSingleton<IUkraineAlarmRefreshSignal>(signal);
                 services.AddSingleton<IStartupFilter>(new TestRemoteAddressStartupFilter());
             }));
@@ -144,5 +174,35 @@ public sealed class UkraineAlarmWebhookEndpointTests
             });
             next(application);
         };
+    }
+
+    private sealed record CapturedLog(int EventId, LogLevel Level, string Message);
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<CapturedLog> _entries = new();
+
+        public IReadOnlyCollection<CapturedLog> Entries => _entries.ToArray();
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(_entries);
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class CapturingLogger(ConcurrentQueue<CapturedLog> entries) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
+            entries.Enqueue(new CapturedLog(eventId.Id, logLevel, formatter(state, exception)));
     }
 }
