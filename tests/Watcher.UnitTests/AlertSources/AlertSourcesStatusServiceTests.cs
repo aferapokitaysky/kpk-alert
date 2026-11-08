@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Watcher.Api.AlertSources;
 
@@ -37,6 +38,7 @@ public sealed class AlertSourcesStatusCacheInvalidationTests
     private static AlertSourcesStatusService CreateService(IAlertSourceProvider provider) => new(
         [provider],
         new AlertStatusAggregator(),
+        new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
         new FixedTimeProvider(new DateTimeOffset(2026, 11, 6, 8, 0, 0, TimeSpan.Zero)),
         NullLogger<AlertSourcesStatusService>.Instance);
 

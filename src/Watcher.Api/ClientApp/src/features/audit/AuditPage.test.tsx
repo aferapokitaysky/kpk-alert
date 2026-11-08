@@ -320,6 +320,26 @@ describe('сторінка аудиту', () => {
           Outcome: 'operator_confirmed',
         },
       },
+      {
+        id: '24',
+        eventType: 'integration.alert_source.state_changed',
+        actorType: 'integration',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:21:00Z',
+        payload: {
+          Source: 'neptun',
+          Scope: 'oblast',
+          ScopeId: '19',
+          Level: 'inactive',
+          Freshness: 'fresh',
+          CheckedAtUtc: '2026-11-06T07:21:00Z',
+          DataUpdatedAtUtc: '2026-11-06T07:20:00Z',
+          ChangeType: 'changed',
+          PreviousLevel: 'active',
+          PreviousAlertLevel: 'red',
+          PrivateUrl: 'https://private.example/token',
+        },
+      },
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
@@ -353,6 +373,9 @@ describe('сторінка аудиту', () => {
     expect(screen.getByRole('heading', { name: 'Запит вебхука відхилено' })).toBeInTheDocument();
     expect(
       screen.getByRole('heading', { name: 'Оновлено стан підписки на вебхук' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Змінено стан джерела тривоги' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Вхід відхилено' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Надано роль' })).toBeInTheDocument();
@@ -434,12 +457,16 @@ describe('сторінка аудиту', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Частину спостережень не показано.')).toBeInTheDocument();
-    expect(screen.getAllByText('Зовнішня інтеграція · системна дія')).toHaveLength(1);
+    expect(screen.getAllByText('Зовнішня інтеграція · системна дія')).toHaveLength(2);
     expect(screen.getByText('Дія: скасування підписки')).toBeInTheDocument();
     expect(screen.getByText('Результат: запит надіслано провайдеру')).toBeInTheDocument();
     expect(screen.getByText('Результат: провайдер відхилив запит')).toBeInTheDocument();
     expect(screen.getByText('Стан підписки: не зареєстрована')).toBeInTheDocument();
     expect(screen.getByText('Результат: адміністратор звірив стан підписки')).toBeInTheDocument();
+    expect(screen.getByText('Джерело: NEPTUN')).toBeInTheDocument();
+    expect(screen.getByText('Стан джерела: стан неактивний')).toBeInTheDocument();
+    expect(screen.getByText('Попередній стан: тривога активна')).toBeInTheDocument();
+    expect(screen.getByText('Попередній рівень API: червоний (не гучність)')).toBeInTheDocument();
     expect(screen.getAllByText('Інший суб’єкт · системна дія')).toHaveLength(1);
     expect(screen.getAllByText('Система · системна дія').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Вузол · системна дія').length).toBeGreaterThan(0);

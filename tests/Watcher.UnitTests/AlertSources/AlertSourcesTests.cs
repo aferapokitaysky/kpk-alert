@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Watcher.Api.AlertSources;
@@ -539,6 +540,7 @@ public sealed class AlertSourcesStatusServiceTests
         AlertSourcesStatusService service = new(
             [first, second],
             new AlertStatusAggregator(),
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             timeProvider,
             NullLogger<AlertSourcesStatusService>.Instance);
 
@@ -565,6 +567,7 @@ public sealed class AlertSourcesStatusServiceTests
         AlertSourcesStatusService service = new(
             [healthy, failing],
             new AlertStatusAggregator(),
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             timeProvider,
             NullLogger<AlertSourcesStatusService>.Instance);
 
@@ -586,6 +589,7 @@ public sealed class AlertSourcesStatusServiceTests
         AlertSourcesStatusService service = new(
             [provider],
             new AlertStatusAggregator(),
+            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             timeProvider,
             NullLogger<AlertSourcesStatusService>.Instance);
         using CancellationTokenSource cancellation = new();

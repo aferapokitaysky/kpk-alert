@@ -24,6 +24,8 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
     public DbSet<ExternalIntegrationState> ExternalIntegrationStates => Set<ExternalIntegrationState>();
     public DbSet<AutomaticAlertDispatchState> AutomaticAlertDispatchStates => Set<AutomaticAlertDispatchState>();
     public DbSet<LocationAudioAsset> LocationAudioAssets => Set<LocationAudioAsset>();
+    public DbSet<AlertSourceObservationState> AlertSourceObservationStates =>
+        Set<AlertSourceObservationState>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -70,6 +72,21 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.HasOne<Location>().WithMany().HasForeignKey(x => x.LocationId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<SoundPreset>().WithMany().HasForeignKey(x => x.PresetCode)
                 .HasPrincipalKey(x => x.Code).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<AlertSourceObservationState>(entity =>
+        {
+            entity.ToTable("alert_source_observation_states");
+            entity.HasKey(item => new { item.Source, item.Scope, item.ScopeId });
+            entity.Property(item => item.Source).HasMaxLength(40).IsRequired();
+            entity.Property(item => item.Scope).HasMaxLength(20).IsRequired();
+            entity.Property(item => item.ScopeId).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.Level).HasMaxLength(20).IsRequired();
+            entity.Property(item => item.AlertLevel).HasMaxLength(40);
+            entity.Property(item => item.Freshness).HasMaxLength(20).IsRequired();
+            entity.Property(item => item.ErrorCode).HasMaxLength(80);
+            entity.Property(item => item.LastKnownLevel).HasMaxLength(20);
+            entity.Property(item => item.LastKnownAlertLevel).HasMaxLength(40);
         });
 
         modelBuilder.Entity<AlertCommand>(entity =>

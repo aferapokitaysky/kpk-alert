@@ -454,6 +454,83 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       if (outcome && outcomes[outcome]) details.push(`Результат: ${outcomes[outcome]}`);
       break;
     }
+    case 'integration.alert_source.state_changed': {
+      const source = safeText(payload, 'source')?.toLowerCase();
+      const sources: Record<string, string> = {
+        ukrainealarm: 'UkraineAlarm',
+        'alerts.in.ua': 'Alerts in UA',
+        neptun: 'NEPTUN',
+      };
+      if (source && sources[source]) details.push(`Джерело: ${sources[source]}`);
+
+      const scope = safeText(payload, 'scope')?.toLowerCase();
+      const scopes: Record<string, string> = {
+        oblast: 'область',
+        raion: 'район',
+        hromada: 'громада',
+      };
+      if (scope && scopes[scope]) details.push(`Область: ${scopes[scope]}`);
+      if (safeText(payload, 'scopeId'))
+        details.push(`Код області: ${safeText(payload, 'scopeId')}`);
+
+      const levelLabels: Record<string, string> = {
+        active: 'тривога активна',
+        inactive: 'стан неактивний',
+        partial: 'неповні дані',
+        unknown: 'невідомий стан',
+        conflict: 'суперечливі дані',
+      };
+      const level = safeText(payload, 'level')?.toLowerCase();
+      if (level && levelLabels[level]) details.push(`Стан джерела: ${levelLabels[level]}`);
+
+      const alertLevels: Record<string, string> = {
+        red: 'червоний',
+        yellow: 'жовтий',
+        unknown: 'невідомий',
+      };
+      const alertLevel = safeText(payload, 'alertLevel')?.toLowerCase();
+      if (alertLevel && alertLevels[alertLevel])
+        details.push(`Рівень API: ${alertLevels[alertLevel]} (не гучність)`);
+
+      const freshnessLabels: Record<string, string> = {
+        fresh: 'свіжі дані',
+        stale: 'застарілі дані',
+        unknown: 'актуальність невідома',
+      };
+      const freshness = safeText(payload, 'freshness')?.toLowerCase();
+      if (freshness && freshnessLabels[freshness])
+        details.push(`Актуальність: ${freshnessLabels[freshness]}`);
+
+      const changeType = safeText(payload, 'changeType');
+      if (changeType === 'initial') details.push('Зафіксовано початковий стан джерела');
+      if (changeType === 'changed') details.push('Нормалізований стан джерела змінився');
+
+      const previousLevel = safeText(payload, 'previousLevel')?.toLowerCase();
+      if (previousLevel && levelLabels[previousLevel])
+        details.push(`Попередній стан: ${levelLabels[previousLevel]}`);
+      const previousAlertLevel = safeText(payload, 'previousAlertLevel')?.toLowerCase();
+      if (previousAlertLevel && alertLevels[previousAlertLevel])
+        details.push(`Попередній рівень API: ${alertLevels[previousAlertLevel]} (не гучність)`);
+
+      const checkedAt = safeTimestamp(payload, 'checkedAtUtc');
+      if (checkedAt) details.push(`Перевірено джерело: ${checkedAt}`);
+      const updatedAt = safeTimestamp(payload, 'dataUpdatedAtUtc');
+      if (updatedAt) details.push(`Дані джерела оновлено: ${updatedAt}`);
+
+      const errors: Record<string, string> = {
+        not_configured: 'джерело не налаштовано',
+        source_unavailable: 'джерело недоступне',
+        invalid_response: 'джерело повернуло некоректну відповідь',
+        rate_limited: 'джерело обмежило частоту запитів',
+        request_failed: 'запит до джерела не виконано',
+        response_too_large: 'відповідь джерела завелика',
+        heartbeat_timeout: 'вичерпано час очікування heartbeat',
+        retry_backoff: 'очікується повторний запит',
+      };
+      const errorCode = safeText(payload, 'errorCode');
+      if (errorCode && errors[errorCode]) details.push(`Причина: ${errors[errorCode]}`);
+      break;
+    }
     default:
       break;
   }
@@ -501,6 +578,7 @@ const titles: Record<string, string> = {
   'integration.ukrainealarm_webhook.unknown': 'Стан запиту вебхука невідомий',
   'integration.ukrainealarm_webhook.succeeded': 'Запит вебхука виконано',
   'integration.ukrainealarm_webhook.rejected': 'Запит вебхука відхилено',
+  'integration.alert_source.state_changed': 'Змінено стан джерела тривоги',
 };
 
 export function presentAuditEvent(event: AuditEvent): EventPresentation {
