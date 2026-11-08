@@ -501,6 +501,20 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       if (freshness && freshnessLabels[freshness])
         details.push(`Актуальність: ${freshnessLabels[freshness]}`);
 
+      const previousFreshness = safeText(payload, 'previousFreshness')?.toLowerCase();
+      if (previousFreshness && freshnessLabels[previousFreshness])
+        details.push(`Попередня актуальність: ${freshnessLabels[previousFreshness]}`);
+
+      const lastKnownLevel = safeText(payload, 'lastKnownLevel')?.toLowerCase();
+      if (lastKnownLevel && levelLabels[lastKnownLevel])
+        details.push(`Останній відомий стан: ${levelLabels[lastKnownLevel]}`);
+
+      const lastKnownAlertLevel = safeText(payload, 'lastKnownAlertLevel')?.toLowerCase();
+      if (lastKnownAlertLevel && alertLevels[lastKnownAlertLevel])
+        details.push(
+          `Останній відомий рівень API: ${alertLevels[lastKnownAlertLevel]} (не гучність)`,
+        );
+
       const changeType = safeText(payload, 'changeType');
       if (changeType === 'initial') details.push('Зафіксовано початковий стан джерела');
       if (changeType === 'changed') details.push('Нормалізований стан джерела змінився');
@@ -529,6 +543,9 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       };
       const errorCode = safeText(payload, 'errorCode');
       if (errorCode && errors[errorCode]) details.push(`Причина: ${errors[errorCode]}`);
+      const previousErrorCode = safeText(payload, 'previousErrorCode');
+      if (previousErrorCode && errors[previousErrorCode])
+        details.push(`Попередня причина: ${errors[previousErrorCode]}`);
       break;
     }
     default:

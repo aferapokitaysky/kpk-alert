@@ -332,6 +332,10 @@ describe('сторінка аудиту', () => {
           ScopeId: '19',
           Level: 'inactive',
           Freshness: 'fresh',
+          PreviousFreshness: 'stale',
+          PreviousErrorCode: 'request_failed',
+          LastKnownLevel: 'active',
+          LastKnownAlertLevel: 'red',
           CheckedAtUtc: '2026-11-06T07:21:00Z',
           DataUpdatedAtUtc: '2026-11-06T07:20:00Z',
           ChangeType: 'changed',
@@ -467,6 +471,12 @@ describe('сторінка аудиту', () => {
     expect(screen.getByText('Стан джерела: стан неактивний')).toBeInTheDocument();
     expect(screen.getByText('Попередній стан: тривога активна')).toBeInTheDocument();
     expect(screen.getByText('Попередній рівень API: червоний (не гучність)')).toBeInTheDocument();
+    expect(screen.getByText('Попередня актуальність: застарілі дані')).toBeInTheDocument();
+    expect(screen.getByText('Попередня причина: запит до джерела не виконано')).toBeInTheDocument();
+    expect(screen.getByText('Останній відомий стан: тривога активна')).toBeInTheDocument();
+    expect(
+      screen.getByText('Останній відомий рівень API: червоний (не гучність)'),
+    ).toBeInTheDocument();
     expect(screen.getAllByText('Інший суб’єкт · системна дія')).toHaveLength(1);
     expect(screen.getAllByText('Система · системна дія').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Вузол · системна дія').length).toBeGreaterThan(0);
