@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -42,6 +43,18 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
         Assert.Null(delivery.NextAttemptAtUtc);
         Assert.Equal(3, await db.DeviceCommandReceipts.CountAsync());
         Assert.Equal(3, await db.AuditEvents.CountAsync(item => item.EventType == "alert_command.receipt_received"));
+        AuditEvent playbackConfirmation = (await db.AuditEvents
+            .Where(item => item.EventType == "alert_command.device_playback_state_reported")
+            .ToArrayAsync())
+            .Single(item => item.Payload.Contains("Playing", StringComparison.Ordinal));
+        using var playbackPayload = JsonDocument.Parse(playbackConfirmation.Payload);
+        Assert.Equal("start", playbackPayload.RootElement.GetProperty("CommandAction").GetString());
+        Assert.Equal("Playing", playbackPayload.RootElement.GetProperty("State").GetString());
+        Assert.Equal("evacuation", playbackPayload.RootElement.GetProperty("PresetCode").GetString());
+        Assert.Equal(Now.AddSeconds(1), playbackPayload.RootElement.GetProperty("NodeOccurredAtUtc").GetDateTimeOffset());
+        Assert.Equal(Now, playbackPayload.RootElement.GetProperty("ServerReceivedAtUtc").GetDateTimeOffset());
+        Assert.Equal(2, await db.AuditEvents.CountAsync(item =>
+            item.EventType == "alert_command.device_playback_state_reported"));
     }
 
     [PostgresFact]

@@ -277,6 +277,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.Property(item => item.Scope).HasMaxLength(16);
             entity.Property(item => item.ScopeId).HasMaxLength(80);
             entity.Property(item => item.LastDecisionCode).HasMaxLength(80).IsRequired();
+            entity.Property(item => item.LastHoldAuditFingerprint).HasMaxLength(64);
         });
     }
 }

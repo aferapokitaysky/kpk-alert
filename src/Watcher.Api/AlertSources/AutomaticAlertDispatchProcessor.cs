@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -42,10 +43,15 @@ public sealed class AutomaticAlertDispatchProcessor(
         OpenAlertEpisode? openEpisode = CreateOpenEpisode(state);
         AutomaticAlertDispatchDecision decision = policy.Evaluate(status, openEpisode);
         DateTimeOffset now = clock.GetUtcNow();
+        var previousDecisionCode = state.LastDecisionCode;
 
         if (decision.Action == AutomaticAlertDispatchAction.Start && !state.HasOpenEpisode)
         {
             AutomaticAlertDispatchResult result = await StartEpisodeAsync(state, decision, now, cancellationToken);
+            if (result == AutomaticAlertDispatchResult.Held)
+            {
+                AddHoldAudit(state, previousDecisionCode, state.LastDecisionCode, status, now);
+            }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return result;
@@ -55,6 +61,10 @@ public sealed class AutomaticAlertDispatchProcessor(
         {
             AutomaticAlertDispatchResult result = await StopEpisodeAsync(
                 state, decision, now, cancellationToken);
+            if (result == AutomaticAlertDispatchResult.Held)
+            {
+                AddHoldAudit(state, previousDecisionCode, state.LastDecisionCode, status, now);
+            }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return result;
@@ -62,6 +72,10 @@ public sealed class AutomaticAlertDispatchProcessor(
 
         state.LastDecisionCode = decision.ReasonCode;
         state.UpdatedAtUtc = now;
+        if (decision.Action == AutomaticAlertDispatchAction.Hold)
+        {
+            AddHoldAudit(state, previousDecisionCode, decision.ReasonCode, status, now);
+        }
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return decision.Action switch
@@ -70,6 +84,118 @@ public sealed class AutomaticAlertDispatchProcessor(
             _ => AutomaticAlertDispatchResult.NoChange
         };
     }
+
+    private void AddHoldAudit(
+        AutomaticAlertDispatchState state,
+        string? previousDecisionCode,
+        string? decisionCode,
+        AlertSourcesStatusResponse status,
+        DateTimeOffset occurredAtUtc)
+    {
+        if (string.IsNullOrWhiteSpace(decisionCode))
+        {
+            return;
+        }
+
+        HoldAuditObservation[] observations = status.Targets
+            .SelectMany(target => target.Observations)
+            .Where(IsAuditableSource)
+            .GroupBy(item => new
+            {
+                item.Source,
+                item.Scope,
+                item.ScopeId,
+                item.Level,
+                item.AlertLevel,
+                item.Freshness
+            })
+            .Select(group =>
+            {
+                AlertSourceObservationResponse latest = group
+                    .OrderByDescending(item => item.CheckedAtUtc)
+                    .ThenByDescending(item => item.DataUpdatedAtUtc)
+                    .First();
+                return new HoldAuditObservation(
+                    group.Key.Source,
+                    group.Key.Scope,
+                    group.Key.ScopeId,
+                    group.Key.Level,
+                    group.Key.AlertLevel,
+                    group.Key.Freshness,
+                    latest.CheckedAtUtc,
+                    latest.DataUpdatedAtUtc);
+            })
+            .OrderBy(item => item.Source, StringComparer.Ordinal)
+            .ThenBy(item => item.Scope, StringComparer.Ordinal)
+            .ThenBy(item => item.ScopeId, StringComparer.Ordinal)
+            .ThenBy(item => item.Level, StringComparer.Ordinal)
+            .ThenBy(item => item.AlertLevel, StringComparer.Ordinal)
+            .ThenBy(item => item.Freshness, StringComparer.Ordinal)
+            .Take(25)
+            .ToArray();
+        HoldAuditObservation[] includedObservations = observations.Take(24).ToArray();
+        var observationsTruncated = observations.Length > includedObservations.Length;
+        var fingerprint = CreateHoldAuditFingerprint(decisionCode, includedObservations, observationsTruncated);
+        if (string.Equals(previousDecisionCode, decisionCode, StringComparison.Ordinal) &&
+            string.Equals(state.LastHoldAuditFingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        state.LastHoldAuditFingerprint = fingerprint;
+
+        db.AuditEvents.Add(new AuditEvent
+        {
+            Id = Guid.NewGuid(),
+            EventType = "automatic_alert.held",
+            ActorType = "system",
+            Payload = JsonSerializer.Serialize(new
+            {
+                DecisionCode = decisionCode,
+                Observations = includedObservations,
+                ObservationsTruncated = observationsTruncated
+            }, JsonOptions),
+            OccurredAtUtc = occurredAtUtc
+        });
+    }
+
+    private static string CreateHoldAuditFingerprint(
+        string decisionCode,
+        IReadOnlyList<HoldAuditObservation> observations,
+        bool observationsTruncated)
+    {
+        var snapshot = new
+        {
+            DecisionCode = decisionCode,
+            Observations = observations.Select(item => new
+            {
+                item.Source,
+                item.Scope,
+                item.ScopeId,
+                item.Level,
+                item.AlertLevel,
+                item.Freshness
+            }),
+            ObservationsTruncated = observationsTruncated
+        };
+        var serialized = JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions);
+        return Convert.ToHexString(SHA256.HashData(serialized));
+    }
+
+    private static bool IsAuditableSource(AlertSourceObservationResponse observation) =>
+        observation.Source is AlertSourceCatalog.UkraineAlarmCode or
+            AlertSourceCatalog.NeptunCode or
+            AlertSourceCatalog.AlertsInUaCode;
+
+    private sealed record HoldAuditObservation(
+        string Source,
+        string Scope,
+        string ScopeId,
+        string Level,
+        string? AlertLevel,
+        string Freshness,
+        DateTimeOffset? CheckedAtUtc,
+        DateTimeOffset? DataUpdatedAtUtc);
 
     private async Task<AutomaticAlertDispatchResult> StartEpisodeAsync(
         AutomaticAlertDispatchState state,
@@ -129,6 +255,7 @@ public sealed class AutomaticAlertDispatchProcessor(
             LocationIds = command.Targets.Select(target => target.LocationId),
             decision.ReasonCode,
             Source = observation?.Source,
+            AlertLevel = observation?.AlertLevel,
             Scope = observation?.Scope,
             ScopeId = observation?.ScopeId,
             observation?.CheckedAtUtc,

@@ -101,6 +101,9 @@ public sealed class UkraineAlarmWebhookOperationsService(
 
         operation.State = "Running";
         operation.UpdatedAtUtc = clock.GetUtcNow();
+        db.AuditEvents.Add(CreateAuditEvent(
+            "integration.ukrainealarm_webhook.running", actorUserId, operation, "provider_request_started",
+            operation.UpdatedAtUtc));
         await db.SaveChangesAsync(CancellationToken.None);
 
         try

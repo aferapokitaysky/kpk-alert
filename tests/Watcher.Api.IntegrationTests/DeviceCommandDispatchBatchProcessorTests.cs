@@ -57,6 +57,20 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         Assert.Equal(1, delivery.AttemptCount);
         Assert.Equal(Now, delivery.LastAttemptAtUtc);
         Assert.Equal(Now.AddSeconds(10), delivery.NextAttemptAtUtc);
+        AuditEvent[] deliveryAudit = (await verifyDb.AuditEvents.ToArrayAsync())
+            .Where(item => item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal))
+            .OrderBy(item => item.EventType)
+            .ToArray();
+        AuditEvent attemptStarted = Assert.Single(deliveryAudit,
+            item => item.EventType == "alert_command.delivery_attempt_started");
+        AuditEvent writeCompleted = Assert.Single(deliveryAudit,
+            item => item.EventType == "alert_command.delivery_write_result");
+        using var startedPayload = JsonDocument.Parse(attemptStarted.Payload);
+        Assert.Equal("started", startedPayload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("evacuation", startedPayload.RootElement.GetProperty("PresetCode").GetString());
+        using var completedPayload = JsonDocument.Parse(writeCompleted.Payload);
+        Assert.Equal("completed", completedPayload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("socket_write_completed", completedPayload.RootElement.GetProperty("ReasonCode").GetString());
     }
 
     [PostgresFact]
@@ -297,6 +311,59 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         Assert.Single(presenceSessions, item => item.DisconnectedAtUtc == null);
         Assert.Contains(presenceSessions, item =>
             item.Id == oldPresenceSessionId && item.DisconnectedAtUtc is not null);
+        AuditEvent writeResult = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync(), item => item.Payload.Contains(deliveryId.ToString(), StringComparison.Ordinal));
+        using var payload = JsonDocument.Parse(writeResult.Payload);
+        Assert.Equal("not_started", payload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("presence_session_changed", payload.RootElement.GetProperty("ReasonCode").GetString());
+        AuditEvent retryScheduled = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_retry_scheduled")
+            .ToArrayAsync());
+        using var retryPayload = JsonDocument.Parse(retryScheduled.Payload);
+        Assert.Equal("presence_session_changed", retryPayload.RootElement.GetProperty("ReasonCode").GetString());
+    }
+
+    [PostgresFact]
+    public async Task Process_batch_audits_socket_write_exception_as_indeterminate()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new(failSends: true);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+
+            Assert.Equal(1, await processor.ProcessBatchAsync(CancellationToken.None));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        Assert.Equal(1, socket.SendCount);
+        Assert.Equal(WebSocketState.Aborted, socket.State);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+        Assert.Equal(CommandDeliveryState.Pending, delivery.State);
+        AuditEvent writeResult = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync(),
+            item => item.EventType == "alert_command.delivery_write_result" &&
+                    item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal));
+        using var payload = JsonDocument.Parse(writeResult.Payload);
+        Assert.Equal("indeterminate", payload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("socket_write_result_unknown", payload.RootElement.GetProperty("ReasonCode").GetString());
+        AuditEvent retryScheduled = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_retry_scheduled")
+            .ToArrayAsync());
+        using var retryPayload = JsonDocument.Parse(retryScheduled.Payload);
+        Assert.Equal("socket_write_result_unknown", retryPayload.RootElement.GetProperty("ReasonCode").GetString());
     }
 
     [PostgresFact]
@@ -345,6 +412,60 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         Assert.Equal(CommandDeliveryState.Pending, delivery.State);
         Assert.Equal(1, delivery.AttemptCount);
         Assert.Equal(Now.AddSeconds(1), delivery.NextAttemptAtUtc);
+        AuditEvent writeResult = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync(),
+            item => item.Payload.Contains(deliveryId.ToString(), StringComparison.Ordinal));
+        using var payload = JsonDocument.Parse(writeResult.Payload);
+        Assert.Equal("indeterminate", payload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("socket_write_timed_out_result_unknown",
+            payload.RootElement.GetProperty("ReasonCode").GetString());
+        AuditEvent retryScheduled = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_retry_scheduled")
+            .ToArrayAsync());
+        using var retryPayload = JsonDocument.Parse(retryScheduled.Payload);
+        Assert.Equal("socket_write_timed_out_result_unknown",
+            retryPayload.RootElement.GetProperty("ReasonCode").GetString());
+    }
+
+    [PostgresFact]
+    public async Task Shutdown_cancellation_during_socket_write_persists_indeterminate_outcome()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new(blockSends: true);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        using CancellationTokenSource shutdown = new();
+        Task<int> processing;
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            DeviceCommandDispatchBatchProcessor processor = CreateProcessor(db, sessions);
+            processing = processor.ProcessBatchAsync(shutdown.Token);
+            await socket.SendStarted.WaitAsync(TimeSpan.FromSeconds(5));
+            shutdown.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await processing);
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        Assert.Equal(WebSocketState.Aborted, socket.State);
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        CommandDelivery delivery = await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+        Assert.Equal(CommandDeliveryState.InFlight, delivery.State);
+        AuditEvent writeResult = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync(),
+            item => item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal));
+        using var payload = JsonDocument.Parse(writeResult.Payload);
+        Assert.Equal("indeterminate", payload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("socket_write_result_unknown", payload.RootElement.GetProperty("ReasonCode").GetString());
     }
 
     private async Task<(Guid CommandId, Guid DeviceId, Guid DeliveryId)> AddPendingStartAsync(
@@ -497,7 +618,7 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
         }
     }
 
-    private sealed class RecordingWebSocket(bool blockSends = false) : WebSocket
+    private sealed class RecordingWebSocket(bool blockSends = false, bool failSends = false) : WebSocket
     {
         private WebSocketState _state = WebSocketState.Open;
         private byte[] _payload = [];
@@ -545,6 +666,11 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
             SendCount++;
             _payload = buffer.ToArray();
             _sendStarted.TrySetResult();
+            if (failSends)
+            {
+                throw new WebSocketException("Socket write failed.");
+            }
+
             return blockSends ? Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken) : Task.CompletedTask;
         }
     }

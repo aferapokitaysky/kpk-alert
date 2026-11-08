@@ -119,6 +119,10 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<string>("LastHoldAuditFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("Scope")
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)");

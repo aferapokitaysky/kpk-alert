@@ -64,6 +64,9 @@ public sealed class PostgresAlertCommandApiTests : IClassFixture<PostgresApiFixt
         Assert.Equal("alert_command.created", outbox.EventType);
         Assert.Null(outbox.ProcessedAtUtc);
         Assert.Equal(command.Id, audit.Payload.DeserializeCommandId());
+        using var auditPayload = JsonDocument.Parse(audit.Payload);
+        using var outboxPayload = JsonDocument.Parse(outbox.Payload);
+        Assert.Equal("evacuation", auditPayload.RootElement.GetProperty("PresetCode").GetString());
     }
 
     [PostgresFact]

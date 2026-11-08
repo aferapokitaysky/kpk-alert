@@ -103,6 +103,48 @@ public sealed class DeviceStatusControllerTests : IClassFixture<PostgresApiFixtu
     }
 
     [PostgresFact]
+    public async Task Session_connection_supersede_and_disconnect_are_recorded_without_network_details()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);
+        var deviceId = Guid.NewGuid();
+        var certificateFingerprint = new string('c', 64);
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            db.Devices.Add(new Device
+            {
+                Id = deviceId,
+                LocationId = seed.FirstLocationId,
+                Name = "Вузол журналювання сеансів",
+                CertificateThumbprint = certificateFingerprint
+            });
+            await db.SaveChangesAsync();
+        }
+
+        Guid firstSessionId = await _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None);
+        Guid secondSessionId = await _fixture.DevicePresence.OpenSessionAsync(deviceId, CancellationToken.None);
+        await _fixture.DevicePresence.DisconnectAsync(secondSessionId, CancellationToken.None);
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AuditEvent[] events = await verifyDb.AuditEvents
+            .Where(item => item.ActorId == deviceId)
+            .OrderBy(item => item.OccurredAtUtc)
+            .ToArrayAsync();
+        Assert.Equal(2, events.Count(item => item.EventType == "device.session_connected"));
+        AuditEvent supersededEvent = Assert.Single(events,
+            item => item.EventType == "device.session_superseded");
+        Assert.Single(events, item => item.EventType == "device.session_disconnected");
+        using var supersededPayload = JsonDocument.Parse(supersededEvent.Payload);
+        Assert.Equal(firstSessionId, supersededPayload.RootElement.GetProperty("id").GetGuid());
+        Assert.All(events, item =>
+        {
+            Assert.Equal("device", item.ActorType);
+            Assert.DoesNotContain(certificateFingerprint, item.Payload, StringComparison.Ordinal);
+            Assert.DoesNotContain("ipAddress", item.Payload, StringComparison.OrdinalIgnoreCase);
+            Assert.NotEqual(default, item.OccurredAtUtc);
+        });
+    }
+
+    [PostgresFact]
     public async Task Device_status_is_restricted_no_store_and_does_not_expose_certificate_data()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator: true);

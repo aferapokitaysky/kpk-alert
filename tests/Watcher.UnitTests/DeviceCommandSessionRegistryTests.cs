@@ -22,7 +22,8 @@ public sealed class DeviceCommandSessionRegistryTests
         Assert.Equal([deviceId], registry.ConnectedDeviceIds);
         registry.Unregister(first);
 
-        Assert.True(await registry.SendAsync(deviceId, "{}"u8.ToArray(), CancellationToken.None));
+        Assert.Equal(DeviceCommandSendOutcome.Completed,
+            await registry.SendAsync(deviceId, "{}"u8.ToArray(), CancellationToken.None));
         Assert.Equal(1, secondSocket.SendCount);
 
         registry.Unregister(second);
@@ -39,12 +40,28 @@ public sealed class DeviceCommandSessionRegistryTests
     }
 
     [Fact]
-    public async Task Sending_to_disconnected_device_returns_false()
+    public async Task Sending_to_disconnected_device_does_not_start_write()
     {
         DeviceCommandSessionRegistry registry = new();
 
-        Assert.False(await registry.SendAsync(
+        Assert.Equal(DeviceCommandSendOutcome.NotStarted, await registry.SendAsync(
             Guid.NewGuid(), "{}"u8.ToArray(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Socket_write_exception_has_an_indeterminate_result()
+    {
+        DeviceCommandSessionRegistry registry = new();
+        var deviceId = Guid.NewGuid();
+        FakeWebSocket socket = new(failSends: true);
+        DeviceCommandWebSocketSession session = await registry.RegisterAsync(
+            deviceId, socket, CancellationToken.None);
+
+        Assert.Equal(DeviceCommandSendOutcome.Indeterminate,
+            await registry.SendAsync(deviceId, "{}"u8.ToArray(), CancellationToken.None));
+        Assert.Equal(WebSocketState.Aborted, socket.State);
+
+        registry.Unregister(session);
     }
 
     [Fact]
@@ -68,7 +85,7 @@ public sealed class DeviceCommandSessionRegistryTests
         Assert.Null(staleSession);
         Assert.Equal(WebSocketState.Open, currentSocket.State);
         Assert.Equal(WebSocketState.Open, staleSocket.State);
-        Assert.True(await registry.SendAsync(
+        Assert.Equal(DeviceCommandSendOutcome.Completed, await registry.SendAsync(
             deviceId, currentPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
         Assert.Equal(1, currentSocket.SendCount);
         registry.Unregister(currentSession);
@@ -115,15 +132,15 @@ public sealed class DeviceCommandSessionRegistryTests
         Assert.NotNull(olderSession);
         Assert.NotNull(newerSession);
         Assert.Equal(WebSocketState.CloseSent, olderSocket.State);
-        Assert.True(await registry.SendAsync(
+        Assert.Equal(DeviceCommandSendOutcome.Completed, await registry.SendAsync(
             deviceId, newerPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
         Assert.Equal(1, newerSocket.SendCount);
-        Assert.False(await registry.SendAsync(
+        Assert.Equal(DeviceCommandSendOutcome.NotStarted, await registry.SendAsync(
             deviceId, olderPresenceSessionId, "{}"u8.ToArray(), CancellationToken.None));
         registry.Unregister(newerSession);
     }
 
-    private sealed class FakeWebSocket : WebSocket
+    private sealed class FakeWebSocket(bool failSends = false) : WebSocket
     {
         private WebSocketState _state = WebSocketState.Open;
         private WebSocketCloseStatus? _closeStatus;
@@ -168,6 +185,11 @@ public sealed class DeviceCommandSessionRegistryTests
             CancellationToken cancellationToken)
         {
             SendCount++;
+            if (failSends)
+            {
+                throw new WebSocketException("Socket write failed.");
+            }
+
             return Task.CompletedTask;
         }
     }

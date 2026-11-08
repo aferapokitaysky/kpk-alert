@@ -57,17 +57,17 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             return CommandReceiptOutcome.NotFound;
         }
 
-        var expectedSequence = await (
+        var commandTarget = await (
             from target in db.CommandTargets.AsNoTracking()
             where target.CommandId == receipt.CommandId && target.LocationId == device.LocationId
-            select target.Sequence)
+            select new { target.LocationId, target.Sequence })
             .SingleOrDefaultAsync(cancellationToken);
-        if (expectedSequence == 0)
+        if (commandTarget is null)
         {
             return CommandReceiptOutcome.NotFound;
         }
 
-        if (expectedSequence != receipt.Sequence)
+        if (commandTarget.Sequence != receipt.Sequence)
         {
             return CommandReceiptOutcome.Conflict;
         }
@@ -144,10 +144,40 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 receipt.CommandId,
                 receipt.EventId,
                 receipt.Sequence,
+                LocationId = commandTarget.LocationId,
+                CommandAction = command.Action,
+                command.PresetCode,
+                command.TargetCommandId,
                 State = receipt.State.ToString(),
-                receipt.DiagnosticCode
+                receipt.DiagnosticCode,
+                NodeOccurredAtUtc = receipt.OccurredAtUtc,
+                ServerReceivedAtUtc = receivedAtUtc
             })
         });
+        if (receipt.State is DeviceCommandState.Playing or DeviceCommandState.Completed or
+            DeviceCommandState.Stopped)
+        {
+            db.AuditEvents.Add(new AuditEvent
+            {
+                Id = Guid.NewGuid(),
+                EventType = "alert_command.device_playback_state_reported",
+                ActorType = "device",
+                ActorId = deviceId,
+                OccurredAtUtc = receivedAtUtc,
+                Payload = JsonSerializer.Serialize(new
+                {
+                    receipt.CommandId,
+                    receipt.Sequence,
+                    LocationId = commandTarget.LocationId,
+                    CommandAction = command.Action,
+                    command.PresetCode,
+                    command.TargetCommandId,
+                    State = receipt.State.ToString(),
+                    NodeOccurredAtUtc = receipt.OccurredAtUtc,
+                    ServerReceivedAtUtc = receivedAtUtc
+                })
+            });
+        }
         if (targetWasStopped && stoppedDelivery is not null)
         {
             db.AuditEvents.Add(new AuditEvent

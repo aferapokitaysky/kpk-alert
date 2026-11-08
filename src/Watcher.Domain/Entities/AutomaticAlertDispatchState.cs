@@ -11,5 +11,6 @@ public sealed class AutomaticAlertDispatchState
     public Guid? StartCommandId { get; set; }
     public DateTimeOffset? StartedAtUtc { get; set; }
     public string LastDecisionCode { get; set; } = "not_evaluated";
+    public string? LastHoldAuditFingerprint { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
 }

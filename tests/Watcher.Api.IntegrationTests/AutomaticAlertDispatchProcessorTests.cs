@@ -141,14 +141,63 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         await ResetEnvironmentAsync();
 
         AutomaticAlertDispatchResult result = await ProcessAsync(ActiveStatus());
+        AutomaticAlertDispatchResult repeated = await ProcessAsync(ActiveStatus());
 
         Assert.Equal(AutomaticAlertDispatchResult.Held, result);
+        Assert.Equal(AutomaticAlertDispatchResult.Held, repeated);
         using WatcherDbContext db = _fixture.CreateDbContext();
         AutomaticAlertDispatchState state = await db.AutomaticAlertDispatchStates.SingleAsync();
         Assert.False(state.HasOpenEpisode);
         Assert.Equal("preset_unavailable", state.LastDecisionCode);
         Assert.Empty(db.AlertCommands);
         Assert.Empty(db.OutboxMessages);
+        AuditEvent hold = Assert.Single(db.AuditEvents);
+        Assert.Equal("automatic_alert.held", hold.EventType);
+        using var payload = JsonDocument.Parse(hold.Payload);
+        Assert.Equal("preset_unavailable", payload.RootElement.GetProperty("decisionCode").GetString());
+        Assert.Equal(AlertSourceCatalog.UkraineAlarmCode,
+            payload.RootElement.GetProperty("observations")[0].GetProperty("source").GetString());
+    }
+
+    [PostgresFact]
+    public async Task Stale_observation_is_included_in_deduplicated_hold_audit()
+    {
+        await ResetEnvironmentAsync();
+        DateTimeOffset firstCheck = Now;
+        DateTimeOffset repeatedCheck = Now.AddMinutes(1);
+        DateTimeOffset changedAlertCheck = Now.AddMinutes(2);
+        DateTimeOffset repeatedAlertCheck = Now.AddMinutes(3);
+
+        Assert.Equal(AutomaticAlertDispatchResult.Held,
+            await ProcessAsync(Status("active", "stale", "red", firstCheck), firstCheck));
+        Assert.Equal(AutomaticAlertDispatchResult.Held,
+            await ProcessAsync(Status("active", "stale", "red", repeatedCheck), repeatedCheck));
+        Assert.Equal(AutomaticAlertDispatchResult.Held,
+            await ProcessAsync(Status("active", "stale", "yellow", changedAlertCheck), changedAlertCheck));
+        Assert.Equal(AutomaticAlertDispatchResult.Held,
+            await ProcessAsync(Status("active", "stale", "yellow", repeatedAlertCheck), repeatedAlertCheck));
+
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        AuditEvent[] holds = await db.AuditEvents
+            .Where(item => item.EventType == "automatic_alert.held")
+            .OrderBy(item => item.OccurredAtUtc)
+            .ToArrayAsync();
+        Assert.Equal(2, holds.Length);
+        using var firstPayload = JsonDocument.Parse(holds[0].Payload);
+        Assert.Equal("no_fresh_observation", firstPayload.RootElement.GetProperty("decisionCode").GetString());
+        JsonElement firstObservation = firstPayload.RootElement.GetProperty("observations")[0];
+        Assert.Equal(AlertSourceCatalog.UkraineAlarmCode, firstObservation.GetProperty("source").GetString());
+        Assert.Equal("red", firstObservation.GetProperty("alertLevel").GetString());
+        Assert.Equal("stale", firstObservation.GetProperty("freshness").GetString());
+        Assert.Equal(AlertSourceCatalog.KremenchukHromadaId,
+            firstObservation.GetProperty("scopeId").GetString());
+        Assert.Equal(firstCheck, firstObservation.GetProperty("checkedAtUtc").GetDateTimeOffset());
+
+        using var changedPayload = JsonDocument.Parse(holds[1].Payload);
+        JsonElement changedObservation = changedPayload.RootElement.GetProperty("observations")[0];
+        Assert.Equal("yellow", changedObservation.GetProperty("alertLevel").GetString());
+        Assert.Equal(changedAlertCheck,
+            changedObservation.GetProperty("checkedAtUtc").GetDateTimeOffset());
     }
 
     [PostgresFact]
@@ -243,8 +292,13 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
 
     private static AlertSourcesStatusResponse InactiveStatus() => Status("inactive");
 
-    private static AlertSourcesStatusResponse Status(string level)
+    private static AlertSourcesStatusResponse Status(
+        string level,
+        string freshness = "fresh",
+        string? alertLevel = null,
+        DateTimeOffset? observedAtUtc = null)
     {
+        DateTimeOffset observedAt = observedAtUtc ?? Now;
         AlertSourceObservationResponse observation = new(
             AlertSourceCatalog.UkraineAlarmCode,
             AlertSourceCatalog.UkraineAlarmName,
@@ -252,10 +306,10 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             AlertSourceCatalog.KremenchukHromadaId,
             AlertSourceCatalog.KremenchukHromadaName,
             level,
-            null,
-            "fresh",
-            Now,
-            Now,
+            alertLevel,
+            freshness,
+            observedAt,
+            observedAt,
             null,
             AlertSourceCatalog.UkraineAlarmAttributionUrl,
             null,
@@ -265,10 +319,10 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             observation.ScopeId,
             observation.ScopeName,
             level,
-            null,
-            "fresh",
-            Now,
-            Now,
+            alertLevel,
+            freshness,
+            observedAt,
+            observedAt,
             observation,
             [observation]);
         return new AlertSourcesStatusResponse(Now, [target]);

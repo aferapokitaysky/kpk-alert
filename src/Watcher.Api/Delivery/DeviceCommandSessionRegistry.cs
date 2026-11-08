@@ -133,7 +133,7 @@ public sealed class DeviceCommandSessionRegistry
         }
     }
 
-    public async Task<bool> SendAsync(
+    public async Task<DeviceCommandSendOutcome> SendAsync(
         Guid deviceId,
         Guid presenceSessionId,
         ReadOnlyMemory<byte> payload,
@@ -142,19 +142,26 @@ public sealed class DeviceCommandSessionRegistry
         if (!_sessions.TryGetValue(deviceId, out DeviceCommandWebSocketSession? session) ||
             session.PresenceSessionId != presenceSessionId)
         {
-            return false;
+            return DeviceCommandSendOutcome.NotStarted;
         }
 
         return await session.SendAsync(payload, cancellationToken);
     }
 
-    public Task<bool> SendAsync(
+    public Task<DeviceCommandSendOutcome> SendAsync(
         Guid deviceId,
         ReadOnlyMemory<byte> payload,
         CancellationToken cancellationToken) =>
         _sessions.TryGetValue(deviceId, out DeviceCommandWebSocketSession? session)
             ? SendAsync(deviceId, session.PresenceSessionId, payload, cancellationToken)
-            : Task.FromResult(false);
+            : Task.FromResult(DeviceCommandSendOutcome.NotStarted);
+}
+
+public enum DeviceCommandSendOutcome
+{
+    Completed,
+    NotStarted,
+    Indeterminate
 }
 
 public sealed class DeviceCommandWebSocketSession(Guid deviceId, Guid presenceSessionId, WebSocket socket)
@@ -166,22 +173,48 @@ public sealed class DeviceCommandWebSocketSession(Guid deviceId, Guid presenceSe
 
     public void Abort() => socket.Abort();
 
-    public async Task<bool> SendAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    public async Task<DeviceCommandSendOutcome> SendAsync(
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
     {
-        await _sendLock.WaitAsync(cancellationToken);
         try
         {
-            if (socket.State != WebSocketState.Open)
+            await _sendLock.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return DeviceCommandSendOutcome.NotStarted;
+        }
+
+        try
+        {
+            WebSocketState state;
+            try
             {
-                return false;
+                state = socket.State;
+            }
+            catch (ObjectDisposedException)
+            {
+                return DeviceCommandSendOutcome.NotStarted;
+            }
+
+            if (state != WebSocketState.Open)
+            {
+                return DeviceCommandSendOutcome.NotStarted;
             }
 
             await socket.SendAsync(payload, WebSocketMessageType.Text, true, cancellationToken);
-            return true;
+            return DeviceCommandSendOutcome.Completed;
         }
-        catch (WebSocketException)
+        catch (OperationCanceledException)
         {
-            return false;
+            socket.Abort();
+            throw;
+        }
+        catch (Exception exception) when (exception is WebSocketException or ObjectDisposedException)
+        {
+            socket.Abort();
+            return DeviceCommandSendOutcome.Indeterminate;
         }
         finally
         {

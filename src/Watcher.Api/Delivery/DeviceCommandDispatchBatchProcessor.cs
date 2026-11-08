@@ -71,14 +71,16 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             Guid presenceSessionId = localSessions
                 .Single(session => session.DeviceId == dispatch.DeviceId)
                 .PresenceSessionId;
-            var sent = await SendToCurrentSessionAsync(dispatch, presenceSessionId, cancellationToken);
-            if (!sent)
+            DeliveryWriteResult writeResult = await SendToCurrentSessionAsync(
+                dispatch, presenceSessionId, cancellationToken);
+            if (writeResult.Outcome != DeliveryWriteOutcome.Completed)
             {
-                await ScheduleRetryAsync(dispatch, clock.GetUtcNow(), cancellationToken);
+                await ScheduleRetryAsync(dispatch, writeResult.ReasonCode, clock.GetUtcNow(), cancellationToken);
                 logger.LogInformation(
-                    "Команда {CommandId} для пристрою {DeviceId} очікує повторної доставки.",
+                    "Для команди {CommandId} пристрою {DeviceId} заплановано повторне доставлення. Причина: {ReasonCode}.",
                     dispatch.CommandId,
-                    dispatch.DeviceId);
+                    dispatch.DeviceId,
+                    writeResult.ReasonCode);
             }
 
             processedCount++;
@@ -87,7 +89,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         return processedCount;
     }
 
-    private async Task<bool> SendToCurrentSessionAsync(
+    private async Task<DeliveryWriteResult> SendToCurrentSessionAsync(
         PreparedDispatch dispatch,
         Guid presenceSessionId,
         CancellationToken cancellationToken)
@@ -101,8 +103,11 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 .ToListAsync(cancellationToken);
             if (lockedDevices.Count == 0)
             {
+                await RecordDeliveryWriteOutcomeAsync(
+                    dispatch, DeliveryWriteOutcome.NotStarted, "device_unavailable", clock.GetUtcNow(),
+                    cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
-                return false;
+                return new(DeliveryWriteOutcome.NotStarted, "device_unavailable");
             }
         }
 
@@ -115,32 +120,57 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 cancellationToken);
         if (!isCurrentSession)
         {
+            await RecordDeliveryWriteOutcomeAsync(
+                dispatch, DeliveryWriteOutcome.NotStarted, "presence_session_changed", now, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return false;
+            return new(DeliveryWriteOutcome.NotStarted, "presence_session_changed");
         }
 
-        bool sent;
+        DeliveryWriteOutcome outcome;
+        string reasonCode;
         using (var sendTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
             sendTimeout.CancelAfter(options.Value.SendTimeout);
             try
             {
-                sent = await sessions.SendAsync(
+                DeviceCommandSendOutcome sendOutcome = await sessions.SendAsync(
                     dispatch.DeviceId, presenceSessionId, dispatch.Payload, sendTimeout.Token);
+                outcome = sendOutcome switch
+                {
+                    DeviceCommandSendOutcome.Completed => DeliveryWriteOutcome.Completed,
+                    DeviceCommandSendOutcome.Indeterminate => DeliveryWriteOutcome.Indeterminate,
+                    _ => DeliveryWriteOutcome.NotStarted
+                };
+                reasonCode = sendOutcome switch
+                {
+                    DeviceCommandSendOutcome.Completed => "socket_write_completed",
+                    DeviceCommandSendOutcome.Indeterminate => "socket_write_result_unknown",
+                    _ => "send_not_started"
+                };
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
                 sessions.Abort(dispatch.DeviceId, presenceSessionId);
-                logger.LogWarning(
-                    "Час надсилання команди {CommandId} пристрою {DeviceId} вичерпано.",
-                    dispatch.CommandId,
-                    dispatch.DeviceId);
-                sent = false;
+                outcome = DeliveryWriteOutcome.Indeterminate;
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    reasonCode = "socket_write_result_unknown";
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "Час надсилання команди {CommandId} пристрою {DeviceId} вичерпано.",
+                        dispatch.CommandId,
+                        dispatch.DeviceId);
+                    reasonCode = "socket_write_timed_out_result_unknown";
+                }
             }
         }
 
-        await transaction.CommitAsync(cancellationToken);
-        return sent;
+        await RecordDeliveryWriteOutcomeAsync(dispatch, outcome, reasonCode, clock.GetUtcNow(), CancellationToken.None);
+        await transaction.CommitAsync(CancellationToken.None);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(outcome, reasonCode);
     }
 
     private async Task<Guid[]> FindDueDeliveryIdsAsync(
@@ -247,15 +277,21 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         delivery.NextAttemptAtUtc = Min(
             delivery.ExpiresAtUtc,
             now + options.Value.AcknowledgementTimeout);
+        PreparedDispatch dispatch = new(
+            delivery.Id,
+            delivery.DeviceId,
+            target.LocationId,
+            command.Id,
+            command.Action,
+            command.PresetCode,
+            delivery.AttemptCount,
+            JsonSerializer.SerializeToUtf8Bytes(commandDispatch, JsonOptions));
+        db.AuditEvents.Add(CreateDeliveryAuditEvent(
+            dispatch, "alert_command.delivery_attempt_started", "started", null, now));
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return new(
-            delivery.Id,
-            delivery.DeviceId,
-            command.Id,
-            delivery.AttemptCount,
-            JsonSerializer.SerializeToUtf8Bytes(commandDispatch, JsonOptions));
+        return dispatch;
     }
 
     private async Task<CommandDispatch?> CreateCommandDispatchAsync(
@@ -356,6 +392,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
     private async Task ScheduleRetryAsync(
         PreparedDispatch dispatch,
+        string reasonCode,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -379,7 +416,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                     dispatch.CommandId,
                     dispatch.DeviceId,
                     dispatch.AttemptCount,
-                    Reason = "connection_unavailable"
+                    ReasonCode = reasonCode
                 }),
                 OccurredAtUtc = now
             });
@@ -388,6 +425,55 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
         await transaction.CommitAsync(cancellationToken);
     }
+
+    private async Task RecordDeliveryWriteOutcomeAsync(
+        PreparedDispatch dispatch,
+        DeliveryWriteOutcome outcome,
+        string reasonCode,
+        DateTimeOffset occurredAtUtc,
+        CancellationToken cancellationToken)
+    {
+        db.AuditEvents.Add(CreateDeliveryAuditEvent(
+            dispatch,
+            "alert_command.delivery_write_result",
+            outcome switch
+            {
+                DeliveryWriteOutcome.Completed => "completed",
+                DeliveryWriteOutcome.NotStarted => "not_started",
+                DeliveryWriteOutcome.Indeterminate => "indeterminate",
+                _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
+                    "Невідомий результат запису доставки.")
+            },
+            reasonCode,
+            occurredAtUtc));
+        await db.SaveChangesAsync(cancellationToken);
+    }
+
+    private static AuditEvent CreateDeliveryAuditEvent(
+        PreparedDispatch dispatch,
+        string eventType,
+        string outcome,
+        string? reasonCode,
+        DateTimeOffset occurredAtUtc) => new()
+        {
+            Id = Guid.NewGuid(),
+            EventType = eventType,
+            ActorType = "system",
+            ActorId = null,
+            Payload = JsonSerializer.Serialize(new
+            {
+                dispatch.CommandId,
+                dispatch.DeliveryId,
+                dispatch.DeviceId,
+                dispatch.LocationId,
+                dispatch.Action,
+                dispatch.PresetCode,
+                dispatch.AttemptCount,
+                Outcome = outcome,
+                ReasonCode = reasonCode
+            }),
+            OccurredAtUtc = occurredAtUtc
+        };
 
     private void MarkExpired(CommandDelivery delivery, DateTimeOffset now)
     {
@@ -440,7 +526,19 @@ public sealed class DeviceCommandDispatchBatchProcessor(
     private sealed record PreparedDispatch(
         Guid DeliveryId,
         Guid DeviceId,
+        Guid LocationId,
         Guid CommandId,
+        string Action,
+        string? PresetCode,
         int AttemptCount,
         byte[] Payload);
+
+    private sealed record DeliveryWriteResult(DeliveryWriteOutcome Outcome, string ReasonCode);
+
+    private enum DeliveryWriteOutcome
+    {
+        Completed,
+        NotStarted,
+        Indeterminate
+    }
 }

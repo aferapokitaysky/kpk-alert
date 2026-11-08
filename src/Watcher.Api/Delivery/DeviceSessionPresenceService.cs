@@ -12,6 +12,8 @@ public sealed class DeviceSessionPresenceService(
 {
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan PresenceTimeToLive = TimeSpan.FromSeconds(20);
+    private static readonly System.Text.Json.JsonSerializerOptions AuditJsonOptions =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
 
     public async Task<Guid> OpenSessionAsync(Guid deviceId, CancellationToken cancellationToken)
     {
@@ -52,22 +54,25 @@ public sealed class DeviceSessionPresenceService(
         }
 
         DateTimeOffset now = timeProvider.GetUtcNow();
-        if (db.Database.IsRelational())
+        DeviceSession[] activeSessions;
+        if (db.Database.IsNpgsql())
         {
-            await db.DeviceSessions
-                .Where(session => session.DeviceId == deviceId && session.DisconnectedAtUtc == null)
-                .ExecuteUpdateAsync(update => update.SetProperty(session => session.DisconnectedAtUtc, now),
-                    cancellationToken);
+            activeSessions = await db.DeviceSessions
+                .FromSqlInterpolated($"SELECT * FROM device_sessions WHERE \"DeviceId\" = {deviceId} AND \"DisconnectedAtUtc\" IS NULL FOR UPDATE")
+                .ToArrayAsync(cancellationToken);
         }
         else
         {
-            List<DeviceSession> activeSessions = await db.DeviceSessions
+            activeSessions = await db.DeviceSessions
                 .Where(session => session.DeviceId == deviceId && session.DisconnectedAtUtc == null)
-                .ToListAsync(cancellationToken);
-            foreach (DeviceSession activeSession in activeSessions)
-            {
-                activeSession.DisconnectedAtUtc = now;
-            }
+                .ToArrayAsync(cancellationToken);
+        }
+
+        foreach (DeviceSession activeSession in activeSessions)
+        {
+            activeSession.DisconnectedAtUtc = now;
+            db.AuditEvents.Add(CreateSessionAuditEvent(
+                "device.session_superseded", activeSession, device, now));
         }
 
         var sessionId = Guid.NewGuid();
@@ -78,6 +83,8 @@ public sealed class DeviceSessionPresenceService(
             ConnectedAtUtc = now,
             LastSeenAtUtc = now
         });
+        DeviceSession openedSession = db.DeviceSessions.Local.Single(session => session.Id == sessionId);
+        db.AuditEvents.Add(CreateSessionAuditEvent("device.session_connected", openedSession, device, now));
         await db.SaveChangesAsync(cancellationToken);
         if (transaction is not null)
         {
@@ -121,21 +128,34 @@ public sealed class DeviceSessionPresenceService(
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
         WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
         DateTimeOffset now = timeProvider.GetUtcNow();
-        if (db.Database.IsRelational())
+        await using IDbContextTransaction? transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+
+        DeviceSession? session = db.Database.IsNpgsql()
+            ? await db.DeviceSessions
+                .FromSqlInterpolated($"SELECT * FROM device_sessions WHERE \"Id\" = {sessionId} AND \"DisconnectedAtUtc\" IS NULL FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+            : await db.DeviceSessions.SingleOrDefaultAsync(
+                item => item.Id == sessionId && item.DisconnectedAtUtc == null, cancellationToken);
+        if (session is null)
         {
-            await db.DeviceSessions
-                .Where(session => session.Id == sessionId && session.DisconnectedAtUtc == null)
-                .ExecuteUpdateAsync(update => update.SetProperty(session => session.DisconnectedAtUtc, now),
-                    cancellationToken);
             return;
         }
 
-        DeviceSession? session = await db.DeviceSessions.SingleOrDefaultAsync(
-            item => item.Id == sessionId && item.DisconnectedAtUtc == null, cancellationToken);
-        if (session is not null)
+        session.DisconnectedAtUtc = now;
+        Device? device = await db.Devices.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == session.DeviceId, cancellationToken);
+        if (device is not null)
         {
-            session.DisconnectedAtUtc = now;
-            await db.SaveChangesAsync(cancellationToken);
+            db.AuditEvents.Add(CreateSessionAuditEvent(
+                "device.session_disconnected", session, device, now));
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
         }
     }
 
@@ -184,6 +204,26 @@ public sealed class DeviceSessionPresenceService(
         await db.SaveChangesAsync(cancellationToken);
         return true;
     }
+
+    private static AuditEvent CreateSessionAuditEvent(
+        string eventType,
+        DeviceSession session,
+        Device device,
+        DateTimeOffset occurredAtUtc) => new()
+        {
+            Id = Guid.NewGuid(),
+            EventType = eventType,
+            ActorType = "device",
+            ActorId = device.Id,
+            Payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                session.Id,
+                DeviceId = device.Id,
+                device.LocationId,
+                OccurredAtUtc = occurredAtUtc
+            }, AuditJsonOptions),
+            OccurredAtUtc = occurredAtUtc
+        };
 }
 
 public sealed class DeviceSessionUnavailableException(string message) : InvalidOperationException(message);

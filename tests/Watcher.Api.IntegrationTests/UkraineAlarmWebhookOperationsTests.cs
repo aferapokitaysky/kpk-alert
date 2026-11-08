@@ -58,7 +58,9 @@ public sealed class UkraineAlarmWebhookOperationsTests : IClassFixture<WebhookOp
         UkraineAlarmWebhookOperation operation = await db.UkraineAlarmWebhookOperations.SingleAsync();
         Assert.Equal(administratorId, operation.ActorUserId);
         Assert.Equal("Succeeded", operation.State);
-        Assert.Equal(3, await db.AuditEvents.CountAsync());
+        Assert.Equal(4, await db.AuditEvents.CountAsync());
+        Assert.Contains(await db.AuditEvents.Select(item => item.EventType).ToArrayAsync(),
+            eventType => eventType == "integration.ukrainealarm_webhook.running");
         Assert.DoesNotContain("test-token", string.Join(' ', await db.AuditEvents.Select(item => item.Payload).ToArrayAsync()));
     }
 
