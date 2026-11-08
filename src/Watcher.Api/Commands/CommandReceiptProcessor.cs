@@ -82,6 +82,8 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         CommandDelivery? stoppedDelivery = null;
         var targetWasStopped = false;
         var preserveStoppedState = command.Action == "start" && delivery.State == CommandDeliveryState.Stopped;
+        CommandDeliveryState deliveryStateBefore = delivery.State;
+        CommandDeliveryState? stoppedDeliveryStateBefore = null;
         if (command.Action == "stop" && receipt.State is (
                 DeviceCommandState.Completed or DeviceCommandState.Stopped))
         {
@@ -128,6 +130,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 CommandDeliveryState.Pending or CommandDeliveryState.InFlight or
                 CommandDeliveryState.Accepted or CommandDeliveryState.Playing))
         {
+            stoppedDeliveryStateBefore = stoppedDelivery.State;
             stoppedDelivery.State = CommandDeliveryState.Stopped;
             stoppedDelivery.NextAttemptAtUtc = null;
             targetWasStopped = true;
@@ -142,6 +145,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             Payload = JsonSerializer.Serialize(new
             {
                 receipt.CommandId,
+                DeliveryId = delivery.Id,
                 receipt.EventId,
                 receipt.Sequence,
                 LocationId = commandTarget.LocationId,
@@ -149,6 +153,8 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 command.PresetCode,
                 command.TargetCommandId,
                 State = receipt.State.ToString(),
+                DeliveryStateBefore = deliveryStateBefore.ToString(),
+                DeliveryStateAfter = delivery.State.ToString(),
                 receipt.DiagnosticCode,
                 NodeOccurredAtUtc = receipt.OccurredAtUtc,
                 ServerReceivedAtUtc = receivedAtUtc
@@ -167,12 +173,15 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 Payload = JsonSerializer.Serialize(new
                 {
                     receipt.CommandId,
+                    DeliveryId = delivery.Id,
                     receipt.Sequence,
                     LocationId = commandTarget.LocationId,
                     CommandAction = command.Action,
                     command.PresetCode,
                     command.TargetCommandId,
                     State = receipt.State.ToString(),
+                    DeliveryStateBefore = deliveryStateBefore.ToString(),
+                    DeliveryStateAfter = delivery.State.ToString(),
                     NodeOccurredAtUtc = receipt.OccurredAtUtc,
                     ServerReceivedAtUtc = receivedAtUtc
                 })
@@ -190,8 +199,12 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 Payload = JsonSerializer.Serialize(new
                 {
                     CommandId = stoppedDelivery.CommandId,
+                    DeliveryId = stoppedDelivery.Id,
                     StopCommandId = receipt.CommandId,
-                    DeviceId = deviceId
+                    StopDeliveryId = delivery.Id,
+                    DeviceId = deviceId,
+                    DeliveryStateBefore = stoppedDeliveryStateBefore?.ToString(),
+                    DeliveryStateAfter = stoppedDelivery.State.ToString()
                 })
             });
         }

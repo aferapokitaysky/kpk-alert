@@ -46,10 +46,17 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
         AuditEvent playbackConfirmation = (await db.AuditEvents
             .Where(item => item.EventType == "alert_command.device_playback_state_reported")
             .ToArrayAsync())
-            .Single(item => item.Payload.Contains("Playing", StringComparison.Ordinal));
+            .Single(item =>
+            {
+                using var payload = JsonDocument.Parse(item.Payload);
+                return payload.RootElement.GetProperty("State").GetString() == "Playing";
+            });
         using var playbackPayload = JsonDocument.Parse(playbackConfirmation.Payload);
         Assert.Equal("start", playbackPayload.RootElement.GetProperty("CommandAction").GetString());
+        Assert.Equal(delivery.Id, playbackPayload.RootElement.GetProperty("DeliveryId").GetGuid());
         Assert.Equal("Playing", playbackPayload.RootElement.GetProperty("State").GetString());
+        Assert.Equal("Accepted", playbackPayload.RootElement.GetProperty("DeliveryStateBefore").GetString());
+        Assert.Equal("Playing", playbackPayload.RootElement.GetProperty("DeliveryStateAfter").GetString());
         Assert.Equal("evacuation", playbackPayload.RootElement.GetProperty("PresetCode").GetString());
         Assert.Equal(Now.AddSeconds(1), playbackPayload.RootElement.GetProperty("NodeOccurredAtUtc").GetDateTimeOffset());
         Assert.Equal(Now, playbackPayload.RootElement.GetProperty("ServerReceivedAtUtc").GetDateTimeOffset());
@@ -137,6 +144,14 @@ public sealed class CommandReceiptProcessingTests : IClassFixture<PostgresApiFix
             .Where(item => item.CommandId == stopCommandId).Select(item => item.State).SingleAsync());
         Assert.Single(await result.AuditEvents
             .Where(item => item.EventType == "alert_command.delivery_stopped").ToArrayAsync());
+        AuditEvent stoppedEvent = await result.AuditEvents.SingleAsync(
+            item => item.EventType == "alert_command.delivery_stopped");
+        using var stoppedPayload = JsonDocument.Parse(stoppedEvent.Payload);
+        Assert.Equal(await result.CommandDeliveries.Where(item => item.CommandId == seed.CommandId)
+                .Select(item => item.Id).SingleAsync(),
+            stoppedPayload.RootElement.GetProperty("DeliveryId").GetGuid());
+        Assert.Equal("Pending", stoppedPayload.RootElement.GetProperty("DeliveryStateBefore").GetString());
+        Assert.Equal("Stopped", stoppedPayload.RootElement.GetProperty("DeliveryStateAfter").GetString());
     }
 
     [PostgresFact]
