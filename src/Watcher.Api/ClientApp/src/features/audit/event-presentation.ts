@@ -210,6 +210,12 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       if (safeId(payload, 'targetCommandId'))
         details.push(`Зупиняє команду: ${safeId(payload, 'targetCommandId')}`);
       break;
+    case 'alert_command.delivery_stopped':
+      if (safeId(payload, 'stopCommandId'))
+        details.push(`Команда зупинки: ${safeId(payload, 'stopCommandId')}`);
+      if (safeId(payload, 'stopDeliveryId'))
+        details.push(`Доставка команди зупинки: ${safeId(payload, 'stopDeliveryId')}`);
+      break;
     case 'alert_command.receipt_received': {
       const state = safeText(payload, 'state');
       const stateLabels: Record<string, string> = {

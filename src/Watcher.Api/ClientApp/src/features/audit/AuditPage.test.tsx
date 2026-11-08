@@ -280,6 +280,21 @@ describe('сторінка аудиту', () => {
           Reason: 'command_expired',
         },
       },
+      {
+        id: '21',
+        eventType: 'alert_command.delivery_stopped',
+        actorType: 'device',
+        actorId: null,
+        occurredAtUtc: '2026-11-06T07:18:00Z',
+        payload: {
+          CommandId: commandId,
+          DeliveryId: 'e6b2f302-0675-4a4d-88eb-cf18c9022920',
+          StopCommandId: 'f6b2f302-0675-4a4d-88eb-cf18c9022920',
+          StopDeliveryId: 'a6b2f302-0675-4a4d-88eb-cf18c9022920',
+          DeliveryStateBefore: 'Playing',
+          DeliveryStateAfter: 'Stopped',
+        },
+      },
     ];
     const fetchMock = vi.fn<typeof fetch>().mockImplementation((input) => {
       const path = String(input);
@@ -307,6 +322,9 @@ describe('сторінка аудиту', () => {
       screen.getByRole('heading', { name: 'Отримано підтвердження від вузла' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Термін доставки минув' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Вузол повідомив про зупинку' }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Вхід відхилено' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Надано роль' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Подія системи' })).toBeInTheDocument();
@@ -345,6 +363,12 @@ describe('сторінка аудиту', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Стан доставки: надсилається → строк дії минув')).toBeInTheDocument();
     expect(screen.getByText('Причина: строк дії команди минув')).toBeInTheDocument();
+    expect(
+      screen.getByText('Команда зупинки: f6b2f302-0675-4a4d-88eb-cf18c9022920'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Доставка команди зупинки: a6b2f302-0675-4a4d-88eb-cf18c9022920'),
+    ).toBeInTheDocument();
     expect(screen.getAllByText('Причина: сесія вузла змінилася')).toHaveLength(2);
     expect(screen.getByText('Спосіб: Google')).toBeInTheDocument();
     expect(screen.getByText('Роль: admin')).toBeInTheDocument();
