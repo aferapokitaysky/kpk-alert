@@ -24,4 +24,5 @@ public sealed class CommandDelivery
     public DateTimeOffset? LastAttemptAtUtc { get; set; }
     public DateTimeOffset? NextAttemptAtUtc { get; set; }
     public int AttemptCount { get; set; }
+    public string? LastWriteOutcome { get; set; }
 }

@@ -196,6 +196,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.State).HasConversion<string>().HasMaxLength(20).IsRequired();
+            entity.Property(x => x.LastWriteOutcome).HasMaxLength(20);
             entity.HasOne<AlertCommand>().WithMany().HasForeignKey(x => x.CommandId)
                 .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<Device>().WithMany().HasForeignKey(x => x.DeviceId)

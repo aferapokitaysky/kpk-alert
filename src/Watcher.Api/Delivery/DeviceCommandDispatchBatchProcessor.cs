@@ -229,6 +229,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
         if (delivery.ExpiresAtUtc <= now)
         {
+            RecordMissingWriteOutcomeIfNeeded(delivery, now);
             MarkExpired(delivery, now);
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -273,7 +274,13 @@ public sealed class DeviceCommandDispatchBatchProcessor(
 
         delivery.State = CommandDeliveryState.InFlight;
         delivery.LastAttemptAtUtc = now;
+        if (delivery.AttemptCount > 0 && delivery.LastWriteOutcome is null)
+        {
+            AddIndeterminateWriteAudit(delivery, "previous_attempt_result_missing", now);
+        }
+
         delivery.AttemptCount = checked(delivery.AttemptCount + 1);
+        delivery.LastWriteOutcome = null;
         delivery.NextAttemptAtUtc = Min(
             delivery.ExpiresAtUtc,
             now + options.Value.AcknowledgementTimeout);
@@ -384,6 +391,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             return false;
         }
 
+        RecordMissingWriteOutcomeIfNeeded(delivery, now);
         MarkExpired(delivery, now);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -433,17 +441,23 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         DateTimeOffset occurredAtUtc,
         CancellationToken cancellationToken)
     {
+        var outcomeName = outcome switch
+        {
+            DeliveryWriteOutcome.Completed => "completed",
+            DeliveryWriteOutcome.NotStarted => "not_started",
+            DeliveryWriteOutcome.Indeterminate => "indeterminate",
+            _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
+                "Невідомий результат запису доставки.")
+        };
+        await db.CommandDeliveries
+            .Where(delivery => delivery.Id == dispatch.DeliveryId &&
+                               delivery.AttemptCount == dispatch.AttemptCount)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(delivery => delivery.LastWriteOutcome, outcomeName), cancellationToken);
         db.AuditEvents.Add(CreateDeliveryAuditEvent(
             dispatch,
             "alert_command.delivery_write_result",
-            outcome switch
-            {
-                DeliveryWriteOutcome.Completed => "completed",
-                DeliveryWriteOutcome.NotStarted => "not_started",
-                DeliveryWriteOutcome.Indeterminate => "indeterminate",
-                _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome,
-                    "Невідомий результат запису доставки.")
-            },
+            outcomeName,
             reasonCode,
             occurredAtUtc));
         await db.SaveChangesAsync(cancellationToken);
@@ -487,6 +501,37 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             Payload = JsonSerializer.Serialize(new { delivery.CommandId, delivery.DeviceId }),
             OccurredAtUtc = now
         });
+    }
+
+    private void RecordMissingWriteOutcomeIfNeeded(CommandDelivery delivery, DateTimeOffset now)
+    {
+        if (delivery.State == CommandDeliveryState.InFlight &&
+            delivery.AttemptCount > 0 &&
+            delivery.LastWriteOutcome is null)
+        {
+            AddIndeterminateWriteAudit(delivery, "previous_attempt_result_missing", now);
+        }
+    }
+
+    private void AddIndeterminateWriteAudit(CommandDelivery delivery, string reasonCode, DateTimeOffset now)
+    {
+        db.AuditEvents.Add(new AuditEvent
+        {
+            Id = Guid.NewGuid(),
+            EventType = "alert_command.delivery_write_result",
+            ActorType = "system",
+            Payload = JsonSerializer.Serialize(new
+            {
+                delivery.CommandId,
+                DeliveryId = delivery.Id,
+                delivery.DeviceId,
+                delivery.AttemptCount,
+                Outcome = "indeterminate",
+                ReasonCode = reasonCode
+            }),
+            OccurredAtUtc = now
+        });
+        delivery.LastWriteOutcome = "indeterminate";
     }
 
     private void MarkFailed(CommandDelivery delivery, DateTimeOffset now, string reason)

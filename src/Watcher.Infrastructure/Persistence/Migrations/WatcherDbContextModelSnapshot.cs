@@ -174,6 +174,10 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LastAttemptAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("LastWriteOutcome")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
                     b.Property<DateTimeOffset?>("NextAttemptAtUtc")
                         .HasColumnType("timestamp with time zone");
 

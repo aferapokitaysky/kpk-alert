@@ -156,6 +156,141 @@ public sealed class DeviceCommandDispatchBatchProcessorTests : IClassFixture<Pos
     }
 
     [PostgresFact]
+    public async Task Process_batch_audits_missing_result_before_retrying_delivery()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        await using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+        {
+            CommandDelivery delivery = await setupDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+            delivery.State = CommandDeliveryState.InFlight;
+            delivery.AttemptCount = 1;
+            delivery.LastAttemptAtUtc = Now.AddSeconds(-10);
+            delivery.NextAttemptAtUtc = Now;
+            await setupDb.SaveChangesAsync();
+        }
+
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            Assert.Equal(1, await CreateProcessor(db, sessions).ProcessBatchAsync(CancellationToken.None));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AuditEvent[] writeResults = (await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync())
+            .Where(item => item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, writeResults.Length);
+        using var recovered = JsonDocument.Parse(Assert.Single(writeResults,
+            item => item.Payload.Contains("previous_attempt_result_missing", StringComparison.Ordinal)).Payload);
+        Assert.Equal("indeterminate", recovered.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal("previous_attempt_result_missing",
+            recovered.RootElement.GetProperty("ReasonCode").GetString());
+        Assert.Equal(2, (await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId)).AttemptCount);
+    }
+
+    [PostgresFact]
+    public async Task Process_batch_audits_missing_result_when_delivery_expires()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, _, Guid deliveryId) = await AddPendingStartAsync(
+            seed.FirstLocationId, expiresAtUtc: Now.AddSeconds(-1));
+        await using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+        {
+            CommandDelivery delivery = await setupDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+            delivery.State = CommandDeliveryState.InFlight;
+            delivery.AttemptCount = 1;
+            delivery.LastAttemptAtUtc = Now.AddSeconds(-10);
+            delivery.NextAttemptAtUtc = Now.AddSeconds(-1);
+            await setupDb.SaveChangesAsync();
+        }
+
+        await using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            Assert.Equal(1, await CreateProcessor(db, new DeviceCommandSessionRegistry())
+                .ProcessBatchAsync(CancellationToken.None));
+        }
+
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AuditEvent result = Assert.Single(await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync(), item => item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal));
+        using var payload = JsonDocument.Parse(result.Payload);
+        Assert.Equal("indeterminate", payload.RootElement.GetProperty("Outcome").GetString());
+        Assert.Equal(CommandDeliveryState.Expired,
+            (await verifyDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId)).State);
+    }
+
+    [PostgresFact]
+    public async Task Process_batch_does_not_mark_completed_socket_write_as_missing()
+    {
+        SeedData seed = await _fixture.ResetAndSeedAsync();
+        (Guid commandId, Guid deviceId, Guid deliveryId) = await AddPendingStartAsync(seed.FirstLocationId);
+        await using (WatcherDbContext setupDb = _fixture.CreateDbContext())
+        {
+            CommandDelivery delivery = await setupDb.CommandDeliveries.SingleAsync(item => item.Id == deliveryId);
+            delivery.State = CommandDeliveryState.InFlight;
+            delivery.AttemptCount = 1;
+            delivery.LastAttemptAtUtc = Now.AddSeconds(-10);
+            delivery.NextAttemptAtUtc = Now;
+            delivery.LastWriteOutcome = "completed";
+            setupDb.AuditEvents.Add(new AuditEvent
+            {
+                Id = Guid.NewGuid(),
+                EventType = "alert_command.delivery_write_result",
+                ActorType = "system",
+                Payload = JsonSerializer.Serialize(new
+                {
+                    CommandId = commandId,
+                    DeliveryId = deliveryId,
+                    DeviceId = deviceId,
+                    AttemptCount = 1,
+                    Outcome = "completed",
+                    ReasonCode = "socket_write_completed"
+                }),
+                OccurredAtUtc = Now.AddSeconds(-10)
+            });
+            await setupDb.SaveChangesAsync();
+        }
+
+        DeviceCommandSessionRegistry sessions = new();
+        RecordingWebSocket socket = new();
+        Guid presenceSessionId = await AddActivePresenceAsync(deviceId);
+        DeviceCommandWebSocketSession session = await sessions.RegisterAsync(
+            deviceId, presenceSessionId, socket, CancellationToken.None);
+        try
+        {
+            await using WatcherDbContext db = _fixture.CreateDbContext();
+            Assert.Equal(1, await CreateProcessor(db, sessions).ProcessBatchAsync(CancellationToken.None));
+        }
+        finally
+        {
+            sessions.Unregister(session);
+        }
+
+        await using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AuditEvent[] writeResults = (await verifyDb.AuditEvents
+            .Where(item => item.EventType == "alert_command.delivery_write_result")
+            .ToArrayAsync())
+            .Where(item => item.Payload.Contains(commandId.ToString(), StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, writeResults.Length);
+        Assert.DoesNotContain(writeResults,
+            item => item.Payload.Contains("previous_attempt_result_missing", StringComparison.Ordinal));
+    }
+
+    [PostgresFact]
     public async Task Process_batch_dispatches_stop_before_an_undelivered_start()
     {
         SeedData seed = await _fixture.ResetAndSeedAsync();
