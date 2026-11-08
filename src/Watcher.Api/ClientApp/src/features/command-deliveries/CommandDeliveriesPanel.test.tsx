@@ -175,6 +175,34 @@ describe('панель доставлення команди', () => {
     expect(within(panel).getByText('Ще не було')).toBeInTheDocument();
   });
 
+  it('підсумовує підтвердження запуску за всіма вузлами, а не лише відкритою сторінкою', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...page([playing], 1, 4),
+        stateSummary: {
+          pending: 1,
+          inFlight: 0,
+          accepted: 1,
+          playing: 1,
+          completed: 1,
+          stopped: 0,
+          rejected: 0,
+          failed: 0,
+          expired: 0,
+        },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CommandDeliveriesPanel commandId="start-command" commandAction="start" />);
+
+    expect(
+      await screen.findByText(
+        'Програмне відтворення підтверджено на 1 із 4 вузлів. Завершили команду: 1; зупинено: 0. Очікують відповіді: 2. Без підтвердження: 0.',
+      ),
+    ).toBeInTheDocument();
+  });
+
   it('підсумовує підтвердження відбою за всіма вузлами, а не лише відкритою сторінкою', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({

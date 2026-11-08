@@ -181,10 +181,11 @@ export function CommandDeliveriesPanel({
     canOperate && hasStopCandidate && targetLocations.length > 0 && onRequestStop !== undefined;
   const summary = data?.stateSummary;
   const stopConfirmed = summary ? summary.stopped + summary.completed : 0;
-  const stopWaiting = summary
+  const waitingCount = summary
     ? summary.pending + summary.inFlight + summary.accepted + summary.playing
     : 0;
-  const stopUnconfirmed = summary ? summary.rejected + summary.failed + summary.expired : 0;
+  const startAwaitingCount = summary ? summary.pending + summary.inFlight + summary.accepted : 0;
+  const unconfirmedCount = summary ? summary.rejected + summary.failed + summary.expired : 0;
 
   return (
     <section
@@ -224,11 +225,18 @@ export function CommandDeliveriesPanel({
             <p className="delivery-message" role="status" aria-live="polite">
               {data.totalCount === 0
                 ? 'Для команди відбою немає доставок до вузлів.'
-                : stopWaiting > 0
-                  ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Очікують відповіді: ${stopWaiting}.${stopUnconfirmed > 0 ? ` Без підтвердження: ${stopUnconfirmed}.` : ''}`
-                  : stopUnconfirmed > 0
-                    ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Без підтвердження: ${stopUnconfirmed}.`
+                : waitingCount > 0
+                  ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Очікують відповіді: ${waitingCount}.${unconfirmedCount > 0 ? ` Без підтвердження: ${unconfirmedCount}.` : ''}`
+                  : unconfirmedCount > 0
+                    ? `Підтверджено обробку відбою на ${stopConfirmed} із ${data.totalCount} вузлів. Без підтвердження: ${unconfirmedCount}.`
                     : `Усі вузли підтвердили обробку відбою: ${stopConfirmed} із ${data.totalCount}.`}
+            </p>
+          )}
+          {commandAction === 'start' && data.totalCount > 0 && summary && (
+            <p className="delivery-message">
+              Програмне відтворення підтверджено на {summary.playing} із {data.totalCount} вузлів.{' '}
+              Завершили команду: {summary.completed}; зупинено: {summary.stopped}. Очікують
+              відповіді: {startAwaitingCount}. Без підтвердження: {unconfirmedCount}.
             </p>
           )}
           {data.items.length === 0 ? (
