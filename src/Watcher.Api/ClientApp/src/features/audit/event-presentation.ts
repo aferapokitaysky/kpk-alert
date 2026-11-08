@@ -213,7 +213,16 @@ function detailsFor(eventType: string, payload: Record<string, unknown>): string
       const count = value(payload, 'attemptCount');
       if (typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 10000)
         details.push(`Спроба доставки: ${count}`);
-      details.push('Причина: тимчасово недоступний зв’язок');
+      const reason = safeText(payload, 'reasonCode') ?? safeText(payload, 'reason');
+      const reasons: Record<string, string> = {
+        connection_unavailable: 'зв’язок тимчасово недоступний',
+        device_unavailable: 'вузол недоступний',
+        presence_session_changed: 'сесія вузла змінилася',
+        send_not_started: 'надсилання не розпочалося',
+        socket_write_result_unknown: 'результат запису не підтверджений',
+        socket_write_timed_out_result_unknown: 'час очікування минув без підтвердженого результату',
+      };
+      if (reason && reasons[reason]) details.push(`Причина: ${reasons[reason]}`);
       break;
     }
     case 'alert_command.delivery_attempt_started': {

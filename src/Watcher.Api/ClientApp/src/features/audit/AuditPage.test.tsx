@@ -77,7 +77,11 @@ describe('сторінка аудиту', () => {
         actorType: 'system',
         actorId: null,
         occurredAtUtc: '2026-11-06T07:03:00Z',
-        payload: { CommandId: commandId, AttemptCount: 2, Reason: 'connection_unavailable' },
+        payload: {
+          CommandId: commandId,
+          AttemptCount: 2,
+          ReasonCode: 'presence_session_changed',
+        },
       },
       {
         id: '5',
@@ -314,7 +318,7 @@ describe('сторінка аудиту', () => {
     expect(
       screen.getByText('Підтвердження вузла: запущено програмний шлях відтворення'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Причина: тимчасово недоступний зв’язок')).toBeInTheDocument();
+    expect(screen.getAllByText('Причина: сесія вузла змінилася')).toHaveLength(2);
     expect(screen.getByText('Спосіб: Google')).toBeInTheDocument();
     expect(screen.getByText('Роль: admin')).toBeInTheDocument();
     expect(screen.getByText('future.private_event')).toBeInTheDocument();
@@ -327,7 +331,7 @@ describe('сторінка аудиту', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Запис команди не розпочався.')).toBeInTheDocument();
     expect(screen.getByText('Причина: вичерпано час очікування запису')).toBeInTheDocument();
-    expect(screen.getByText('Причина: сесія вузла змінилася')).toBeInTheDocument();
+    expect(screen.getAllByText('Причина: сесія вузла змінилася')).toHaveLength(2);
     expect(
       screen.getAllByText('Результат передавання невідомий; перевірте квитанцію вузла.'),
     ).toHaveLength(2);
