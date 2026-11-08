@@ -126,10 +126,13 @@ jobs:
           GOOGLE_AUTH_ENABLED: 'false'
           GOOGLE_AUTH_CLIENT_ID: ''
           GOOGLE_AUTH_CLIENT_SECRET: ''
-        run: >-
+        run: |
           docker compose --profile migration -f compose.coolify.yaml config --format json |
-          jq --exit-status
-          '.services.watcher.environment.AlertSources__Neptun__Realtime__Enabled == "true"
+          jq --exit-status '
+          .services.watcher.environment.AlertSources__Neptun__Realtime__Enabled == "true"
+          and .services.watcher.environment.AlertSources__AutomaticDispatch__Enabled == "false"
+          and .services.watcher.environment.AlertSources__AutomaticDispatch__PresetCode == "air_raid"
+          and .services.watcher.environment.AlertSources__AutomaticDispatch__PollInterval == "00:01:00"
           and .services.postgres.ports == null
           and (.services.watcher.logging.driver == "local")
           and (.services.watcher.logging.options["max-size"] == "10m")
@@ -140,6 +143,9 @@ jobs:
           and (.services.migrate.logging.driver == "local")
           and (.services.migrate.logging.options["max-size"] == "10m")
           and (.services.migrate.logging.options["max-file"] == "5")'
+          AlertSources__AutomaticDispatch__Enabled=true \
+          docker compose --profile migration -f compose.coolify.yaml config --format json |
+          jq --exit-status '.services.watcher.environment.AlertSources__AutomaticDispatch__Enabled == "true"'
 
   documentation:
     name: Перевірка посилань у документації

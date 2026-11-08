@@ -47,23 +47,26 @@
 
 Додайте їх у **Environment Variables** ресурсу Coolify. Позначайте секретними поля з паролями й токенами. Не вставляйте значення у Git, Build arguments, домен, URL, скриншоти чи журнали. Файлові секрети мають бути попередньо створені на сервері та доступні контейнерному UID `1654` лише для читання; Compose очікує абсолютні шляхи до них.
 
-| Змінна                                    | Призначення                                                                                      |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `POSTGRES_DB`                             | Назва production-бази; наприклад, `kgta_alert`                                                   |
-| `POSTGRES_USER`                           | Окремий користувач застосунку, не суперкористувач `postgres`                                     |
-| `POSTGRES_PASSWORD`                       | Випадковий пароль; задайте 64 hex-символи, щоб уникнути неоднозначного розбору connection string |
-| `DEVICE_MTLS_BIND_ADDRESS`                | Приватна адреса хоста, на якій пристрої досягають порту `8443`; не використовуйте `0.0.0.0`      |
-| `REVERSE_PROXY_IP`                        | Перевірена IP-адреса джерела з’єднання Coolify proxy, див. попередній розділ                     |
-| `DATAPROTECTION_CERTIFICATE_FILE`         | Абсолютний шлях до PFX із приватним ключем для шифрування Data Protection keys                   |
-| `DATAPROTECTION_CERTIFICATE_PASSWORD`     | Пароль PFX Data Protection                                                                       |
-| `DEVICE_SERVER_CERTIFICATE_FILE`          | Абсолютний шлях до серверного mTLS PFX із приватним ключем та правильним SAN                     |
-| `DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE` | Абсолютний шлях до файла пароля серверного PFX                                                   |
-| `DEVICE_CLIENT_CA_CERTIFICATE_FILE`       | Абсолютний шлях до кореневого CA, який видає клієнтські сертифікати пристроїв                    |
-| `UKRAINEALARM_TOKEN`                      | Обов’язковий API-токен UkraineAlarm для callback та polling                                      |
-| `ALERTS_IN_UA_TOKEN`                      | Обов’язковий токен alerts.in.ua для резервного запиту джерела                                    |
-| `GOOGLE_AUTH_ENABLED`                     | `true` лише після налаштування OAuth; інакше `false`                                             |
-| `GOOGLE_AUTH_CLIENT_ID`                   | OAuth Client ID, коли Google login увімкнений                                                    |
-| `GOOGLE_AUTH_CLIENT_SECRET`               | OAuth Client Secret, коли Google login увімкнений                                                |
+| Змінна                                          | Призначення                                                                                                                  |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `POSTGRES_DB`                                   | Назва production-бази; наприклад, `kgta_alert`                                                                               |
+| `POSTGRES_USER`                                 | Окремий користувач застосунку, не суперкористувач `postgres`                                                                 |
+| `POSTGRES_PASSWORD`                             | Випадковий пароль; задайте 64 hex-символи, щоб уникнути неоднозначного розбору connection string                             |
+| `DEVICE_MTLS_BIND_ADDRESS`                      | Приватна адреса хоста, на якій пристрої досягають порту `8443`; не використовуйте `0.0.0.0`                                  |
+| `REVERSE_PROXY_IP`                              | Перевірена IP-адреса джерела з’єднання Coolify proxy, див. попередній розділ                                                 |
+| `DATAPROTECTION_CERTIFICATE_FILE`               | Абсолютний шлях до PFX із приватним ключем для шифрування Data Protection keys                                               |
+| `DATAPROTECTION_CERTIFICATE_PASSWORD`           | Пароль PFX Data Protection                                                                                                   |
+| `DEVICE_SERVER_CERTIFICATE_FILE`                | Абсолютний шлях до серверного mTLS PFX із приватним ключем та правильним SAN                                                 |
+| `DEVICE_SERVER_CERTIFICATE_PASSWORD_FILE`       | Абсолютний шлях до файла пароля серверного PFX                                                                               |
+| `DEVICE_CLIENT_CA_CERTIFICATE_FILE`             | Абсолютний шлях до кореневого CA, який видає клієнтські сертифікати пристроїв                                                |
+| `UKRAINEALARM_TOKEN`                            | Обов’язковий API-токен UkraineAlarm для callback та polling                                                                  |
+| `ALERTS_IN_UA_TOKEN`                            | Обов’язковий токен alerts.in.ua для резервного запиту джерела                                                                |
+| `AlertSources__AutomaticDispatch__Enabled`      | `false` за замовчуванням; встановлюйте `true` лише після процедури з [runbook автоматичного оповіщення](automatic-alerts.md) |
+| `AlertSources__AutomaticDispatch__PresetCode`   | Код опублікованого сценарію; за замовчуванням `air_raid`                                                                     |
+| `AlertSources__AutomaticDispatch__PollInterval` | Інтервал оцінювання джерел; за замовчуванням `00:01:00`, мінімум — 15 секунд                                                 |
+| `GOOGLE_AUTH_ENABLED`                           | `true` лише після налаштування OAuth; інакше `false`                                                                         |
+| `GOOGLE_AUTH_CLIENT_ID`                         | OAuth Client ID, коли Google login увімкнений                                                                                |
+| `GOOGLE_AUTH_CLIENT_SECRET`                     | OAuth Client Secret, коли Google login увімкнений                                                                            |
 
 Для Google OAuth зареєструйте callback URI `https://notify.kgta.edu.ua/signin-google` у Google Cloud Console. Для UkraineAlarm callback має бути `https://notify.kgta.edu.ua/api/v1/alert-sources/ukrainealarm/webhook`; реєстрацію callback у провайдера виконайте окремою погодженою операцією. `UkraineAlarm__PublicBaseUrl` вже задається Compose як `https://notify.kgta.edu.ua`.
 

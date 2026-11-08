@@ -12,7 +12,7 @@
 ## Увімкнення
 
 1. У secret store налаштуйте токени джерел за [інструкцією розгортання](../deployment.md). Не додавайте токени до Git, URL, командного рядка або журналів.
-2. У конфігурації Watcher встановіть `AlertSources__AutomaticDispatch__PresetCode=air_raid`, `AlertSources__AutomaticDispatch__PollInterval=00:01:00` та `AlertSources__AutomaticDispatch__Enabled=true`. Інтервал менше 15 секунд застосунок відхиляє під час запуску.
+2. У **Environment Variables** ресурсу Coolify встановіть `AlertSources__AutomaticDispatch__PresetCode=air_raid`, `AlertSources__AutomaticDispatch__PollInterval=00:01:00` та `AlertSources__AutomaticDispatch__Enabled=true`. Compose передає ці параметри до контейнера; за замовчуванням `Enabled=false`. Інтервал менше 15 секунд застосунок відхиляє під час запуску.
 3. Перезапустіть Watcher узгодженим способом. Перевірте readiness, стан джерел і `GET /api/v1/automatic-alert-dispatch/status` під обліковим записом глобального `admin` або `auditor`.
 4. Під час першої реальної тривоги звірте один створений епізод, команду, доставки та квитанції для кожного корпусу. Не прирівнюйте прийняття API-запиту до відтворення звуку.
 
