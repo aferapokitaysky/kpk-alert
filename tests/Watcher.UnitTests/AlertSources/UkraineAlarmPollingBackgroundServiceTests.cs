@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Watcher.Api.AlertSources;
@@ -49,7 +50,7 @@ public sealed class UkraineAlarmPollingBackgroundServiceTests
             clock,
             NullLogger<UkraineAlarmProvider>.Instance);
         UkraineAlarmPollingBackgroundService service = new(
-            provider,
+            CreateStatusService(provider, clock),
             signal,
             Options.Create(new UkraineAlarmOptions { PollInterval = TimeSpan.FromMinutes(5) }),
             clock,
@@ -107,7 +108,7 @@ public sealed class UkraineAlarmPollingBackgroundServiceTests
             TimeProvider.System,
             NullLogger<UkraineAlarmProvider>.Instance);
         UkraineAlarmPollingBackgroundService service = new(
-            provider,
+            CreateStatusService(provider, TimeProvider.System),
             new UkraineAlarmRefreshSignal(),
             Options.Create(new UkraineAlarmOptions { PollInterval = TimeSpan.FromMinutes(1) }),
             TimeProvider.System,
@@ -137,7 +138,7 @@ public sealed class UkraineAlarmPollingBackgroundServiceTests
             NullLogger<UkraineAlarmProvider>.Instance);
 
         Assert.Throws<InvalidOperationException>(() => new UkraineAlarmPollingBackgroundService(
-            provider,
+            CreateStatusService(provider, TimeProvider.System),
             new UkraineAlarmRefreshSignal(),
             Options.Create(new UkraineAlarmOptions { PollInterval = TimeSpan.FromSeconds(59) }),
             TimeProvider.System,
@@ -151,6 +152,15 @@ public sealed class UkraineAlarmPollingBackgroundServiceTests
         return new UkraineAlarmApiClient(httpClient,
             Options.Create(new UkraineAlarmOptions { Token = "test-token" }));
     }
+
+    private static AlertSourcesStatusService CreateStatusService(
+        IAlertSourceProvider provider,
+        TimeProvider timeProvider) => new(
+        [provider],
+        new AlertStatusAggregator(),
+        new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+        timeProvider,
+        NullLogger<AlertSourcesStatusService>.Instance);
 
     private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)
     {

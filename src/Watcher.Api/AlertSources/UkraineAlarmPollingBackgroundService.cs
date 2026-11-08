@@ -4,20 +4,20 @@ namespace Watcher.Api.AlertSources;
 
 public sealed class UkraineAlarmPollingBackgroundService : BackgroundService
 {
-    private readonly UkraineAlarmProvider _provider;
+    private readonly AlertSourcesStatusService _statusService;
     private readonly IUkraineAlarmRefreshSignal _refreshSignal;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<UkraineAlarmPollingBackgroundService> _logger;
     private readonly TimeSpan _pollInterval;
 
     public UkraineAlarmPollingBackgroundService(
-        UkraineAlarmProvider provider,
+        AlertSourcesStatusService statusService,
         IUkraineAlarmRefreshSignal refreshSignal,
         IOptions<UkraineAlarmOptions> options,
         TimeProvider timeProvider,
         ILogger<UkraineAlarmPollingBackgroundService> logger)
     {
-        _provider = provider;
+        _statusService = statusService;
         _refreshSignal = refreshSignal;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -75,7 +75,7 @@ public sealed class UkraineAlarmPollingBackgroundService : BackgroundService
     {
         try
         {
-            await _provider.ReadAsync(cancellationToken);
+            await _statusService.GetStatusAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
