@@ -17,13 +17,22 @@ using Watcher.EdgeAgent.Infrastructure.Transport;
 
 namespace Watcher.EdgeAgent.Service;
 
-internal sealed class EdgeAgentStatusProvider(IEdgeAgentClock clock)
+internal sealed class EdgeAgentStatusProvider
 {
+    private readonly IEdgeAgentClock _clock;
     private readonly object _gate = new();
+    private readonly DateTimeOffset _lastStartedAtUtc;
     private EdgeAgentConnectionState _transportState = EdgeAgentConnectionState.Starting;
     private bool _receiptQueueFull;
-    private EdgeAgentStatus _status = new(1, DateTimeOffset.UtcNow,
-        EdgeAgentConnectionState.Starting, null, null, "unknown", null, null, null, null, 0, null);
+    private EdgeAgentStatus _status;
+
+    public EdgeAgentStatusProvider(IEdgeAgentClock clock)
+    {
+        _clock = clock;
+        _lastStartedAtUtc = clock.UtcNow;
+        _status = new(1, clock.UtcNow, _lastStartedAtUtc,
+            EdgeAgentConnectionState.Starting, null, null, "unknown", null, null, null, null, 0, null);
+    }
 
     public EdgeAgentStatus Get() { lock (_gate) return _status; }
 
@@ -31,7 +40,7 @@ internal sealed class EdgeAgentStatusProvider(IEdgeAgentClock clock)
     {
         lock (_gate)
         {
-            _status = update(_status) with { ObservedAtUtc = clock.UtcNow };
+            _status = update(_status) with { ObservedAtUtc = _clock.UtcNow };
         }
     }
 
@@ -49,7 +58,7 @@ internal sealed class EdgeAgentStatusProvider(IEdgeAgentClock clock)
             {
                 ConnectionState = _receiptQueueFull ? EdgeAgentConnectionState.Degraded : _transportState,
                 DiagnosticCode = diagnosticCode,
-                ObservedAtUtc = clock.UtcNow
+                ObservedAtUtc = _clock.UtcNow
             };
         }
     }
@@ -65,7 +74,7 @@ internal sealed class EdgeAgentStatusProvider(IEdgeAgentClock clock)
                 DiagnosticCode = state == EdgeAgentConnectionState.Streaming && !_receiptQueueFull
                     ? null
                     : _status.DiagnosticCode,
-                ObservedAtUtc = clock.UtcNow
+                ObservedAtUtc = _clock.UtcNow
             };
         }
     }
@@ -82,7 +91,7 @@ internal sealed class EdgeAgentStatusProvider(IEdgeAgentClock clock)
                 DiagnosticCode = _receiptQueueFull
                     ? "receipt_queue_full"
                     : _status.DiagnosticCode == "receipt_queue_full" ? null : _status.DiagnosticCode,
-                ObservedAtUtc = clock.UtcNow
+                ObservedAtUtc = _clock.UtcNow
             };
         }
     }

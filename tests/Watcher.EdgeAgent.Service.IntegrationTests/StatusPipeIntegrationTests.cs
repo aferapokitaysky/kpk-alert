@@ -42,6 +42,7 @@ public sealed class StatusPipeIntegrationTests
             EdgeAgentPipeResponse response = await SendRequestAsync(pipeName, new(1, "get_status"));
             Assert.True(response.Succeeded);
             Assert.NotNull(response.Status);
+            Assert.NotNull(response.Status.LastStartedAtUtc);
             Assert.Equal(EdgeAgentConnectionState.Streaming, response.Status.ConnectionState);
             Assert.Equal(4, response.Status.PendingReceiptCount);
 
@@ -225,6 +226,20 @@ public sealed class EdgeAgentStartupIntegrationTests
     }
 
     [Fact]
+    public void LastStartedAtRemainsStableWhileStatusRefreshes()
+    {
+        var startedAt = DateTimeOffset.Parse("2026-11-06T10:00:00+00:00");
+        StartupTestClock clock = new(startedAt);
+        EdgeAgentStatusProvider status = new(clock);
+
+        clock.UtcNow = startedAt.AddMinutes(5);
+        status.UpdateTransportState(EdgeAgentConnectionState.Reconnecting);
+
+        Assert.Equal(startedAt, status.Get().LastStartedAtUtc);
+        Assert.Equal(clock.UtcNow, status.Get().ObservedAtUtc);
+    }
+
+    [Fact]
     public void AudioStateRequiresAnActiveConfiguredEndpointAndRecoversWhenItReturns()
     {
         Assert.Equal("unavailable", EdgeAgentHostedService.ResolveAudioState(null, null, false, "unavailable"));
@@ -357,7 +372,7 @@ public sealed class EdgeAgentStartupIntegrationTests
 
     private sealed class StartupTestClock(DateTimeOffset now) : IEdgeAgentClock
     {
-        public DateTimeOffset UtcNow => now;
+        public DateTimeOffset UtcNow { get; set; } = now;
         public long GetTimestamp() => 0;
         public TimeSpan GetElapsedTime(long startingTimestamp) => TimeSpan.Zero;
     }

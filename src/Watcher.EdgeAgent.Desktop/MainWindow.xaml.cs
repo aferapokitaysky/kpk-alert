@@ -90,6 +90,9 @@ public partial class MainWindow : Window
             _ => new SolidColorBrush(Color.FromRgb(224, 160, 35))
         };
         DeviceText.Text = $"Вузол: {status.DeviceId?.ToString("D") ?? "не визначено"} · Локація: {status.LocationId?.ToString("D") ?? "не визначена"}";
+        StartedText.Text = status.LastStartedAtUtc is { } lastStartedAtUtc
+            ? $"Службу запущено: {lastStartedAtUtc.ToLocalTime():dd.MM.yyyy HH:mm:ss}"
+            : "Час запуску служби недоступний";
         AudioText.Text = $"Аудіовихід: {status.AudioState} · {status.AudioEndpointId ?? "не налаштовано"}";
         CommandText.Text = status.LastCommandId is null
             ? "Остання команда: немає"
@@ -104,6 +107,7 @@ public partial class MainWindow : Window
         ConnectionText.Text = "Служба недоступна";
         StateIndicator.Fill = new SolidColorBrush(Color.FromRgb(197, 55, 55));
         DeviceText.Text = "Вузол: —";
+        StartedText.Text = "Час запуску служби: —";
         AudioText.Text = "Аудіовихід: —";
         CommandText.Text = "Остання команда: —";
         QueueText.Text = "Квитанцій у черзі: —";

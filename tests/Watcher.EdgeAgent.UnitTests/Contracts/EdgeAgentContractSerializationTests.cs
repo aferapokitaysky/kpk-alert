@@ -17,6 +17,7 @@ public sealed class EdgeAgentContractSerializationTests
         EdgeAgentStatus status = new(
             SchemaVersion: 1,
             ObservedAtUtc: DateTimeOffset.Parse("2026-11-06T10:15:30+00:00"),
+            LastStartedAtUtc: DateTimeOffset.Parse("2026-11-06T09:00:00+00:00"),
             ConnectionState: EdgeAgentConnectionState.Reconnecting,
             DeviceId: Guid.Parse("4bb6d9db-5bca-46c4-a1d9-07f20a84534f"),
             LocationId: null,
@@ -33,6 +34,7 @@ public sealed class EdgeAgentContractSerializationTests
         JsonElement root = document.RootElement;
 
         Assert.Equal(1, root.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(status.LastStartedAtUtc, root.GetProperty("lastStartedAtUtc").GetDateTimeOffset());
         Assert.Equal("Reconnecting", root.GetProperty("connectionState").GetString());
         Assert.Equal(status.DeviceId, root.GetProperty("deviceId").GetGuid());
         Assert.Equal(JsonValueKind.Null, root.GetProperty("locationId").ValueKind);
@@ -40,6 +42,17 @@ public sealed class EdgeAgentContractSerializationTests
         EdgeAgentStatus? roundTripped = JsonSerializer.Deserialize<EdgeAgentStatus>(json, JsonOptions);
 
         Assert.Equal(status, roundTripped);
+    }
+
+    [Fact]
+    public void StatusWithoutLastStartedAtDeserializesForOlderServiceVersions()
+    {
+        const string json = """{"schemaVersion":1,"observedAtUtc":"2026-11-06T10:15:30+00:00","connectionState":"Starting","deviceId":null,"locationId":null,"audioState":"unknown","audioEndpointId":null,"lastCommandId":null,"lastSequence":null,"lastCommandState":null,"pendingReceiptCount":0,"diagnosticCode":null}""";
+
+        EdgeAgentStatus? status = JsonSerializer.Deserialize<EdgeAgentStatus>(json, JsonOptions);
+
+        Assert.NotNull(status);
+        Assert.Null(status.LastStartedAtUtc);
     }
 
     [Fact]

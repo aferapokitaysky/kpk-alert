@@ -14,6 +14,7 @@ public enum EdgeAgentConnectionState
 public sealed record EdgeAgentStatus(
     int SchemaVersion,
     DateTimeOffset ObservedAtUtc,
+    DateTimeOffset? LastStartedAtUtc,
     EdgeAgentConnectionState ConnectionState,
     Guid? DeviceId,
     Guid? LocationId,
