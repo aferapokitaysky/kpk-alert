@@ -381,6 +381,7 @@ public sealed class AutomaticAlertDispatchProcessor(
             LocationIds = stopCommand.Targets.Select(target => target.LocationId),
             decision.ReasonCode,
             Source = observation?.Source,
+            AlertLevel = observation?.AlertLevel,
             Scope = observation?.Scope,
             ScopeId = observation?.ScopeId,
             observation?.CheckedAtUtc,

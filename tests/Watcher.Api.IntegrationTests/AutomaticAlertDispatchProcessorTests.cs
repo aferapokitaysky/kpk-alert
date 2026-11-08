@@ -72,6 +72,27 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         Assert.Equal(AlertSourceCatalog.UkraineAlarmCode, payload.RootElement.GetProperty("source").GetString());
         Assert.Equal(AlertSourceCatalog.KremenchukHromadaId,
             payload.RootElement.GetProperty("scopeId").GetString());
+        Assert.Equal("air_raid", payload.RootElement.GetProperty("presetCode").GetString());
+        Assert.Equal(JsonValueKind.Null, payload.RootElement.GetProperty("alertLevel").ValueKind);
+    }
+
+    [PostgresFact]
+    public async Task Start_audit_records_provider_level_and_selected_scenario()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+
+        AutomaticAlertDispatchResult result = await ProcessAsync(
+            Status("active", alertLevel: "red", source: AlertSourceCatalog.AlertsInUaCode));
+
+        Assert.Equal(AutomaticAlertDispatchResult.Started, result);
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        AuditEvent audit = await db.AuditEvents.SingleAsync();
+        using var payload = JsonDocument.Parse(audit.Payload);
+        Assert.Equal(AlertSourceCatalog.AlertsInUaCode,
+            payload.RootElement.GetProperty("source").GetString());
+        Assert.Equal("red", payload.RootElement.GetProperty("alertLevel").GetString());
+        Assert.Equal("air_raid", payload.RootElement.GetProperty("presetCode").GetString());
     }
 
     [PostgresFact]
@@ -296,12 +317,25 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         string level,
         string freshness = "fresh",
         string? alertLevel = null,
-        DateTimeOffset? observedAtUtc = null)
+        DateTimeOffset? observedAtUtc = null,
+        string source = AlertSourceCatalog.UkraineAlarmCode)
     {
         DateTimeOffset observedAt = observedAtUtc ?? Now;
+        var sourceName = source switch
+        {
+            AlertSourceCatalog.AlertsInUaCode => AlertSourceCatalog.AlertsInUaName,
+            AlertSourceCatalog.NeptunCode => AlertSourceCatalog.NeptunName,
+            _ => AlertSourceCatalog.UkraineAlarmName
+        };
+        var attributionUrl = source switch
+        {
+            AlertSourceCatalog.AlertsInUaCode => AlertSourceCatalog.AlertsInUaAttributionUrl,
+            AlertSourceCatalog.NeptunCode => AlertSourceCatalog.NeptunAttributionUrl,
+            _ => AlertSourceCatalog.UkraineAlarmAttributionUrl
+        };
         AlertSourceObservationResponse observation = new(
-            AlertSourceCatalog.UkraineAlarmCode,
-            AlertSourceCatalog.UkraineAlarmName,
+            source,
+            sourceName,
             "hromada",
             AlertSourceCatalog.KremenchukHromadaId,
             AlertSourceCatalog.KremenchukHromadaName,
@@ -311,7 +345,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             observedAt,
             observedAt,
             null,
-            AlertSourceCatalog.UkraineAlarmAttributionUrl,
+            attributionUrl,
             null,
             null);
         AlertTargetStatus target = new(
