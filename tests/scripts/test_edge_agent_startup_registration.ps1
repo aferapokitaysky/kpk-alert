@@ -549,9 +549,8 @@ try {
     $droppedRequest = $droppedServer.GetAwaiter().GetResult() | ConvertFrom-Json
     Assert-Equal -Expected 'begin_maintenance' -Actual $droppedRequest.operation -Message 'Навіть при втраті відповіді встановник не повинен пропустити gate.'
     $installerText = Get-Content -LiteralPath $installerPath -Raw
-    if ($installerText -notmatch 'Join-Path \$dataDirectory ''audio-settings''' -or
-        $installerText -notmatch '\$\(\$serviceAccount\):\(OI\)\(CI\)M' -or
-        $installerText -notmatch '\$dataDirectory /inheritance:r /grant:r .*\(OI\)\(CI\)RX') {
+    if ($installerText -notmatch '(?m)^& icacls\.exe \(Join-Path \$dataDirectory ''audio-settings''\) /grant "\$\(\$serviceAccount\):\(OI\)\(CI\)M" \| Out-Null$' -or
+        $installerText -notmatch '(?m)^& icacls\.exe \$dataDirectory /inheritance:r /grant:r .*"\$\(\$serviceAccount\):\(OI\)\(CI\)RX" \| Out-Null$') {
         throw 'Налаштування аудіовиходу мають мати окремий каталог із правом Modify лише для служби.'
     }
     $installerTokens = $null
