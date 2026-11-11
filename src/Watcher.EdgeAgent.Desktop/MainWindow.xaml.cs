@@ -66,7 +66,8 @@ public partial class MainWindow : Window
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshStatusAsync();
 
-    private async void RefreshAudioOutputs_Click(object sender, RoutedEventArgs e) => await RefreshAudioOutputsAsync();
+    private async void RefreshAudioOutputs_Click(object sender, RoutedEventArgs e) =>
+        await RefreshAudioOutputsAsync(preserveSelection: true);
 
     private void AudioOutput_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
