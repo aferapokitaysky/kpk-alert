@@ -139,8 +139,10 @@ public sealed class StatusPipeIntegrationTests
         }
     }
 
-    [Fact]
-    public async Task DisconnectWhileWaitingForAudioDrain_ReleasesPendingStartGate()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DisconnectWhileWaitingForAudioDrain_ReleasesPendingStartGate(bool sendAcknowledgement)
     {
         var pipeName = CreatePipeName();
         EdgeAgentMaintenanceCoordinator maintenance = new();
@@ -161,10 +163,14 @@ public sealed class StatusPipeIntegrationTests
                 using CancellationTokenSource connectTimeout = new(TimeSpan.FromSeconds(5));
                 await pipe.ConnectAsync(connectTimeout.Token);
                 var request = JsonSerializer.SerializeToUtf8Bytes(
-                    new EdgeAgentPipeRequest(1, "begin_audio_maintenance"), JsonOptions);
+                    new EdgeAgentPipeRequest(1, sendAcknowledgement ? "begin_audio_maintenance" : "begin_maintenance"),
+                    JsonOptions);
                 await WriteFrameAsync(pipe, request, CancellationToken.None);
-                await pipe.WriteAsync(new byte[] { 0xA5 });
-                await pipe.FlushAsync();
+                if (sendAcknowledgement)
+                {
+                    await pipe.WriteAsync(new byte[] { 0xA5 });
+                    await pipe.FlushAsync();
+                }
                 await WaitUntilAsync(() =>
                 {
                     using EdgeAgentMaintenanceCoordinator.StartLease? attempted = maintenance.TryBeginStart();

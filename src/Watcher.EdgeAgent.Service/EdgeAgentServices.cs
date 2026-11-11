@@ -348,11 +348,8 @@ internal sealed class EdgeAgentStatusPipeService(
                         }
                         else
                         {
-                            if (acknowledgement is not null)
-                            {
-                                disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
-                                    pipe, operationTimeout, disconnectMonitorCancellation.Token);
-                            }
+                            disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
+                                pipe, operationTimeout, disconnectMonitorCancellation.Token);
 
                             response = await HandleRequestAsync(request, callerSid, operationTimeout.Token);
                         }
