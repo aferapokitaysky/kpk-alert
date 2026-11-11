@@ -113,9 +113,8 @@ try {
     throw 'Файл конфігурації вузла містить некоректний JSON.'
 }
 if (-not $configuration.EdgeAgent.BaseAddress -or -not $configuration.EdgeAgent.DatabasePath -or
-    -not $configuration.EdgeAgent.AudioRootDirectory -or -not $configuration.EdgeAgent.ClientCertificateThumbprint -or
-    -not $configuration.EdgeAgent.AudioEndpointId) {
-    throw 'Конфігурація має містити BaseAddress, DatabasePath, AudioRootDirectory, ClientCertificateThumbprint і AudioEndpointId.'
+    -not $configuration.EdgeAgent.AudioRootDirectory -or -not $configuration.EdgeAgent.ClientCertificateThumbprint) {
+    throw 'Конфігурація має містити BaseAddress, DatabasePath, AudioRootDirectory і ClientCertificateThumbprint.'
 }
 $normalizedThumbprint = ($configuration.EdgeAgent.ClientCertificateThumbprint -replace '[^0-9a-fA-F]', '').ToUpperInvariant()
 $certificate = Get-ChildItem -Path 'Cert:\LocalMachine\My' | Where-Object {
@@ -506,10 +505,15 @@ if (-not $SkipStart) {
         $statusResponse = $null
         $agentReady = $false
         $agentDegraded = $false
+        $agentAudioSetupPending = $false
         $lastPipeErrorType = $null
         while ([DateTime]::UtcNow -lt $healthDeadline) {
             try {
                 $statusResponse = Get-EdgeAgentStatus $pipeName
+                if (Test-EdgeAgentAudioSetupRequired -Response $statusResponse) {
+                    $agentAudioSetupPending = $true
+                    break
+                }
                 if ($statusResponse.status.connectionState -eq 'Degraded') {
                     $agentDegraded = $true
                     break
@@ -526,7 +530,9 @@ if (-not $SkipStart) {
         if ($agentDegraded) {
             throw "Вузол перейшов у стан Degraded ($($statusResponse.status.diagnosticCode)). Перевірте права приватного ключа для $serviceAccount та журнал KGTA Alert."
         }
-        if (-not $agentReady) {
+        if ($agentAudioSetupPending) {
+            Write-Warning 'Службу встановлено в режимі налаштування. Вузол не підключатиметься до команд оповіщення, доки адміністратор не вибере й не застосує доступний аудіовихід у панелі KGTA Alert.'
+        } elseif (-not $agentReady) {
             $observedState = if ($statusResponse -and $statusResponse.status) {
                 "connection=$($statusResponse.status.connectionState), audio=$($statusResponse.status.audioState), diagnostic=$($statusResponse.status.diagnosticCode)"
             } else {

@@ -23,4 +23,20 @@ function Test-EdgeAgentReadiness {
         -not [string]::IsNullOrWhiteSpace([string]$status.AudioEndpointId)
 }
 
-Export-ModuleMember -Function Test-EdgeAgentReadiness
+function Test-EdgeAgentAudioSetupRequired {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][AllowNull()][object]$Response)
+
+    if (-not $Response -or $Response.Succeeded -ne $true -or -not $Response.Status) {
+        return $false
+    }
+
+    return $Response.Status.ConnectionState -eq 'NotConfigured' -and
+        $Response.Status.DiagnosticCode -in @(
+            'audio_output_setup_required',
+            'audio_output_configuration_invalid',
+            'audio_output_unavailable'
+        )
+}
+
+Export-ModuleMember -Function Test-EdgeAgentReadiness, Test-EdgeAgentAudioSetupRequired

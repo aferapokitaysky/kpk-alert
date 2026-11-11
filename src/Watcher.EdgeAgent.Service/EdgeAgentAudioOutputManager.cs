@@ -64,7 +64,8 @@ internal sealed class EdgeAgentAudioOutputManager : IAudioEndpointSelection
             {
                 AudioEndpointId = endpointId,
                 AudioState = "ready",
-                DiagnosticCode = current.DiagnosticCode == "audio_output_configuration_invalid"
+                DiagnosticCode = current.DiagnosticCode is "audio_output_configuration_invalid" or
+                    "audio_output_setup_required" or "audio_output_unavailable"
                     ? null
                     : current.DiagnosticCode
             });

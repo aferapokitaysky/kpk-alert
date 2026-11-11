@@ -136,6 +136,7 @@ internal sealed class EdgeAgentHostedService(
     DeviceCommandTransport transport,
     IAudioPlayer audioPlayer,
     IAudioEndpointAvailabilityMonitor audioEndpointAvailability,
+    IAudioEndpointSelection audioEndpointSelection,
     EdgeAgentOptions options,
     IEdgeAgentClock clock,
     EdgeAgentStatusProvider status,
@@ -153,6 +154,8 @@ internal sealed class EdgeAgentHostedService(
             DevicePrivateKeyAccessValidator.Validate(certificate);
             using HttpClient httpClient = MtlsHttpClientFactory.Create(options, certificate);
             var receipts = new CommandReceiptSender(options, store, httpClient, clock);
+            await WaitForAudioEndpointAsync(
+                audioEndpointSelection, audioEndpointAvailability, status, stoppingToken);
             using var workers = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             Task[] workerTasks =
             [
@@ -184,6 +187,52 @@ internal sealed class EdgeAgentHostedService(
             logger.LogError("Edge Agent зупинився: {DiagnosticCode}.", diagnosticCode);
             _terminateProcess(1);
             throw new InvalidOperationException($"Службу Edge Agent зупинено: {diagnosticCode}.");
+        }
+    }
+
+    internal static async Task WaitForAudioEndpointAsync(
+        IAudioEndpointSelection audioEndpointSelection,
+        IAudioEndpointAvailabilityMonitor audioEndpointAvailability,
+        EdgeAgentStatusProvider status,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var endpointId = audioEndpointSelection.CurrentEndpointId;
+            if (audioEndpointAvailability.IsAvailable(endpointId))
+            {
+                status.Update(current => current with
+                {
+                    ConnectionState = EdgeAgentConnectionState.Connecting,
+                    AudioState = "ready",
+                    AudioEndpointId = endpointId,
+                    DiagnosticCode = current.DiagnosticCode is "audio_output_setup_required" or
+                        "audio_output_configuration_invalid" or "audio_output_unavailable"
+                        ? null
+                        : current.DiagnosticCode
+                });
+                return;
+            }
+
+            status.Update(current =>
+            {
+                var hasUnrelatedDiagnostic = current.DiagnosticCode is not null and not
+                    ("audio_output_configuration_invalid" or "audio_output_setup_required" or "audio_output_unavailable");
+                return current with
+                {
+                    ConnectionState = hasUnrelatedDiagnostic
+                        ? EdgeAgentConnectionState.Degraded
+                        : EdgeAgentConnectionState.NotConfigured,
+                    AudioState = "unavailable",
+                    AudioEndpointId = endpointId,
+                    DiagnosticCode = hasUnrelatedDiagnostic
+                        ? current.DiagnosticCode
+                        : string.IsNullOrWhiteSpace(endpointId)
+                            ? "audio_output_setup_required"
+                            : "audio_output_unavailable"
+                };
+            });
+            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
         }
     }
 
@@ -245,6 +294,8 @@ internal sealed class EdgeAgentStartupCoordinator(
         await store.InitializeAsync(cancellationToken);
         IReadOnlyList<PendingCommandReceipt> recoveredReceipts =
             await store.RecoverInterruptedPlaybackAsync(clock.UtcNow, cancellationToken);
+        var pendingReceiptCount = await store.GetPendingReceiptCountAsync(cancellationToken);
+        status.UpdatePendingReceiptCount(pendingReceiptCount, options.MaximumReceiptQueue);
         status.Update(current => current with
         {
             ConnectionState = EdgeAgentConnectionState.Connecting,

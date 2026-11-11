@@ -886,6 +886,31 @@ public sealed class EdgeAgentStartupIntegrationTests
             new ProcessedCommand(Guid.NewGuid(), 1, "hash", DeviceCommandState.Playing, null), false, "ready"));
     }
 
+    [Fact]
+    public async Task HostedServiceWaitsForAnActiveAudioEndpointBeforeStartingTransport()
+    {
+        EdgeAgentStatusProvider status = new(new StartupTestClock(DateTimeOffset.UtcNow));
+        StartupTestAudioEndpointSelection selection = new(null);
+        StartupTestAudioEndpointAvailabilityMonitor availability = new();
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(5));
+
+        Task waitForEndpoint = EdgeAgentHostedService.WaitForAudioEndpointAsync(
+            selection, availability, status, cancellation.Token);
+        await WaitUntilAsync(() => status.Get().ConnectionState == EdgeAgentConnectionState.NotConfigured);
+
+        Assert.False(waitForEndpoint.IsCompleted);
+        Assert.Equal("audio_output_setup_required", status.Get().DiagnosticCode);
+        Assert.Equal("unavailable", status.Get().AudioState);
+
+        selection.CurrentEndpointId = "active-endpoint";
+        await waitForEndpoint;
+
+        Assert.Equal(EdgeAgentConnectionState.Connecting, status.Get().ConnectionState);
+        Assert.Equal("active-endpoint", status.Get().AudioEndpointId);
+        Assert.Equal("ready", status.Get().AudioState);
+        Assert.Null(status.Get().DiagnosticCode);
+    }
+
     [Theory]
     [InlineData(DeviceCommandState.Failed, "audio_output_unavailable", "unavailable")]
     [InlineData(DeviceCommandState.Completed, null, "idle")]
@@ -982,7 +1007,7 @@ public sealed class EdgeAgentStartupIntegrationTests
             int? requestedExitCode = null;
             using EdgeAgentHostedService hostedService = new(store, coordinator, transport,
                 new StartupTestAudioPlayer(), new StartupTestAudioEndpointAvailabilityMonitor(),
-                options, clock, status, NullLogger<EdgeAgentHostedService>.Instance,
+                new StartupTestAudioEndpointSelection(options.AudioEndpointId), options, clock, status, NullLogger<EdgeAgentHostedService>.Instance,
                 exitCode => requestedExitCode = exitCode);
             await hostedService.StartAsync(CancellationToken.None);
             InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -1007,6 +1032,15 @@ public sealed class EdgeAgentStartupIntegrationTests
         AudioEndpointId = "endpoint-1"
     };
 
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
+        }
+    }
+
     private sealed class StartupTestClock(DateTimeOffset now) : IEdgeAgentClock
     {
         public DateTimeOffset UtcNow { get; set; } = now;
@@ -1029,7 +1063,12 @@ public sealed class EdgeAgentStartupIntegrationTests
 
     private sealed class StartupTestAudioEndpointAvailabilityMonitor : IAudioEndpointAvailabilityMonitor
     {
-        public bool IsAvailable(string? endpointId) => !string.IsNullOrWhiteSpace(endpointId);
+        public bool IsAvailable(string? endpointId) => endpointId == "active-endpoint";
+    }
+
+    private sealed class StartupTestAudioEndpointSelection(string? endpointId) : IAudioEndpointSelection
+    {
+        public string? CurrentEndpointId { get; set; } = endpointId;
     }
 }
 

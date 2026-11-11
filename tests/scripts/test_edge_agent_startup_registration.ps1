@@ -195,7 +195,8 @@ function New-TestEdgeAgentStatus {
         [guid]$DeviceId = [guid]::NewGuid(),
         [guid]$LocationId = [guid]::NewGuid(),
         [string]$AudioState = 'ready',
-        [string]$AudioEndpointId = 'test-endpoint'
+        [string]$AudioEndpointId = 'test-endpoint',
+        [string]$DiagnosticCode
     )
 
     return [pscustomobject]@{
@@ -206,6 +207,7 @@ function New-TestEdgeAgentStatus {
             locationId = $LocationId
             audioState = $AudioState
             audioEndpointId = $AudioEndpointId
+            diagnosticCode = $DiagnosticCode
         }
     }
 }
@@ -414,6 +416,10 @@ try {
     }
     $playingStatus = New-TestEdgeAgentStatus -AudioState 'playing'
     Assert-Equal -Expected $true -Actual (Test-EdgeAgentReadiness -Response $playingStatus) -Message 'Активне відтворення після запуску служби не має помилково провокувати rollback.'
+    $audioSetupPending = New-TestEdgeAgentStatus -ConnectionState 'NotConfigured' `
+        -AudioState 'unavailable' -AudioEndpointId '' -DiagnosticCode 'audio_output_setup_required'
+    Assert-Equal -Expected $true -Actual (Test-EdgeAgentAudioSetupRequired -Response $audioSetupPending) -Message 'Інсталятор може завершити встановлення лише в явно захищеному режимі налаштування аудіо.'
+    Assert-Equal -Expected $false -Actual (Test-EdgeAgentAudioSetupRequired -Response (New-TestEdgeAgentStatus -ConnectionState 'Degraded' -DiagnosticCode 'device_certificate_unavailable')) -Message 'Помилка сертифіката не має маскуватися як очікування налаштування аудіо.'
     $installerGateName = "Local\KGTA.Alert.InstallerGate.Tests.$testId"
     $installerGate = Enter-EdgeAgentInstallerMaintenanceGate -Name $installerGateName -ServiceSid $currentIdentitySid
     $gateProbe = [System.Threading.Mutex]::OpenExisting($installerGateName)

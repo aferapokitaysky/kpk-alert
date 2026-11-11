@@ -296,6 +296,7 @@ public partial class MainWindow : Window
         {
             EdgeAgentConnectionState.Streaming => "Підключено до сервера",
             EdgeAgentConnectionState.Connecting or EdgeAgentConnectionState.Reconnecting => "Підключення до сервера…",
+            EdgeAgentConnectionState.NotConfigured => "Виберіть аудіовихід для налаштування вузла",
             EdgeAgentConnectionState.Degraded => "Потрібна перевірка вузла",
             EdgeAgentConnectionState.Stopped => "Служба зупинена",
             _ => "Служба запускається"
