@@ -355,7 +355,7 @@ public sealed class StatusPipeIntegrationTests
 
             Assert.Equal("endpoint-old", manager.CurrentEndpointId);
 
-            string? error = await manager.SetEndpointAsync("endpoint-new", CancellationToken.None);
+            var error = await manager.SetEndpointAsync("endpoint-new", CancellationToken.None);
 
             Assert.Null(error);
             Assert.True(File.Exists(settingsPath));

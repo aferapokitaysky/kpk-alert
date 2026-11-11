@@ -63,7 +63,7 @@ public sealed class InstallerMaintenanceGate(
             return false;
         }
 
-        object? marker = installerState.GetValue(
+        var marker = installerState.GetValue(
             valueName,
             defaultValue: null,
             RegistryValueOptions.DoNotExpandEnvironmentNames);
