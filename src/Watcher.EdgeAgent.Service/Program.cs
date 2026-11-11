@@ -39,9 +39,10 @@ internal static class Program
         builder.Services.AddSingleton<IAudioEndpointControl, WasapiAudioEndpointControl>();
         builder.Services.AddSingleton<EdgeAgentAudioOutputManager>(services => new EdgeAgentAudioOutputManager(
             options.AudioEndpointId,
-            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "audio-endpoint.json"),
+            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "..", "audio-settings", "audio-endpoint.json"),
             services.GetRequiredService<IAudioEndpointControl>(),
-            services.GetRequiredService<EdgeAgentStatusProvider>()));
+            services.GetRequiredService<EdgeAgentStatusProvider>(),
+            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "audio-endpoint.json")));
         builder.Services.AddSingleton<IAudioEndpointSelection>(services =>
             services.GetRequiredService<EdgeAgentAudioOutputManager>());
         builder.Services.AddSingleton<EdgeAgentStartupCoordinator>();

@@ -549,6 +549,11 @@ try {
     $droppedRequest = $droppedServer.GetAwaiter().GetResult() | ConvertFrom-Json
     Assert-Equal -Expected 'begin_maintenance' -Actual $droppedRequest.operation -Message 'Навіть при втраті відповіді встановник не повинен пропустити gate.'
     $installerText = Get-Content -LiteralPath $installerPath -Raw
+    if ($installerText -notmatch 'Join-Path \$dataDirectory ''audio-settings''' -or
+        $installerText -notmatch '\$\(\$serviceAccount\):\(OI\)\(CI\)M' -or
+        $installerText -notmatch '\$dataDirectory /inheritance:r /grant:r .*\(OI\)\(CI\)RX') {
+        throw 'Налаштування аудіовиходу мають мати окремий каталог із правом Modify лише для служби.'
+    }
     $installerTokens = $null
     $installerParseErrors = $null
     $installerAst = [System.Management.Automation.Language.Parser]::ParseInput(

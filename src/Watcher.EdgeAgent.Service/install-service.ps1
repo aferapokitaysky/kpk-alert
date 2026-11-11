@@ -232,17 +232,19 @@ try {
         }
         $createdOperatorGroupSid = $newOperatorGroup.SID.Value
     }
-    New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'logs') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'audio-settings'), (Join-Path $dataDirectory 'logs') | Out-Null
     $aclSnapshot = Get-EdgeAgentAclSnapshot -Path @(
         $dataDirectory,
         $installedConfiguration,
         (Join-Path $dataDirectory 'data'),
         (Join-Path $dataDirectory 'audio'),
+        (Join-Path $dataDirectory 'audio-settings'),
         (Join-Path $dataDirectory 'logs')
     ) -RequiredPath @(
         $dataDirectory,
         (Join-Path $dataDirectory 'data'),
         (Join-Path $dataDirectory 'audio'),
+        (Join-Path $dataDirectory 'audio-settings'),
         (Join-Path $dataDirectory 'logs')
     )
     if ($packageDeployment.HadPreviousPackage) {
@@ -407,6 +409,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати п�
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до бази даних.' }
 & icacls.exe (Join-Path $dataDirectory 'audio') /grant "$($serviceAccount):(OI)(CI)RX" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до аудіопакетів.' }
+& icacls.exe (Join-Path $dataDirectory 'audio-settings') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до налаштувань аудіовиходу.' }
 & icacls.exe (Join-Path $dataDirectory 'logs') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до журналів.' }
 } -Rollback {

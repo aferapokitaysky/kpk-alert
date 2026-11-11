@@ -11,6 +11,7 @@ internal sealed class EdgeAgentAudioOutputManager : IAudioEndpointSelection
         UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
     };
     private readonly string _settingsPath;
+    private readonly string _legacySettingsPath;
     private readonly IAudioEndpointControl _endpointControl;
     private readonly EdgeAgentStatusProvider _status;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -20,12 +21,15 @@ internal sealed class EdgeAgentAudioOutputManager : IAudioEndpointSelection
         string? initialEndpointId,
         string settingsPath,
         IAudioEndpointControl endpointControl,
-        EdgeAgentStatusProvider status)
+        EdgeAgentStatusProvider status,
+        string? legacySettingsPath = null)
     {
         _settingsPath = Path.GetFullPath(settingsPath);
+        _legacySettingsPath = Path.GetFullPath(legacySettingsPath ?? settingsPath);
         _endpointControl = endpointControl;
         _status = status;
-        if (TryReadSavedEndpointId(out var savedEndpointId))
+        if (TryReadSavedEndpointId(_settingsPath, out var savedEndpointId) ||
+            TryReadSavedEndpointId(_legacySettingsPath, out savedEndpointId))
         {
             _currentEndpointId = savedEndpointId;
             HasInvalidSavedSettings = _currentEndpointId is null;
@@ -99,12 +103,12 @@ internal sealed class EdgeAgentAudioOutputManager : IAudioEndpointSelection
         }
     }
 
-    private bool TryReadSavedEndpointId(out string? endpointId)
+    private static bool TryReadSavedEndpointId(string settingsPath, out string? endpointId)
     {
         endpointId = null;
         try
         {
-            using FileStream settings = File.OpenRead(_settingsPath);
+            using FileStream settings = File.OpenRead(settingsPath);
             if (settings.Length > 4096) return true;
 
             AudioEndpointSettings? saved = JsonSerializer.Deserialize<AudioEndpointSettings>(settings, JsonOptions);

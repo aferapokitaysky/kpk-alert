@@ -340,6 +340,36 @@ public sealed class StatusPipeIntegrationTests
     }
 
     [Fact]
+    public async Task AudioOutputSelection_MigratesLegacySettingsIntoWritableSettingsDirectory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-settings-migration-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var legacyPath = Path.Combine(directory, "audio-endpoint.json");
+            var settingsDirectory = Path.Combine(directory, "audio-settings");
+            var settingsPath = Path.Combine(settingsDirectory, "audio-endpoint.json");
+            await File.WriteAllTextAsync(legacyPath, "{\"schemaVersion\":1,\"audioEndpointId\":\"endpoint-old\"}");
+            EdgeAgentAudioOutputManager manager = new("configured-endpoint", settingsPath,
+                new FakeAudioEndpointControl(), new EdgeAgentStatusProvider(new TestClock()), legacyPath);
+
+            Assert.Equal("endpoint-old", manager.CurrentEndpointId);
+
+            string? error = await manager.SetEndpointAsync("endpoint-new", CancellationToken.None);
+
+            Assert.Null(error);
+            Assert.True(File.Exists(settingsPath));
+            EdgeAgentAudioOutputManager restored = new("configured-endpoint", settingsPath,
+                new FakeAudioEndpointControl(), new EdgeAgentStatusProvider(new TestClock()), legacyPath);
+            Assert.Equal("endpoint-new", restored.CurrentEndpointId);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AudioOutputTest_RequiresLeaseAndUsesOnlyEnumeratedCandidate()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-test-{Guid.NewGuid():N}");
