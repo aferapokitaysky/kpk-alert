@@ -75,6 +75,117 @@ public sealed class StatusPipeIntegrationTests
     }
 
     [Fact]
+    public async Task AudioMaintenanceRequestReturnsLeaseWithoutWaitingForClientDisconnect()
+    {
+        var pipeName = CreatePipeName();
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusProvider status = new(new TestClock());
+        const string administratorSid = "S-1-5-21-111-222-333-1001";
+        EdgeAgentStatusPipeService service = CreateService(status, pipeName, maintenance,
+            privilegedCallerResolver: _ => (true, administratorSid));
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
+            EdgeAgentPipeResponse begun = await SendRequestAsync(
+                pipeName, new EdgeAgentPipeRequest(1, "begin_audio_maintenance"), timeout.Token);
+
+            Assert.True(begun.Succeeded);
+            Guid leaseId = Assert.IsType<Guid>(begun.LeaseId);
+            Assert.Null(maintenance.TryBeginStart());
+
+            EdgeAgentPipeResponse released = await SendRequestAsync(
+                pipeName, new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), timeout.Token);
+            Assert.True(released.Succeeded);
+            using EdgeAgentMaintenanceCoordinator.StartLease? resumed = maintenance.TryBeginStart();
+            Assert.NotNull(resumed);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task LegacyMaintenanceClientWithoutAcknowledgementStillReceivesLease()
+    {
+        var pipeName = CreatePipeName();
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusProvider status = new(new TestClock());
+        const string administratorSid = "S-1-5-21-111-222-333-1001";
+        EdgeAgentStatusPipeService service = CreateService(status, pipeName, maintenance,
+            privilegedCallerResolver: _ => (true, administratorSid));
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(3));
+            await using NamedPipeClientStream pipe = new(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await pipe.ConnectAsync(timeout.Token);
+            var request = JsonSerializer.SerializeToUtf8Bytes(
+                new EdgeAgentPipeRequest(1, "begin_maintenance"), JsonOptions);
+            await WriteFrameAsync(pipe, request, timeout.Token);
+
+            EdgeAgentPipeResponse response = JsonSerializer.Deserialize<EdgeAgentPipeResponse>(
+                await ReadFrameAsync(pipe, timeout.Token), JsonOptions)!;
+
+            Assert.True(response.Succeeded);
+            Assert.True(maintenance.ReleaseMaintenance(Assert.IsType<Guid>(response.LeaseId)));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task DisconnectWhileWaitingForAudioDrain_ReleasesPendingStartGate()
+    {
+        var pipeName = CreatePipeName();
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusProvider status = new(new TestClock());
+        const string administratorSid = "S-1-5-21-111-222-333-1001";
+        EdgeAgentStatusPipeService service = CreateService(status, pipeName, maintenance,
+            privilegedCallerResolver: _ => (true, administratorSid));
+        using EdgeAgentMaintenanceCoordinator.StartLease start = Assert.IsType<EdgeAgentMaintenanceCoordinator.StartLease>(
+            maintenance.TryBeginStart());
+        var commandId = Guid.NewGuid();
+        start.MarkPlaybackStarted(commandId);
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await using (NamedPipeClientStream pipe = new(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                using CancellationTokenSource connectTimeout = new(TimeSpan.FromSeconds(5));
+                await pipe.ConnectAsync(connectTimeout.Token);
+                var request = JsonSerializer.SerializeToUtf8Bytes(
+                    new EdgeAgentPipeRequest(1, "begin_audio_maintenance"), JsonOptions);
+                await WriteFrameAsync(pipe, request, CancellationToken.None);
+                await pipe.WriteAsync(new byte[] { 0xA5 });
+                await pipe.FlushAsync();
+                await WaitUntilAsync(() =>
+                {
+                    using EdgeAgentMaintenanceCoordinator.StartLease? attempted = maintenance.TryBeginStart();
+                    return attempted is null;
+                });
+            }
+
+            await WaitUntilAsync(() =>
+            {
+                using EdgeAgentMaintenanceCoordinator.StartLease? resumed = maintenance.TryBeginStart();
+                return resumed is not null;
+            });
+            maintenance.PlaybackFinished(commandId);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task MaintenancePipeRequestBlocksStartsUntilPlaybackEndsAndLeaseOwnerReleases()
     {
         EdgeAgentMaintenanceCoordinator maintenance = new();
@@ -612,15 +723,34 @@ public sealed class StatusPipeIntegrationTests
             ValueTask.FromException(new IOException("Клієнт закрив канал."));
     }
 
-    private static async Task<EdgeAgentPipeResponse> SendRequestAsync(string pipeName, EdgeAgentPipeRequest request)
+    private static async Task<EdgeAgentPipeResponse> SendRequestAsync(
+        string pipeName,
+        EdgeAgentPipeRequest request,
+        CancellationToken cancellationToken = default)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
         await using NamedPipeClientStream pipe = new(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await pipe.ConnectAsync(timeout.Token);
         await WriteFrameAsync(pipe, JsonSerializer.SerializeToUtf8Bytes(request, JsonOptions), timeout.Token);
+        if (request.Operation is "begin_maintenance" or "begin_audio_maintenance")
+        {
+            await pipe.WriteAsync(new byte[] { 0xA5 }, timeout.Token);
+            await pipe.FlushAsync(timeout.Token);
+        }
+
         var response = await ReadFrameAsync(pipe, timeout.Token);
         return JsonSerializer.Deserialize<EdgeAgentPipeResponse>(response, JsonOptions)
             ?? throw new InvalidDataException("Служба повернула порожню відповідь.");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token);
+        }
     }
 
     private static async Task AssertRejectedFrameAsync(string pipeName, byte[] frame)

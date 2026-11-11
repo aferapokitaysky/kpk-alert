@@ -81,6 +81,11 @@ namespace KgtaAlertTests
                         byte[] request = new byte[length];
                         ReadExactly(pipe, request);
                         string requestJson = Encoding.UTF8.GetString(request);
+                        if (requestJson.IndexOf("\"operation\":\"begin_maintenance\"", StringComparison.Ordinal) >= 0 ||
+                            requestJson.IndexOf("\"operation\":\"begin_audio_maintenance\"", StringComparison.Ordinal) >= 0)
+                        {
+                            if (pipe.ReadByte() != 0xA5) throw new InvalidDataException("Missing maintenance acknowledgement.");
+                        }
                         if (!disconnectBeforeReply)
                         {
                             byte[] response = Encoding.UTF8.GetBytes(responseJson);

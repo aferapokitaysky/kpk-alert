@@ -166,7 +166,7 @@ public partial class MainWindow : Window
         {
             AudioOutputMessage.Text = "Очікуємо завершення поточного відтворення…";
             EdgeAgentPipeResponse begin = await SendPipeRequestAsync(
-                new EdgeAgentPipeRequest(1, "begin_maintenance"), _windowLifetime.Token,
+                new EdgeAgentPipeRequest(1, "begin_audio_maintenance"), _windowLifetime.Token,
                 TimeSpan.FromMinutes(16));
             if (!begin.Succeeded || begin.LeaseId is not { } acquiredLease)
             {
@@ -386,6 +386,12 @@ public partial class MainWindow : Window
         await pipe.ConnectAsync(timeout.Token);
         var payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOptions);
         await WriteFrameAsync(pipe, payload, timeout.Token);
+        if (request.Operation is "begin_maintenance" or "begin_audio_maintenance")
+        {
+            await pipe.WriteAsync(new byte[] { 0xA5 }, timeout.Token);
+            await pipe.FlushAsync(timeout.Token);
+        }
+
         var responseBytes = await ReadFrameAsync(pipe, timeout.Token);
         EdgeAgentPipeResponse? response = JsonSerializer.Deserialize<EdgeAgentPipeResponse>(responseBytes, JsonOptions);
         if (response is not { SchemaVersion: 1 }) throw new InvalidDataException();

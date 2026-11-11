@@ -93,4 +93,18 @@ public sealed class EdgeAgentMaintenanceCoordinatorTests
         await Task.Delay(TimeSpan.FromMilliseconds(75));
         Assert.False(coordinator.IsMaintenanceLeaseActive(leaseId));
     }
+
+    [Fact]
+    public async Task AudioLease_UsesShortExpiryWithoutChangingDefaultMaintenanceLease()
+    {
+        EdgeAgentMaintenanceCoordinator coordinator = new(TimeSpan.FromSeconds(1));
+        Guid leaseId = await coordinator.BeginMaintenanceAsync(
+            TimeSpan.FromSeconds(1), CancellationToken.None, TimeSpan.FromMilliseconds(25));
+
+        await Task.Delay(75);
+
+        Assert.False(coordinator.IsMaintenanceLeaseActive(leaseId));
+        using EdgeAgentMaintenanceCoordinator.StartLease? start = coordinator.TryBeginStart();
+        Assert.NotNull(start);
+    }
 }

@@ -31,10 +31,14 @@ public sealed class EdgeAgentMaintenanceCoordinator(TimeSpan? leaseDuration = nu
         }
     }
 
-    public async Task<Guid> BeginMaintenanceAsync(TimeSpan drainTimeout, CancellationToken cancellationToken)
+    public async Task<Guid> BeginMaintenanceAsync(
+        TimeSpan drainTimeout,
+        CancellationToken cancellationToken,
+        TimeSpan? leaseDuration = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(drainTimeout, TimeSpan.Zero);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(_leaseDuration, TimeSpan.Zero);
+        TimeSpan effectiveLeaseDuration = leaseDuration ?? _leaseDuration;
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(effectiveLeaseDuration, TimeSpan.Zero);
         cancellationToken.ThrowIfCancellationRequested();
 
         var leaseId = Guid.NewGuid();
@@ -56,7 +60,7 @@ public sealed class EdgeAgentMaintenanceCoordinator(TimeSpan? leaseDuration = nu
         {
             await idleTask.WaitAsync(drainTimeout, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            StartLeaseExpiration(leaseId);
+            StartLeaseExpiration(leaseId, effectiveLeaseDuration);
             return leaseId;
         }
         catch
@@ -133,7 +137,7 @@ public sealed class EdgeAgentMaintenanceCoordinator(TimeSpan? leaseDuration = nu
 
         if (restartExpiration)
         {
-            StartLeaseExpiration(leaseId);
+            StartLeaseExpiration(leaseId, _leaseDuration);
         }
     }
 
@@ -177,7 +181,7 @@ public sealed class EdgeAgentMaintenanceCoordinator(TimeSpan? leaseDuration = nu
         }
     }
 
-    private void StartLeaseExpiration(Guid leaseId)
+    private void StartLeaseExpiration(Guid leaseId, TimeSpan leaseDuration)
     {
         CancellationTokenSource expiration;
         long generation;
@@ -194,14 +198,18 @@ public sealed class EdgeAgentMaintenanceCoordinator(TimeSpan? leaseDuration = nu
             _leaseExpiration = expiration;
         }
 
-        _ = ExpireLeaseAsync(leaseId, generation, expiration.Token);
+        _ = ExpireLeaseAsync(leaseId, generation, leaseDuration, expiration.Token);
     }
 
-    private async Task ExpireLeaseAsync(Guid leaseId, long generation, CancellationToken cancellationToken)
+    private async Task ExpireLeaseAsync(
+        Guid leaseId,
+        long generation,
+        TimeSpan leaseDuration,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await Task.Delay(_leaseDuration, cancellationToken);
+            await Task.Delay(leaseDuration, cancellationToken);
             ExpireLease(leaseId, generation);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

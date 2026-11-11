@@ -278,8 +278,11 @@ internal sealed class EdgeAgentStatusPipeService(
 {
     private const int MaximumRequestFrameBytes = 4096;
     private const int MaximumResponseFrameBytes = 128 * 1024;
+    private const byte MaintenanceRequestAcknowledgement = 0xA5;
     private static readonly TimeSpan ClientRequestTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan OptionalMaintenanceAcknowledgementTimeout = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan MaintenanceDrainTimeout = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan AudioMaintenanceLeaseDuration = TimeSpan.FromSeconds(30);
     private readonly object _maintenanceLeaseSync = new();
     private Guid? _maintenanceLeaseId;
     private string? _maintenanceLeaseOwnerSid;
@@ -307,7 +310,7 @@ internal sealed class EdgeAgentStatusPipeService(
                 using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 operationTimeout.CancelAfter(MaintenanceDrainTimeout);
                 string? callerSid = null;
-                var requiresAdministrator = request?.Operation is "begin_maintenance" or "release_maintenance" or
+                var requiresAdministrator = request?.Operation is "begin_maintenance" or "begin_audio_maintenance" or "release_maintenance" or
                     "backup_database" or "set_audio_output" or "test_audio_output";
                 var administratorAuthorized = true;
                 if (requiresAdministrator)
@@ -323,20 +326,41 @@ internal sealed class EdgeAgentStatusPipeService(
                 }
                 Task? disconnectMonitor = null;
                 using var disconnectMonitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationTimeout.Token);
-                if (request?.Operation == "begin_maintenance" && administratorAuthorized)
-                {
-                    disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
-                        pipe, operationTimeout, disconnectMonitorCancellation.Token);
-                }
-
                 EdgeAgentPipeResponse response;
                 try
                 {
-                    response = request is null
-                        ? new EdgeAgentPipeResponse(1, false, null, "invalid_request")
-                        : !administratorAuthorized
-                            ? new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied")
-                            : await HandleRequestAsync(request, callerSid, operationTimeout.Token);
+                    if (request is null)
+                    {
+                        response = new EdgeAgentPipeResponse(1, false, null, "invalid_request");
+                    }
+                    else if (!administratorAuthorized)
+                    {
+                        response = new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied");
+                    }
+                    else if (request.Operation is "begin_maintenance" or "begin_audio_maintenance")
+                    {
+                        var acknowledgement = await TryReadMaintenanceAcknowledgementAsync(
+                            pipe, operationTimeout.Token);
+                        if ((request.Operation == "begin_audio_maintenance" && acknowledgement is null) ||
+                            (acknowledgement is not null && acknowledgement != MaintenanceRequestAcknowledgement))
+                        {
+                            response = new EdgeAgentPipeResponse(1, false, null, "invalid_request");
+                        }
+                        else
+                        {
+                            if (acknowledgement is not null)
+                            {
+                                disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
+                                    pipe, operationTimeout, disconnectMonitorCancellation.Token);
+                            }
+
+                            response = await HandleRequestAsync(request, callerSid, operationTimeout.Token);
+                        }
+                    }
+                    else
+                    {
+                        response = await HandleRequestAsync(request, callerSid, operationTimeout.Token);
+                    }
                 }
                 finally
                 {
@@ -453,7 +477,7 @@ internal sealed class EdgeAgentStatusPipeService(
                         MaintenanceLeaseId: testLeaseId);
                 }
 
-            case "begin_maintenance" when request.LeaseId is null:
+            case "begin_maintenance" or "begin_audio_maintenance" when request.LeaseId is null:
                 if (string.IsNullOrWhiteSpace(callerSid))
                 {
                     return new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied");
@@ -472,7 +496,8 @@ internal sealed class EdgeAgentStatusPipeService(
                 try
                 {
                     Guid leaseId = await _maintenanceCoordinator.BeginMaintenanceAsync(
-                        MaintenanceDrainTimeout, cancellationToken);
+                        MaintenanceDrainTimeout, cancellationToken,
+                        request.Operation == "begin_audio_maintenance" ? AudioMaintenanceLeaseDuration : null);
                     lock (_maintenanceLeaseSync)
                     {
                         _maintenanceLeaseId = leaseId;
@@ -648,26 +673,6 @@ internal sealed class EdgeAgentStatusPipeService(
         return authorized;
     }
 
-    private static async Task CancelOperationWhenClientDisconnectsAsync(
-        Stream pipe,
-        CancellationTokenSource operationCancellation,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var unexpectedData = new byte[1];
-            await ReadExactlyAsync(pipe, unexpectedData, cancellationToken);
-            operationCancellation.Cancel();
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (IOException)
-        {
-            operationCancellation.Cancel();
-        }
-    }
-
     private static NamedPipeServerStream CreatePipe(
         string pipeName,
         Func<SecurityIdentifier>? serviceSidProvider,
@@ -708,6 +713,44 @@ internal sealed class EdgeAgentStatusPipeService(
         {
             pipeHandle.Dispose();
             throw;
+        }
+    }
+
+    private static async Task CancelOperationWhenClientDisconnectsAsync(
+        Stream pipe,
+        CancellationTokenSource operationCancellation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var unexpectedData = new byte[1];
+            await ReadExactlyAsync(pipe, unexpectedData, cancellationToken);
+            operationCancellation.Cancel();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (IOException)
+        {
+            operationCancellation.Cancel();
+        }
+    }
+
+    private static async Task<byte?> TryReadMaintenanceAcknowledgementAsync(
+        Stream pipe,
+        CancellationToken operationCancellationToken)
+    {
+        using var acknowledgementTimeout = CancellationTokenSource.CreateLinkedTokenSource(operationCancellationToken);
+        acknowledgementTimeout.CancelAfter(OptionalMaintenanceAcknowledgementTimeout);
+        var acknowledgement = new byte[1];
+        try
+        {
+            await ReadExactlyAsync(pipe, acknowledgement, acknowledgementTimeout.Token);
+            return acknowledgement[0];
+        }
+        catch (OperationCanceledException) when (!operationCancellationToken.IsCancellationRequested)
+        {
+            return null;
         }
     }
 

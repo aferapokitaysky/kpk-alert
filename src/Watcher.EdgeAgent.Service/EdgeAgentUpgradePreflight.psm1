@@ -83,6 +83,10 @@ function Invoke-EdgeAgentPipeRequest {
         $pipe.Write($header, 0, $header.Length)
         $pipe.Write($requestBytes, 0, $requestBytes.Length)
         $pipe.Flush()
+        if ($Operation -in @('begin_maintenance', 'begin_audio_maintenance')) {
+            $pipe.WriteByte([byte]0xA5)
+            $pipe.Flush()
+        }
 
         $responseHeader = Read-EdgeAgentPipeBytes $pipe 4 $ResponseTimeoutMilliseconds
         $responseLength = [BitConverter]::ToInt32($responseHeader, 0)
