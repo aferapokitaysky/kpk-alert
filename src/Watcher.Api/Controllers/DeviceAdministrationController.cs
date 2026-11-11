@@ -141,6 +141,9 @@ public sealed class DeviceAdministrationController(
             {
                 revokedAtUtc = timeProvider.GetUtcNow();
                 device.RevokedAtUtc = revokedAtUtc;
+                await db.SaveChangesAsync(cancellationToken);
+                await db.Entry(device).ReloadAsync(cancellationToken);
+                revokedAtUtc = device.RevokedAtUtc!.Value;
                 AddAuditEvent("device.revoked", new
                 {
                     deviceId = device.Id,

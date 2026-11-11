@@ -11,30 +11,58 @@ public sealed class DeviceCommandProcessor(
     IEdgeAgentClock clock,
     TimeSpan maximumClockSkew,
     int maximumReceiptQueue,
-    string? audioEndpointId = null)
+    string? audioEndpointId = null,
+    EdgeAgentMaintenanceCoordinator? maintenanceCoordinator = null,
+    InstallerMaintenanceGate? installerMaintenanceGate = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _processingGate = new(1, 1);
+    private readonly EdgeAgentMaintenanceCoordinator _maintenanceCoordinator =
+        maintenanceCoordinator ?? new EdgeAgentMaintenanceCoordinator();
+    private readonly InstallerMaintenanceGate _installerMaintenanceGate =
+        installerMaintenanceGate ?? new InstallerMaintenanceGate();
 
     public async Task<CommandProcessingOutcome> ProcessAsync(
         CommandDispatch command,
         DeviceIdentity identity,
         CancellationToken cancellationToken)
     {
-        await _processingGate.WaitAsync(cancellationToken);
+        ArgumentNullException.ThrowIfNull(command);
+        if (command.Action == DeviceCommandAction.Start && _installerMaintenanceGate.IsHeldByInstaller())
+        {
+            return new CommandProcessingOutcome(false, false, false, "maintenance_in_progress", null);
+        }
+
+        EdgeAgentMaintenanceCoordinator.StartLease? startLease = command.Action == DeviceCommandAction.Start
+            ? _maintenanceCoordinator.TryBeginStart()
+            : null;
+        if (command.Action == DeviceCommandAction.Start && startLease is null)
+        {
+            return new CommandProcessingOutcome(false, false, false, "maintenance_in_progress", null);
+        }
+
+        var processingGateAcquired = false;
         try
         {
-            return await ProcessCoreAsync(command, identity, cancellationToken);
+            await _processingGate.WaitAsync(cancellationToken);
+            processingGateAcquired = true;
+            return await ProcessCoreAsync(command, identity, startLease, cancellationToken);
         }
         finally
         {
-            _processingGate.Release();
+            if (processingGateAcquired)
+            {
+                _processingGate.Release();
+            }
+
+            startLease?.Dispose();
         }
     }
 
     private async Task<CommandProcessingOutcome> ProcessCoreAsync(
         CommandDispatch command,
         DeviceIdentity identity,
+        EdgeAgentMaintenanceCoordinator.StartLease? startLease,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -154,9 +182,18 @@ public sealed class DeviceCommandProcessor(
 
         try
         {
-            await audioPlayer.StartAsync(
-                new PlaybackRequest(command.CommandId, command.PresetCode!, asset!.FilePath, deadlineUtc, audioEndpointId),
-                cancellationToken);
+            startLease!.MarkPlaybackStarted(command.CommandId);
+            try
+            {
+                await audioPlayer.StartAsync(
+                    new PlaybackRequest(command.CommandId, command.PresetCode!, asset!.FilePath, deadlineUtc, audioEndpointId),
+                    cancellationToken);
+            }
+            catch
+            {
+                _maintenanceCoordinator.PlaybackFinished(command.CommandId);
+                throw;
+            }
         }
         catch (AudioPlaybackException exception)
         {

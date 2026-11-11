@@ -266,6 +266,43 @@ function Invoke-EdgeAgentInstallTransaction {
     }
 }
 
+function Stop-EdgeAgentServiceForRollback {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$StopAction,
+        [Parameter(Mandatory = $true)][scriptblock]$WaitUntilStoppedAction
+    )
+
+    try {
+        & $StopAction
+        & $WaitUntilStoppedAction
+    } catch {
+        throw "Не вдалося підтвердити зупинку Windows-служби перед rollback: $_"
+    }
+}
+
+function Get-EdgeAgentServiceForRollback {
+    param(
+        [Parameter(Mandatory = $true)][bool]$AllowMissing,
+        [Parameter(Mandatory = $true)][scriptblock]$GetServiceAction
+    )
+
+    try {
+        $service = & $GetServiceAction
+        if ($null -eq $service) {
+            throw 'Запит Service Control Manager не повернув дані про службу.'
+        }
+        return $service
+    } catch {
+        $serviceWasNotFound = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match '^NoServiceFoundForGivenName(?:,|$)'
+        if ($AllowMissing -and $serviceWasNotFound) {
+            return $null
+        }
+
+        throw "Не вдалося підтвердити наявність Windows-служби перед rollback: $_"
+    }
+}
+
 function Backup-EdgeAgentOperatorShortcut {
     param([Parameter(Mandatory = $true)][string]$ShortcutPath)
 
@@ -333,6 +370,131 @@ function Remove-EdgeAgentOperatorGroupMembers {
     if ($failures.Count -gt 0) {
         throw "Не вдалося скасувати додане членство в групі операторів: $($failures -join '; ')"
     }
+}
+
+function Remove-EdgeAgentOperatorGroupIfEmpty {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$ExpectedSid,
+        [Parameter(Mandatory = $true)][scriptblock]$GetGroup,
+        [Parameter(Mandatory = $true)][scriptblock]$GetMembers,
+        [Parameter(Mandatory = $true)][scriptblock]$RemoveGroup
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedSid)) {
+        throw 'Для видалення групи операторів потрібен SID, збережений під час її створення.'
+    }
+
+    $group = & $GetGroup $Name
+    if (-not $group) { return $false }
+
+    $actualSid = if ($group.SID -is [Security.Principal.SecurityIdentifier]) {
+        $group.SID.Value
+    } else {
+        [string]$group.SID
+    }
+    if (-not [string]::Equals($actualSid, $ExpectedSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Групу операторів після інсталяції було замінено; її не видалено.'
+    }
+
+    $members = @(& $GetMembers $Name)
+    if ($members.Count -gt 0) {
+        throw 'Створена інсталятором група операторів не порожня; її не видалено.'
+    }
+
+    & $RemoveGroup $Name
+    return $true
+}
+
+function Set-EdgeAgentDatabaseBackupStagingAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][Security.Principal.SecurityIdentifier]$ServiceSid
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $parentPath = [IO.Directory]::GetParent($fullPath)
+    if (-not $parentPath -or -not [IO.Directory]::Exists($parentPath.FullName)) {
+        throw 'Батьківський каталог підготовки резервної копії не знайдено.'
+    }
+    $currentDirectory = $parentPath
+    while ($currentDirectory) {
+        $current = Get-Item -LiteralPath $currentDirectory.FullName -Force -ErrorAction Stop
+        if ($current.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Шлях каталогу резервної копії не може містити reparse point.'
+        }
+        $currentDirectory = $currentDirectory.Parent
+    }
+
+    if (Test-Path -LiteralPath $fullPath) {
+        $existingDirectory = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+        if (-not $existingDirectory.PSIsContainer -or
+            ($existingDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Каталог підготовки резервної копії має бути звичайним каталогом.'
+        }
+    } else {
+        [IO.Directory]::CreateDirectory($fullPath) | Out-Null
+    }
+
+    $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $acl = Get-Acl -LiteralPath $fullPath
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($rule) }
+
+    $inheritableDirectoryFlags = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($principalSid in @($administratorsSid, $systemSid)) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $principalSid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritableDirectoryFlags,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        ))
+    }
+
+    $serviceDirectoryRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [Security.AccessControl.FileSystemRights]::Traverse -bor
+        [Security.AccessControl.FileSystemRights]::ReadAttributes -bor
+        [Security.AccessControl.FileSystemRights]::ReadPermissions -bor
+        [Security.AccessControl.FileSystemRights]::Synchronize
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $ServiceSid,
+        $serviceDirectoryRights,
+        [Security.AccessControl.InheritanceFlags]::None,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    ))
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $ServiceSid,
+        [Security.AccessControl.FileSystemRights]::Modify,
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [Security.AccessControl.PropagationFlags]::InheritOnly,
+        [Security.AccessControl.AccessControlType]::Allow
+    ))
+    Set-Acl -LiteralPath $fullPath -AclObject $acl -ErrorAction Stop
+
+    $verifiedAcl = Get-Acl -LiteralPath $fullPath
+    $rules = @($verifiedAcl.Access)
+    $unexpectedRules = @($rules | Where-Object {
+        $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin @(
+            $administratorsSid.Value, $systemSid.Value, $ServiceSid.Value
+        )
+    })
+    $serviceDirectoryRule = $rules | Where-Object {
+        $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $ServiceSid.Value -and
+        $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None -and
+        $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None
+    } | Select-Object -First 1
+    $directoryDeleteRights = [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles
+    if (-not $verifiedAcl.AreAccessRulesProtected -or $unexpectedRules.Count -gt 0 -or
+        -not $serviceDirectoryRule -or ($serviceDirectoryRule.FileSystemRights -band $directoryDeleteRights)) {
+        throw 'ACL каталогу резервного staging має дозволяти service SID лише створювати файли, без заміни каталогу.'
+    }
+
+    return $fullPath
 }
 
 function Get-EdgeAgentAclSnapshot {
@@ -423,4 +585,4 @@ function Restore-EdgeAgentServiceStartupAfterRollback {
     }
 }
 
-Export-ModuleMember -Function New-EdgeAgentPackageStage, Install-EdgeAgentPackageStage, Restore-EdgeAgentPackage, Complete-EdgeAgentPackageDeployment, Invoke-EdgeAgentInstallTransaction, Backup-EdgeAgentOperatorShortcut, Restore-EdgeAgentOperatorShortcut, Add-EdgeAgentOperatorGroupMembers, Remove-EdgeAgentOperatorGroupMembers, Get-EdgeAgentAclSnapshot, Restore-EdgeAgentAclSnapshot, Remove-EdgeAgentConfigurationAfterFailedInstall, Restore-EdgeAgentServiceStartupAfterRollback
+Export-ModuleMember -Function New-EdgeAgentPackageStage, Install-EdgeAgentPackageStage, Restore-EdgeAgentPackage, Complete-EdgeAgentPackageDeployment, Invoke-EdgeAgentInstallTransaction, Stop-EdgeAgentServiceForRollback, Get-EdgeAgentServiceForRollback, Backup-EdgeAgentOperatorShortcut, Restore-EdgeAgentOperatorShortcut, Add-EdgeAgentOperatorGroupMembers, Remove-EdgeAgentOperatorGroupMembers, Remove-EdgeAgentOperatorGroupIfEmpty, Set-EdgeAgentDatabaseBackupStagingAcl, Get-EdgeAgentAclSnapshot, Restore-EdgeAgentAclSnapshot, Remove-EdgeAgentConfigurationAfterFailedInstall, Restore-EdgeAgentServiceStartupAfterRollback

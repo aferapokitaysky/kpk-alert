@@ -11,12 +11,6 @@ internal static class Program
 {
     public static async Task Main(string[] args)
     {
-        if (args is ["--backup-database", string sourcePath, string destinationPath])
-        {
-            SqliteDatabaseBackup.Create(sourcePath, destinationPath);
-            return;
-        }
-
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
         builder.Services.AddWindowsService(options => options.ServiceName = "KGTA Alert Edge Agent");
 
@@ -32,10 +26,13 @@ internal static class Program
         }
 
         builder.Services.AddSingleton(options);
+        builder.Services.AddSingleton<EdgeAgentDatabaseBackup>();
         builder.Services.AddSingleton<IEdgeAgentClock>(_ => new SystemEdgeAgentClock(TimeProvider.System));
         builder.Services.AddSingleton<SqliteEdgeAgentStore>(_ => new SqliteEdgeAgentStore(
             options.DatabasePath, options.MaximumReceiptQueue));
         builder.Services.AddSingleton<IEdgeAgentStore>(services => services.GetRequiredService<SqliteEdgeAgentStore>());
+        builder.Services.AddSingleton<EdgeAgentMaintenanceCoordinator>();
+        builder.Services.AddSingleton(_ => new InstallerMaintenanceGate());
         builder.Services.AddSingleton<LocalAudioAssetResolver>(_ => new LocalAudioAssetResolver(options.AudioRootDirectory));
         builder.Services.AddSingleton<IAudioAssetResolver>(services => services.GetRequiredService<LocalAudioAssetResolver>());
         builder.Services.AddSingleton<EdgeAgentStatusProvider>();
@@ -50,7 +47,9 @@ internal static class Program
             services.GetRequiredService<IAudioPlayer>(),
             services.GetRequiredService<IEdgeAgentClock>(),
             TimeSpan.FromSeconds(options.MaximumClockSkewSeconds), options.MaximumReceiptQueue,
-            options.AudioEndpointId));
+            options.AudioEndpointId,
+            services.GetRequiredService<EdgeAgentMaintenanceCoordinator>(),
+            services.GetRequiredService<InstallerMaintenanceGate>()));
         builder.Services.AddSingleton<DeviceCommandTransport>(services => new DeviceCommandTransport(
             options,
             services.GetRequiredService<DeviceCommandProcessor>(),

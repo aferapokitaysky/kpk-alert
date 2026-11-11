@@ -26,10 +26,14 @@ public sealed record EdgeAgentStatus(
     int PendingReceiptCount,
     string? DiagnosticCode);
 
-public sealed record EdgeAgentPipeRequest(int SchemaVersion, string Operation);
+public sealed record EdgeAgentPipeRequest(int SchemaVersion, string Operation, Guid? LeaseId = null);
 
 public sealed record EdgeAgentPipeResponse(
     int SchemaVersion,
     bool Succeeded,
     EdgeAgentStatus? Status,
-    string? DiagnosticCode);
+    string? DiagnosticCode,
+    Guid? LeaseId = null,
+    Guid? BackupId = null,
+    string? DatabasePathHash = null,
+    Guid? MaintenanceLeaseId = null);

@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Watcher.Contracts.DeviceCommands;
 using Watcher.EdgeAgent.Contracts;
@@ -18,6 +19,19 @@ namespace Watcher.EdgeAgent.Service.IntegrationTests;
 
 public sealed class StatusPipeIntegrationTests
 {
+    [Fact]
+    public void PipeCreationRejectsRemoteClientsAndKeepsByteMode()
+    {
+        const uint pipeTypeMessage = 0x00000004;
+        const uint pipeReadModeMessage = 0x00000002;
+        const uint pipeRejectRemoteClients = 0x00000008;
+        var pipeMode = EdgeAgentStatusPipeService.CreatePipeMode();
+
+        Assert.NotEqual(0u, pipeMode & pipeRejectRemoteClients);
+        Assert.Equal(0u, pipeMode & pipeTypeMessage);
+        Assert.Equal(0u, pipeMode & pipeReadModeMessage);
+    }
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -61,6 +75,178 @@ public sealed class StatusPipeIntegrationTests
     }
 
     [Fact]
+    public async Task MaintenancePipeRequestBlocksStartsUntilPlaybackEndsAndLeaseOwnerReleases()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusProvider status = new(new TestClock());
+        EdgeAgentStatusPipeService service = CreateService(status, CreatePipeName(), maintenance);
+        var administratorSid = "S-1-5-21-111-222-333-1001";
+        var otherAdministratorSid = "S-1-5-21-111-222-333-1002";
+        var commandId = Guid.NewGuid();
+        using EdgeAgentMaintenanceCoordinator.StartLease start = Assert.IsType<EdgeAgentMaintenanceCoordinator.StartLease>(
+            maintenance.TryBeginStart());
+        start.MarkPlaybackStarted(commandId);
+        Task<EdgeAgentPipeResponse> beginTask = service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "begin_maintenance"), administratorSid, CancellationToken.None);
+
+        Assert.False(beginTask.IsCompleted);
+        Assert.Null(maintenance.TryBeginStart());
+        maintenance.PlaybackFinished(commandId);
+        EdgeAgentPipeResponse begun = await beginTask;
+
+        Assert.True(begun.Succeeded);
+        Guid leaseId = Assert.IsType<Guid>(begun.LeaseId);
+        EdgeAgentPipeResponse wrongOwner = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), otherAdministratorSid, CancellationToken.None);
+        Assert.Equal("maintenance_lease_owner_mismatch", wrongOwner.DiagnosticCode);
+        Assert.Null(maintenance.TryBeginStart());
+
+        EdgeAgentPipeResponse released = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), administratorSid, CancellationToken.None);
+        Assert.True(released.Succeeded);
+        using EdgeAgentMaintenanceCoordinator.StartLease? resumedStart = maintenance.TryBeginStart();
+        Assert.NotNull(resumedStart);
+    }
+
+    [Fact]
+    public async Task MaintenancePipeRequestRejectsCallersWithoutAuthenticatedSid()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusProvider status = new(new TestClock());
+        EdgeAgentStatusPipeService service = CreateService(status, CreatePipeName(), maintenance);
+
+        EdgeAgentPipeResponse response = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "begin_maintenance"), null, CancellationToken.None);
+
+        Assert.False(response.Succeeded);
+        Assert.Equal("maintenance_access_denied", response.DiagnosticCode);
+        using EdgeAgentMaintenanceCoordinator.StartLease? start = maintenance.TryBeginStart();
+        Assert.NotNull(start);
+    }
+
+    [Fact]
+    public async Task DatabaseBackup_UsesConfiguredDatabaseAndKeepsMaintenanceLeaseOnLostResponse()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"kgta-edge-backup-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(root, "data", "edge-agent.db");
+        var stagingPath = Path.Combine(root, "backup-staging");
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+        Directory.CreateDirectory(stagingPath);
+        try
+        {
+            await using (var source = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Pooling = false
+            }.ToString()))
+            {
+                await source.OpenAsync();
+                await using SqliteCommand create = source.CreateCommand();
+                create.CommandText = "CREATE TABLE backup_probe (value TEXT NOT NULL); INSERT INTO backup_probe VALUES ('from-configured-db');";
+                await create.ExecuteNonQueryAsync();
+            }
+
+            EdgeAgentOptions options = new()
+            {
+                BaseAddress = new Uri("https://localhost"),
+                IdentityPath = "/api/v1/device/identity",
+                WebSocketPath = "/api/v1/device/commands/stream",
+                ReceiptPath = "/api/v1/device/command-receipts",
+                DatabasePath = databasePath,
+                AudioRootDirectory = root
+            };
+            EdgeAgentDatabaseBackup backup = new(options, stagingPath);
+            EdgeAgentMaintenanceCoordinator maintenance = new(TimeSpan.FromMinutes(1));
+            EdgeAgentStatusPipeService service = CreateService(new EdgeAgentStatusProvider(new TestClock()),
+                CreatePipeName(), maintenance, backup);
+            const string administratorSid = "S-1-5-21-111-222-333-1001";
+            EdgeAgentPipeResponse begun = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "begin_maintenance"), administratorSid, CancellationToken.None);
+            Guid leaseId = Assert.IsType<Guid>(begun.LeaseId);
+
+            EdgeAgentPipeResponse wrongOwner = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "backup_database", leaseId),
+                "S-1-5-21-111-222-333-1002", CancellationToken.None);
+            Assert.Equal("maintenance_lease_owner_mismatch", wrongOwner.DiagnosticCode);
+            Assert.Empty(Directory.EnumerateFiles(stagingPath));
+
+            EdgeAgentPipeResponse response = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "backup_database", leaseId), administratorSid, CancellationToken.None);
+            Assert.True(response.Succeeded);
+            Assert.Null(response.LeaseId);
+            Assert.Equal(leaseId, response.MaintenanceLeaseId);
+            Guid backupId = Assert.IsType<Guid>(response.BackupId);
+            Assert.Equal(EdgeAgentDatabaseBackup.CreateDatabasePathHash(databasePath), response.DatabasePathHash);
+            var backupPath = Path.Combine(stagingPath, $"edge-agent-{backupId:N}.db");
+            Assert.True(File.Exists(backupPath));
+
+            await using var restored = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = backupPath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString());
+            await restored.OpenAsync();
+            await using SqliteCommand read = restored.CreateCommand();
+            read.CommandText = "SELECT value FROM backup_probe;";
+            Assert.Equal("from-configured-db", await read.ExecuteScalarAsync());
+
+            await Assert.ThrowsAsync<IOException>(() => service.WriteResponseAsync(
+                new DisconnectedWriteStream(), response, CancellationToken.None));
+            Assert.True(maintenance.IsMaintenanceLeaseActive(leaseId));
+            Assert.Null(maintenance.TryBeginStart());
+
+            EdgeAgentPipeResponse released = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), administratorSid, CancellationToken.None);
+            Assert.True(released.Succeeded);
+            using EdgeAgentMaintenanceCoordinator.StartLease? resumedStart = maintenance.TryBeginStart();
+            Assert.NotNull(resumedStart);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LostMaintenanceResponse_ReleasesGateInsteadOfLeavingServiceQuiesced()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        EdgeAgentStatusPipeService service = CreateService(new EdgeAgentStatusProvider(new TestClock()),
+            CreatePipeName(), maintenance);
+        EdgeAgentPipeResponse response = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "begin_maintenance"), "S-1-5-21-111-222-333-1001", CancellationToken.None);
+        Assert.True(response.Succeeded);
+        Assert.Null(maintenance.TryBeginStart());
+
+        await Assert.ThrowsAsync<IOException>(() => service.WriteResponseAsync(
+            new DisconnectedWriteStream(), response, CancellationToken.None));
+
+        using EdgeAgentMaintenanceCoordinator.StartLease? start = maintenance.TryBeginStart();
+        Assert.NotNull(start);
+    }
+
+    [Fact]
+    public async Task ExpiredMaintenanceLease_CanBeReplacedWithoutRestartingService()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new(TimeSpan.FromMilliseconds(25));
+        EdgeAgentStatusPipeService service = CreateService(new EdgeAgentStatusProvider(new TestClock()),
+            CreatePipeName(), maintenance);
+        const string administratorSid = "S-1-5-21-111-222-333-1001";
+
+        EdgeAgentPipeResponse first = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "begin_maintenance"), administratorSid, CancellationToken.None);
+        await Task.Delay(75);
+        EdgeAgentPipeResponse next = await service.HandleRequestAsync(
+            new EdgeAgentPipeRequest(1, "begin_maintenance"), administratorSid, CancellationToken.None);
+
+        Assert.True(first.Succeeded);
+        Assert.True(next.Succeeded);
+        Assert.NotEqual(first.LeaseId, next.LeaseId);
+        Assert.True(maintenance.ReleaseMaintenance(next.LeaseId!.Value));
+    }
+
+    [Fact]
     public async Task PipeRejectsOversizedAndMalformedFramesAndContinuesServing()
     {
         var pipeName = CreatePipeName();
@@ -93,8 +279,10 @@ public sealed class StatusPipeIntegrationTests
         SecurityIdentifier serviceSid = new(WellKnownSidType.LocalSystemSid, null);
         SecurityIdentifier operatorSid = new(WellKnownSidType.BuiltinPowerUsersSid, null);
         PipeSecurity security = EdgeAgentStatusPipeService.CreatePipeSecurity(() => serviceSid, () => operatorSid);
-        SecurityIdentifier[] grantedSids = security.GetAccessRules(true, true, typeof(SecurityIdentifier))
+        PipeAccessRule[] accessRules = security.GetAccessRules(true, true, typeof(SecurityIdentifier))
             .Cast<PipeAccessRule>()
+            .ToArray();
+        SecurityIdentifier[] grantedSids = accessRules
             .Select(rule => (SecurityIdentifier)rule.IdentityReference)
             .ToArray();
 
@@ -102,14 +290,38 @@ public sealed class StatusPipeIntegrationTests
         Assert.Contains(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), grantedSids);
         Assert.Contains(operatorSid, grantedSids);
         Assert.DoesNotContain(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), grantedSids);
+        Assert.Contains(accessRules, rule => rule.IdentityReference.Equals(serviceSid) &&
+            rule.PipeAccessRights.HasFlag(PipeAccessRights.CreateNewInstance));
+        Assert.DoesNotContain(accessRules, rule => rule.IdentityReference.Equals(operatorSid) &&
+            rule.PipeAccessRights.HasFlag(PipeAccessRights.CreateNewInstance));
     }
 
-    private static EdgeAgentStatusPipeService CreateService(EdgeAgentStatusProvider status, string pipeName)
+    private static EdgeAgentStatusPipeService CreateService(
+        EdgeAgentStatusProvider status,
+        string pipeName,
+        EdgeAgentMaintenanceCoordinator? maintenance = null,
+        EdgeAgentDatabaseBackup? databaseBackup = null)
     {
         SecurityIdentifier currentUser = WindowsIdentity.GetCurrent().User ??
             throw new InvalidOperationException("Тестовий процес не має Windows SID.");
         return new EdgeAgentStatusPipeService(status, NullLogger<EdgeAgentStatusPipeService>.Instance,
-            pipeName, () => currentUser, () => currentUser);
+            pipeName, () => currentUser, () => currentUser, maintenance, databaseBackup);
+    }
+
+    private sealed class DisconnectedWriteStream : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() => throw new IOException("Клієнт закрив канал.");
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new IOException("Клієнт закрив канал.");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new IOException("Клієнт закрив канал."));
     }
 
     private static async Task<EdgeAgentPipeResponse> SendRequestAsync(string pipeName, EdgeAgentPipeRequest request)
@@ -273,7 +485,8 @@ public sealed class EdgeAgentStartupIntegrationTests
                 await store.TryAcceptAsync(command, new string('b', 64), now, CancellationToken.None));
             await store.TransitionCommandAsync(commandId, DeviceCommandState.Playing, null, now, CancellationToken.None);
 
-            EdgeAgentPlaybackEventHandler handler = new(store, new StartupTestClock(now), status);
+            EdgeAgentPlaybackEventHandler handler = new(store, new StartupTestClock(now), status,
+                new EdgeAgentMaintenanceCoordinator());
             await handler.OnPlaybackFinishedAsync(commandId, finalState, diagnosticCode, CancellationToken.None);
 
             Assert.Equal(expectedAudioState, status.Get().AudioState);

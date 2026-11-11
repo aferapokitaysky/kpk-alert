@@ -3,6 +3,10 @@ Set-StrictMode -Version Latest
 
 $modulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentStartupRegistration.psm1'
 $packageModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentPackageDeployment.psm1'
+$upgradePreflightModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentUpgradePreflight.psm1'
+$readinessModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentReadiness.psm1'
+$installerGateModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentInstallerMaintenanceGate.psm1'
+$installerRecoveryMarkerModulePath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\EdgeAgentInstallerRecoveryMarker.psm1'
 $installerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\install-service.ps1'
 $uninstallerPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\uninstall-service.ps1'
 $userStartupScriptPath = Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\set-operator-panel-startup.ps1'
@@ -18,8 +22,125 @@ if ($installerParseErrors.Count -gt 0) {
     }) -join [Environment]::NewLine
     throw "Сценарій інсталятора містить синтаксичні помилки:`n$parseSummary"
 }
+foreach ($scriptPath in @($packageModulePath, $upgradePreflightModulePath)) {
+    $moduleTokens = $null
+    $moduleParseErrors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$moduleTokens, [ref]$moduleParseErrors) | Out-Null
+    if ($moduleParseErrors.Count -gt 0) {
+        throw "PowerShell-модуль містить синтаксичні помилки: $scriptPath ($($moduleParseErrors[0].Message))."
+    }
+}
 Import-Module -Name $modulePath -Force
 Import-Module -Name $packageModulePath -Force
+Import-Module -Name $upgradePreflightModulePath -Force
+Import-Module -Name $readinessModulePath -Force
+Import-Module -Name $installerGateModulePath -Force
+Import-Module -Name $installerRecoveryMarkerModulePath -Force
+
+if (-not ('KgtaAlertTests.NamedPipeEmulator' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace KgtaAlertTests
+{
+    public static class NamedPipeEmulator
+    {
+        public static bool CanAcquireMutexFromWorkerThread(string mutexName)
+        {
+            return Task.Run(() =>
+            {
+                using (var mutex = Mutex.OpenExisting(mutexName))
+                {
+                    bool acquired = mutex.WaitOne(0);
+                    if (acquired) mutex.ReleaseMutex();
+                    return acquired;
+                }
+            }).GetAwaiter().GetResult();
+        }
+
+        public static Task<string> ReplyOnceAsync(string pipeName, string responseJson, bool disconnectBeforeReply)
+        {
+            var completion = new TaskCompletionSource<string>();
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using (var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
+                        PipeTransmissionMode.Byte, PipeOptions.None))
+                    {
+                        pipe.WaitForConnection();
+                        byte[] header = new byte[4];
+                        ReadExactly(pipe, header);
+                        int length = BitConverter.ToInt32(header, 0);
+                        if (length <= 0 || length > 4096) throw new InvalidDataException("Invalid request length.");
+                        byte[] request = new byte[length];
+                        ReadExactly(pipe, request);
+                        string requestJson = Encoding.UTF8.GetString(request);
+                        if (!disconnectBeforeReply)
+                        {
+                            byte[] response = Encoding.UTF8.GetBytes(responseJson);
+                            pipe.Write(BitConverter.GetBytes(response.Length), 0, 4);
+                            pipe.Write(response, 0, response.Length);
+                            pipe.Flush();
+                        }
+                        completion.SetResult(requestJson);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    completion.SetException(exception);
+                }
+            });
+            thread.IsBackground = true;
+            thread.Start();
+            return completion.Task;
+        }
+
+        public static Task ObserveDisconnectAsync(string pipeName)
+        {
+            var completion = new TaskCompletionSource<string>();
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using (var pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
+                        PipeTransmissionMode.Byte, PipeOptions.None))
+                    {
+                        pipe.WaitForConnection();
+                        int firstByte = pipe.ReadByte();
+                        if (firstByte != -1) throw new InvalidDataException("Client sent a request before server authentication.");
+                        completion.SetResult("disconnected-without-request");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    completion.SetException(exception);
+                }
+            });
+            thread.IsBackground = true;
+            thread.Start();
+            return completion.Task;
+        }
+
+        private static void ReadExactly(Stream stream, byte[] buffer)
+        {
+            int offset = 0;
+            while (offset < buffer.Length)
+            {
+                int read = stream.Read(buffer, offset, buffer.Length - offset);
+                if (read == 0) throw new EndOfStreamException();
+                offset += read;
+            }
+        }
+    }
+}
+'@
+}
 
 function Assert-Equal {
     param([object]$Expected, [object]$Actual, [string]$Message)
@@ -38,9 +159,57 @@ function Assert-Throws {
     throw $Message
 }
 
+function Restore-TestRegistryMarkerPermissions {
+    param(
+        [Microsoft.Win32.RegistryHive]$RegistryHive,
+        [string]$RegistryPath
+    )
+
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Registry64)
+    $markerKey = $null
+    try {
+        $markerKey = $baseKey.OpenSubKey(
+            $RegistryPath,
+            [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+            [System.Security.AccessControl.RegistryRights]::ChangePermissions
+        )
+        if (-not $markerKey) { throw 'Не вдалося відкрити тестовий ключ маркера для відновлення ACL.' }
+
+        $markerAcl = $markerKey.GetAccessControl()
+        $markerAcl.SetAccessRuleProtection($false, $true)
+        $markerKey.SetAccessControl($markerAcl)
+    } finally {
+        if ($markerKey) { $markerKey.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
+function New-TestEdgeAgentStatus {
+    param(
+        [string]$ConnectionState = 'Streaming',
+        [guid]$DeviceId = [guid]::NewGuid(),
+        [guid]$LocationId = [guid]::NewGuid(),
+        [string]$AudioState = 'ready',
+        [string]$AudioEndpointId = 'test-endpoint'
+    )
+
+    return [pscustomobject]@{
+        succeeded = $true
+        status = [pscustomobject]@{
+            connectionState = $ConnectionState
+            deviceId = $DeviceId
+            locationId = $LocationId
+            audioState = $AudioState
+            audioEndpointId = $AudioEndpointId
+        }
+    }
+}
+
 $testId = [guid]::NewGuid().ToString('N')
 $testRootSubKey = "Software\KGTA.Alert.Tests\$testId"
 $testRunSubKey = "$testRootSubKey\Run"
+$testInstallerRecoveryMarkerPath = "$testRootSubKey\InstallerState"
+$testDerivedServiceMarkerPath = "$testRootSubKey\InstallerStateDerivedServiceSid"
 $testRegistryPath = "HKCU:\$testRootSubKey"
 $testExecutableDirectory = Join-Path ([IO.Path]::GetTempPath()) "KGTA Alert $testId"
 $testExecutablePath = Join-Path $testExecutableDirectory 'Watcher EdgeAgent Desktop.exe'
@@ -52,9 +221,122 @@ $actualUserSid = $null
 $actualUserRunSubKey = $null
 $usersHive = $null
 $runKey = $null
+$script:originalCimFunction = $null
+$script:expectedEdgeAgentServiceProcessId = $null
 
 try {
     New-Item -ItemType Directory -Path $testExecutableDirectory -Force | Out-Null
+    $markerServiceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    Set-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath `
+        -ServiceSid $markerServiceSid
+    $markerBaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    $markerKey = $markerBaseKey.OpenSubKey($testInstallerRecoveryMarkerPath, $false)
+    try {
+        if (-not $markerKey) { throw 'Маркер відновлення не створив ключ реєстру.' }
+        Assert-Equal -Expected '1' -Actual $markerKey.GetValue('RecoveryRequired') -Message 'Маркер має бути встановлений до початку змін інсталятора.'
+        Assert-Equal -Expected '1' -Actual $markerKey.GetValue('MaintenanceActive') -Message 'Активне обслуговування має бути позначене до змін інсталятора.'
+        $markerAcl = $markerKey.GetAccessControl()
+        Assert-Equal -Expected $true -Actual $markerAcl.AreAccessRulesProtected -Message 'DACL маркера має бути захищеним від успадкованих записів.'
+        $markerRules = $markerAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+        $adminSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+        $adminRule = $markerRules | Where-Object {
+            $_.IdentityReference -eq $adminSid -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            ($_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::FullControl) -eq [System.Security.AccessControl.RegistryRights]::FullControl
+        }
+        if (-not $adminRule) { throw 'Маркер має надавати повний доступ адміністраторам.' }
+        $serviceSidIdentity = [Security.Principal.SecurityIdentifier]::new($markerServiceSid)
+        $serviceReadRule = $markerRules | Where-Object {
+            $_.IdentityReference -eq $serviceSidIdentity -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            ($_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::ReadKey) -eq [System.Security.AccessControl.RegistryRights]::ReadKey
+        }
+        if (-not $serviceReadRule) { throw 'Маркер має надавати service SID право читання.' }
+    } finally {
+        if ($markerKey) { $markerKey.Dispose() }
+        $markerBaseKey.Dispose()
+    }
+    Restore-TestRegistryMarkerPermissions `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    $storedMaintenanceLeaseId = [guid]::NewGuid()
+    Set-EdgeAgentInstallerMaintenanceLeaseId `
+        -LeaseId $storedMaintenanceLeaseId `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    $recoveryState = Get-EdgeAgentInstallerRecoveryState `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    Assert-Equal -Expected $true -Actual $recoveryState.RecoveryRequired -Message 'Повторний запуск має бачити незавершене відновлення.'
+    Assert-Equal -Expected $true -Actual $recoveryState.MaintenanceActive -Message 'Повторний запуск має бачити активний startup gate.'
+    Assert-Equal -Expected $storedMaintenanceLeaseId -Actual $recoveryState.MaintenanceLeaseId -Message 'Маркер має зберігати lease для відновлення на наступному запуску.'
+    Clear-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    $recoveryState = Get-EdgeAgentInstallerRecoveryState `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    Assert-Equal -Expected $null -Actual $recoveryState.MaintenanceLeaseId -Message 'Очищення marker має прибирати відновлений lease.'
+    $markerBaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    $markerKey = $markerBaseKey.OpenSubKey($testInstallerRecoveryMarkerPath, $false)
+    try {
+        Assert-Equal -Expected $null -Actual $markerKey.GetValue('RecoveryRequired', $null) -Message 'Успішне завершення має очищати маркер відновлення.'
+        Assert-Equal -Expected $null -Actual $markerKey.GetValue('MaintenanceActive', $null) -Message 'Успішне завершення має очищати маркер обслуговування.'
+    } finally {
+        if ($markerKey) { $markerKey.Dispose() }
+        $markerBaseKey.Dispose()
+    }
+    Set-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath `
+        -ServiceSid $markerServiceSid
+    Restore-TestRegistryMarkerPermissions `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    Clear-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testInstallerRecoveryMarkerPath
+    $markerBaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    $markerKey = $markerBaseKey.OpenSubKey($testInstallerRecoveryMarkerPath, $false)
+    try {
+        Assert-Equal -Expected $null -Actual $markerKey.GetValue('MaintenanceActive', $null) -Message 'Після успішного rollback маркер обслуговування має бути очищений.'
+        Assert-Equal -Expected $null -Actual $markerKey.GetValue('RecoveryRequired', $null) -Message 'Після успішного rollback маркер відновлення має бути очищений.'
+    } finally {
+        if ($markerKey) { $markerKey.Dispose() }
+        $markerBaseKey.Dispose()
+    }
+    $serviceSidOutput = & "$env:SystemRoot\System32\sc.exe" showsid 'KGTA.Alert.EdgeAgent' 2>&1
+    $expectedServiceSidMatch = [regex]::Match(($serviceSidOutput -join [Environment]::NewLine), 'S-1-5-80-(?:\d+-){4}\d+')
+    if ($LASTEXITCODE -ne 0 -or -not $expectedServiceSidMatch.Success) { throw 'Тест не зміг отримати service SID через sc.exe showsid.' }
+    Set-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testDerivedServiceMarkerPath
+    $markerBaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    $markerKey = $markerBaseKey.OpenSubKey(
+        $testDerivedServiceMarkerPath,
+        [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+        [System.Security.AccessControl.RegistryRights]::ChangePermissions
+    )
+    try {
+        $derivedAcl = $markerKey.GetAccessControl()
+        $expectedServiceSid = [Security.Principal.SecurityIdentifier]::new($expectedServiceSidMatch.Value)
+        $derivedServiceRule = $derivedAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.IdentityReference -eq $expectedServiceSid -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+            ($_.RegistryRights -band [System.Security.AccessControl.RegistryRights]::ReadKey) -eq [System.Security.AccessControl.RegistryRights]::ReadKey
+        }
+        if (-not $derivedServiceRule) { throw 'sc.exe showsid SID має отримати право читання маркера.' }
+        $derivedAcl.SetAccessRuleProtection($false, $true)
+        $markerKey.SetAccessControl($derivedAcl)
+    } finally {
+        if ($markerKey) { $markerKey.Dispose() }
+        $markerBaseKey.Dispose()
+    }
+    Clear-EdgeAgentInstallerRecoveryMarker `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser) `
+        -RegistryPath $testDerivedServiceMarkerPath
     [IO.File]::WriteAllBytes($testExecutablePath, [byte[]]@())
 
     $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -81,7 +363,6 @@ try {
 
     Assert-Equal -Expected 'auto' -Actual (Get-EdgeAgentServiceStartupType) -Message 'Служба має запускатися автоматично.'
     Assert-Equal -Expected 'auto' -Actual (Get-EdgeAgentServiceStartupType -SkipStart) -Message '-SkipStart має пропускати лише негайний запуск служби.'
-
     $startupTypeAttempts = [System.Collections.Generic.List[string]]::new()
     $incompleteRollbackFailures = [System.Collections.Generic.List[string]]::new()
     $incompleteRollbackFailures.Add('Не вдалося підтвердити зупинку Windows-служби перед rollback.')
@@ -114,6 +395,171 @@ try {
     Assert-Equal -Expected 2 -Actual $startupTypeAttempts.Count -Message 'Невдале відновлення попереднього типу має викликати fail-closed fallback.'
     Assert-Equal -Expected 'disabled' -Actual $startupTypeAttempts[1] -Message 'Fallback має вимкнути автозапуск.'
     Assert-Equal -Expected $true -Actual ($startupRestoreFailures.Count -gt 0) -Message 'Невдалу спробу відновлення попереднього типу треба зафіксувати.'
+    $readyStatus = New-TestEdgeAgentStatus
+    Assert-Equal -Expected $true -Actual (Test-EdgeAgentReadiness -Response $readyStatus) -Message 'Готовність має підтверджувати identity, streaming та доступний аудіовихід.'
+    Assert-Equal -Expected $false -Actual (Test-EdgeAgentReadiness -Response $null) -Message 'Відсутній статус не має підтверджувати готовність.'
+    foreach ($unreadyStatus in @(
+        (New-TestEdgeAgentStatus -ConnectionState 'Connecting'),
+        (New-TestEdgeAgentStatus -DeviceId ([guid]::Empty)),
+        (New-TestEdgeAgentStatus -LocationId ([guid]::Empty)),
+        (New-TestEdgeAgentStatus -AudioState 'unavailable'),
+        (New-TestEdgeAgentStatus -AudioEndpointId '')
+    )) {
+        Assert-Equal -Expected $false -Actual (Test-EdgeAgentReadiness -Response $unreadyStatus) -Message 'Неповна або недоступна identity/audio не має підтверджувати готовність.'
+    }
+    $playingStatus = New-TestEdgeAgentStatus -AudioState 'playing'
+    Assert-Equal -Expected $true -Actual (Test-EdgeAgentReadiness -Response $playingStatus) -Message 'Активне відтворення після запуску служби не має помилково провокувати rollback.'
+    $installerGateName = "Local\KGTA.Alert.InstallerGate.Tests.$testId"
+    $installerGate = Enter-EdgeAgentInstallerMaintenanceGate -Name $installerGateName -ServiceSid $currentIdentitySid
+    $gateProbe = [System.Threading.Mutex]::OpenExisting($installerGateName)
+    try {
+        try {
+            Assert-Equal -Expected $false -Actual ([KgtaAlertTests.NamedPipeEmulator]::CanAcquireMutexFromWorkerThread($installerGateName)) -Message 'Глобальний startup gate має залишатися зайнятим протягом інсталяції.'
+            Assert-Throws { Enter-EdgeAgentInstallerMaintenanceGate -Name $installerGateName -ServiceSid $currentIdentitySid } 'Другий installer не має привласнювати вже створений gate.'
+        } finally {
+            Exit-EdgeAgentInstallerMaintenanceGate -Gate $installerGate
+        }
+        Assert-Equal -Expected $true -Actual ([KgtaAlertTests.NamedPipeEmulator]::CanAcquireMutexFromWorkerThread($installerGateName)) -Message 'Після інсталяції startup gate має бути звільнений.'
+    } finally {
+        $gateProbe.Dispose()
+    }
+    $maintenancePipeName = "KGTA.Alert.Maintenance.Tests.$testId"
+    $script:originalCimFunction = Get-Item Function:\global:Get-CimInstance -ErrorAction SilentlyContinue
+    $script:expectedEdgeAgentServiceProcessId = [uint32]($PID + 1)
+    function global:Get-CimInstance {
+        param([string]$ClassName, [string]$Filter)
+        if ($ClassName -ne 'Win32_Service' -or $Filter -ne "Name='KGTA.Alert.EdgeAgent'") {
+            throw 'Тест отримав неочікуваний запит CIM.'
+        }
+        return [pscustomobject]@{ ProcessId = $script:expectedEdgeAgentServiceProcessId }
+    }
+    $spoofedPipeName = "$maintenancePipeName.Spoofed"
+    $spoofedServer = [KgtaAlertTests.NamedPipeEmulator]::ObserveDisconnectAsync($spoofedPipeName)
+    Assert-Throws { Invoke-EdgeAgentPipeRequest -Name $spoofedPipeName -Operation 'get_status' } 'Відповідь процесу, що не є службою, має відхилятися.'
+    Assert-Equal -Expected 'disconnected-without-request' -Actual $spoofedServer.GetAwaiter().GetResult() -Message 'Клієнт не має надсилати команду до перевірки процесу сервера.'
+    $script:expectedEdgeAgentServiceProcessId = [uint32]$PID
+
+    $leaseId = [guid]::NewGuid()
+    $beginResponse = (@{
+        schemaVersion = 1
+        succeeded = $true
+        status = $null
+        diagnosticCode = $null
+        leaseId = $leaseId
+    } | ConvertTo-Json -Compress)
+    $beginServer = [KgtaAlertTests.NamedPipeEmulator]::ReplyOnceAsync($maintenancePipeName, $beginResponse, $false)
+    $receivedLeaseId = Begin-EdgeAgentMaintenance -Name $maintenancePipeName
+    $beginRequest = $beginServer.GetAwaiter().GetResult() | ConvertFrom-Json
+    Assert-Equal -Expected 'begin_maintenance' -Actual $beginRequest.operation -Message 'Оновлення має атомарно запитати maintenance gate.'
+    Assert-Equal -Expected $leaseId -Actual $receivedLeaseId -Message 'Встановник має зберегти lease для скасування обслуговування.'
+
+    $releasePipeName = "$maintenancePipeName.Release"
+    $releaseResponse = '{"schemaVersion":1,"succeeded":true,"status":null,"diagnosticCode":null}'
+    $releaseServer = [KgtaAlertTests.NamedPipeEmulator]::ReplyOnceAsync($releasePipeName, $releaseResponse, $false)
+    $releaseResult = Release-EdgeAgentMaintenance -Name $releasePipeName -LeaseId $leaseId
+    $releaseRequest = $releaseServer.GetAwaiter().GetResult() | ConvertFrom-Json
+    Assert-Equal -Expected 'release_maintenance' -Actual $releaseRequest.operation -Message 'Встановник має явно скасовувати maintenance lease до зупинки служби.'
+    Assert-Equal -Expected $leaseId -Actual ([guid]$releaseRequest.leaseId) -Message 'Скасування має відповідати отриманому lease.'
+    Assert-Equal -Expected $true -Actual $releaseResult.succeeded -Message 'Служба має підтвердити скасування lease.'
+    Assert-Equal -Expected $true -Actual (Assert-EdgeAgentMaintenanceLeaseReleased -Response $releaseResult).succeeded -Message 'Позитивну відповідь звільнення lease має бути прийнято.'
+
+    $backupPipeName = "$maintenancePipeName.Backup"
+    $backupId = [guid]::NewGuid()
+    $databasePathHash = 'A' * 64
+    $backupResponseJson = (@{
+        schemaVersion = 1
+        succeeded = $true
+        status = $null
+        diagnosticCode = $null
+        backupId = $backupId
+        databasePathHash = $databasePathHash
+        maintenanceLeaseId = $leaseId
+    } | ConvertTo-Json -Compress)
+    $backupServer = [KgtaAlertTests.NamedPipeEmulator]::ReplyOnceAsync($backupPipeName, $backupResponseJson, $false)
+    $backupResponse = Backup-EdgeAgentDatabase -Name $backupPipeName -LeaseId $leaseId
+    $backupRequest = $backupServer.GetAwaiter().GetResult() | ConvertFrom-Json
+    Assert-Equal -Expected 'backup_database' -Actual $backupRequest.operation -Message 'Резервну копію має створити запущена служба.'
+    Assert-Equal -Expected $leaseId -Actual ([guid]$backupRequest.leaseId) -Message 'Запит резервного копіювання має містити активний lease.'
+    $clientCanSetDatabasePath = $backupRequest.PSObject.Properties.Name -contains 'databasePath'
+    Assert-Equal -Expected $false -Actual $clientCanSetDatabasePath -Message 'Клієнт не може задавати службі шлях бази даних.'
+    $validatedBackupId = Assert-EdgeAgentDatabaseBackupResponse `
+        -Response $backupResponse -LeaseId $leaseId -ExpectedDatabasePathHash $databasePathHash
+    Assert-Equal -Expected $backupId -Actual $validatedBackupId -Message 'Installer має перевіряти ID, lease і configured DatabasePath у відповіді служби.'
+    Assert-Throws {
+        Assert-EdgeAgentDatabaseBackupResponse -Response $backupResponse -LeaseId $leaseId `
+            -ExpectedDatabasePathHash ('B' * 64)
+    } 'Backup від іншого DatabasePath має відхилятися.'
+    Assert-Throws {
+        Assert-EdgeAgentDatabaseBackupResponse -Response $backupResponse -LeaseId ([guid]::NewGuid()) `
+            -ExpectedDatabasePathHash $databasePathHash
+    } 'Backup з іншого maintenance lease має відхилятися.'
+    Assert-Throws {
+        Assert-EdgeAgentMaintenanceLeaseReleased -Response ([pscustomobject]@{ succeeded = $false; diagnosticCode = 'maintenance_lease_invalid' })
+    } 'Негативну відповідь звільнення lease не можна вважати успішною.'
+
+    $previousLeaseId = [guid]::NewGuid()
+    $newLeaseId = [guid]::NewGuid()
+    $script:recoveryReleaseAttempt = $false
+    $recoveredLeaseId = Start-EdgeAgentMaintenanceWithRecovery `
+        -PreviousLeaseId $previousLeaseId `
+        -ReleaseAction { param($oldLeaseId) $script:recoveryReleaseAttempt = $oldLeaseId -eq $previousLeaseId; [pscustomobject]@{ succeeded = $false; diagnosticCode = 'maintenance_lease_invalid' } } `
+        -BeginAction { $newLeaseId }
+    Assert-Equal -Expected $true -Actual $script:recoveryReleaseAttempt -Message 'Наступний запуск має перевірити попередній lease перед отриманням нового.'
+    Assert-Equal -Expected $newLeaseId -Actual $recoveredLeaseId -Message 'Відновлення може продовжитися лише з новим підтвердженим lease.'
+    $recoveredAfterLostReply = Start-EdgeAgentMaintenanceWithRecovery `
+        -PreviousLeaseId $previousLeaseId `
+        -ReleaseAction { param($oldLeaseId) throw 'release reply lost after server processing' } `
+        -BeginAction { $newLeaseId }
+    Assert-Equal -Expected $newLeaseId -Actual $recoveredAfterLostReply -Message 'Після втраченої відповіді новий Begin має підтвердити, що попередній lease більше не блокує систему.'
+    Assert-Throws {
+        Start-EdgeAgentMaintenanceWithRecovery `
+            -PreviousLeaseId $previousLeaseId `
+            -ReleaseAction { param($oldLeaseId) throw 'release pipe unavailable' } `
+            -BeginAction { throw 'maintenance_already_active' }
+    } 'Якщо старий lease не звільнився й новий lease не видано, відновлення має зупинитися.'
+
+    $legacyPipeName = "$maintenancePipeName.Legacy"
+    $legacyResponse = '{"schemaVersion":1,"succeeded":false,"status":null,"diagnosticCode":"invalid_request"}'
+    $legacyServer = [KgtaAlertTests.NamedPipeEmulator]::ReplyOnceAsync($legacyPipeName, $legacyResponse, $false)
+    $legacyError = $null
+    try {
+        Begin-EdgeAgentMaintenance -Name $legacyPipeName
+    } catch {
+        $legacyError = $_.Exception.Message
+    }
+    $null = $legacyServer.GetAwaiter().GetResult()
+    if ($legacyError -notmatch 'припиніть надсилання команд START') {
+        throw 'Стара версія служби має пояснити безпечну процедуру першого оновлення.'
+    }
+
+    $droppedPipeName = "$maintenancePipeName.Dropped"
+    $droppedServer = [KgtaAlertTests.NamedPipeEmulator]::ReplyOnceAsync($droppedPipeName, '', $true)
+    Assert-Throws { Begin-EdgeAgentMaintenance -Name $droppedPipeName } 'Втрата відповіді maintenance pipe має скасувати встановлення до Stop-Service.'
+    $droppedRequest = $droppedServer.GetAwaiter().GetResult() | ConvertFrom-Json
+    Assert-Equal -Expected 'begin_maintenance' -Actual $droppedRequest.operation -Message 'Навіть при втраті відповіді встановник не повинен пропустити gate.'
+    $installerText = Get-Content -LiteralPath $installerPath -Raw
+    $installerTokens = $null
+    $installerParseErrors = $null
+    $installerAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $installerText,
+        [ref]$installerTokens,
+        [ref]$installerParseErrors
+    )
+    $pathValidationFunction = $installerAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Test-IsFullyQualifiedPath'
+    }, $true)
+    if (-not $pathValidationFunction) { throw 'Інсталятор має визначати сумісну з PowerShell 5.1 перевірку абсолютного шляху.' }
+    Invoke-Expression $pathValidationFunction.Extent.Text
+    Assert-Equal -Expected $true -Actual (Test-IsFullyQualifiedPath 'C:\foo') -Message 'Абсолютний шлях диска має прийматися.'
+    Assert-Equal -Expected $true -Actual (Test-IsFullyQualifiedPath '\\server\share\audio.db') -Message 'Абсолютний UNC-шлях має прийматися.'
+    Assert-Equal -Expected $false -Actual (Test-IsFullyQualifiedPath 'C:relative') -Message 'Шлях відносно поточного каталогу диска має відхилятися.'
+    Assert-Equal -Expected $false -Actual (Test-IsFullyQualifiedPath '\rooted-relative') -Message 'Шлях від кореня поточного диска має відхилятися.'
+    if ($installerText -notmatch 'Test-EdgeAgentReadiness\s+-Response\s+\$statusResponse' -or
+        $installerText -notmatch 'AddSeconds\(30\)') {
+        throw 'Health check має чекати підтвердженої готовності пристрою, мережі й аудіовиходу.'
+    }
 
     $simulatedInstall = [pscustomobject]@{ ServiceCreated = $false; PackageSwitched = $false; RolledBack = $false }
     Assert-Throws {
@@ -130,6 +576,65 @@ try {
     Assert-Equal -Expected $true -Actual $simulatedInstall.RolledBack -Message 'Помилка ACL після sc.exe create має виконати rollback.'
     Assert-Equal -Expected $false -Actual $simulatedInstall.ServiceCreated -Message 'Rollback після помилки ACL має видалити створену службу.'
     Assert-Equal -Expected $false -Actual $simulatedInstall.PackageSwitched -Message 'Rollback після помилки ACL має відновити попередній пакет.'
+
+    $failedStopRollback = [pscustomobject]@{
+        WaitAttempted = $false
+        GatePreserved = $false
+        AclRestored = $false
+        PackageRestored = $false
+    }
+    try {
+        Stop-EdgeAgentServiceForRollback `
+            -StopAction { throw 'simulated Stop-Service failure' } `
+            -WaitUntilStoppedAction { $failedStopRollback.WaitAttempted = $true }
+        $failedStopRollback.AclRestored = $true
+        $failedStopRollback.PackageRestored = $true
+    } catch {
+        $failedStopRollback.GatePreserved = $true
+    }
+    Assert-Equal -Expected $false -Actual $failedStopRollback.WaitAttempted -Message 'Після невдалого Stop-Service очікування Stopped не має запускатися.'
+    Assert-Equal -Expected $true -Actual $failedStopRollback.GatePreserved -Message 'Помилка зупинки має залишати startup gate утриманим.'
+    Assert-Equal -Expected $false -Actual $failedStopRollback.AclRestored -Message 'При невідомому стані служби rollback не має змінювати ACL.'
+    Assert-Equal -Expected $false -Actual $failedStopRollback.PackageRestored -Message 'При невідомому стані служби rollback не має замінювати пакет.'
+
+    $failedWaitRollback = [pscustomobject]@{
+        GatePreserved = $false
+        AclRestored = $false
+        PackageRestored = $false
+    }
+    try {
+        Stop-EdgeAgentServiceForRollback `
+            -StopAction { } `
+            -WaitUntilStoppedAction { throw 'simulated Stopped timeout' }
+        $failedWaitRollback.AclRestored = $true
+        $failedWaitRollback.PackageRestored = $true
+    } catch {
+        $failedWaitRollback.GatePreserved = $true
+    }
+    Assert-Equal -Expected $true -Actual $failedWaitRollback.GatePreserved -Message 'Тайм-аут очікування Stopped має залишати startup gate утриманим.'
+    Assert-Equal -Expected $false -Actual $failedWaitRollback.AclRestored -Message 'Після тайм-ауту Stopped rollback не має змінювати ACL.'
+    Assert-Equal -Expected $false -Actual $failedWaitRollback.PackageRestored -Message 'Після тайм-ауту Stopped rollback не має замінювати пакет.'
+
+    $missingServiceName = "KGTA.Alert.Tests.$testId"
+    $missingFirstInstallService = Get-EdgeAgentServiceForRollback `
+        -AllowMissing $true `
+        -GetServiceAction { Get-Service -Name $missingServiceName -ErrorAction Stop }
+    Assert-Equal -Expected $null -Actual $missingFirstInstallService -Message 'Відсутню службу можна вважати нормальною лише під час першої інсталяції.'
+    Assert-Throws {
+        Get-EdgeAgentServiceForRollback `
+            -AllowMissing $false `
+            -GetServiceAction { Get-Service -Name $missingServiceName -ErrorAction Stop }
+    } 'Якщо служба існувала до оновлення, її зникнення не має дозволяти rollback.'
+    Assert-Throws {
+        Get-EdgeAgentServiceForRollback `
+            -AllowMissing $true `
+            -GetServiceAction { throw 'simulated Service Control Manager read failure' }
+    } 'Помилка читання Service Control Manager не має сприйматися як відсутня служба.'
+    Assert-Throws {
+        Get-EdgeAgentServiceForRollback `
+            -AllowMissing $false `
+            -GetServiceAction { $null }
+    } 'Невизначений результат запиту про наявну службу має завершувати rollback помилкою.'
 
     $saveFailureState = [pscustomobject]@{ PackageSwitched = $false; ServiceRunning = $false }
     Assert-Throws {
@@ -191,8 +696,34 @@ try {
 
     $backupAclParent = Join-Path ([IO.Path]::GetTempPath()) "KGTA backup ACL parent $testId"
     $backupAclDirectory = Join-Path $backupAclParent 'backups'
+    $backupStagingDirectory = Join-Path $backupAclParent 'staging'
     $databaseBackupFile = Join-Path $backupAclDirectory 'edge-agent-test.db'
-    New-Item -ItemType Directory -Path $backupAclParent, $backupAclDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $backupAclParent, $backupAclDirectory, $backupStagingDirectory -Force | Out-Null
+    $testServiceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    Set-EdgeAgentDatabaseBackupStagingAcl -Path $backupStagingDirectory -ServiceSid $testServiceSid | Out-Null
+    $stagingAcl = Get-Acl -LiteralPath $backupStagingDirectory
+    $stagingRules = @($stagingAcl.Access)
+    $serviceDirectoryRule = $stagingRules | Where-Object {
+        $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $testServiceSid.Value -and
+        $_.InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None
+    } | Select-Object -First 1
+    $serviceFileRule = $stagingRules | Where-Object {
+        $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $testServiceSid.Value -and
+        $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::InheritOnly
+    } | Select-Object -First 1
+    if (-not $stagingAcl.AreAccessRulesProtected -or -not $serviceDirectoryRule -or -not $serviceFileRule -or
+        ($serviceDirectoryRule.FileSystemRights -band ([Security.AccessControl.FileSystemRights]::Delete -bor
+            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles))) {
+        throw 'Service SID має створювати backup-файли без права видаляти або замінювати staging-каталог.'
+    }
+    $stagingFilePath = Join-Path $backupStagingDirectory 'edge-agent-test.db'
+    Set-Content -LiteralPath $stagingFilePath -Value 'backup'
+    $stagingFileAcl = Get-Acl -LiteralPath $stagingFilePath
+    if (-not ($stagingFileAcl.Access | Where-Object {
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $testServiceSid.Value
+        })) {
+        throw 'Створений service SID файл резервної копії має успадкувати доступ до запису.'
+    }
     $backupWriter = [IO.File]::Open($databaseBackupFile, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
     $backupHandles = @()
     try {
@@ -235,28 +766,6 @@ try {
     }
 
     $installerText = Get-Content -LiteralPath $installerPath -Raw
-    $startupRollbackCalls = [regex]::Matches(
-        $installerText,
-        'Restore-EdgeAgentServiceStartupAfterRollback\s+`\s*\r?\n\s*-PreviousStartupType\s+\$previousStartupType')
-    $stageRecoveryStart = $installerText.IndexOf('& sc.exe config $serviceName start= $previousStartupType', [StringComparison]::Ordinal)
-    $transactionRollbackStart = $installerText.IndexOf('Restore-EdgeAgentServiceStartupAfterRollback', [StringComparison]::Ordinal)
-    if ($startupRollbackCalls.Count -ne 3 -or $stageRecoveryStart -lt 0 -or
-        $stageRecoveryStart -gt $transactionRollbackStart) {
-        throw 'Усі три rollback-гілки мають відновлювати тип запуску лише через fail-closed перевірку.'
-    }
-    $finalizationRollbackStart = $installerText.IndexOf('$finalizationFailure = $_', [StringComparison]::Ordinal)
-    $finalizationRollbackEnd = $installerText.IndexOf('throw "Фіналізація інсталяції не пройшла;', $finalizationRollbackStart, [StringComparison]::Ordinal)
-    $finalizationRollbackText = $installerText.Substring(
-        $finalizationRollbackStart,
-        $finalizationRollbackEnd - $finalizationRollbackStart)
-    $shortcutRollbackPosition = $finalizationRollbackText.IndexOf('Restore-EdgeAgentOperatorShortcut', [StringComparison]::Ordinal)
-    $operatorRollbackPosition = $finalizationRollbackText.IndexOf('Remove-EdgeAgentOperatorGroupMembers', [StringComparison]::Ordinal)
-    $startupRollbackPosition = $finalizationRollbackText.IndexOf('Restore-EdgeAgentServiceStartupAfterRollback', [StringComparison]::Ordinal)
-    $rollbackFailureCheckPosition = $finalizationRollbackText.IndexOf('if ($rollbackFailures.Count -gt 0)', [StringComparison]::Ordinal)
-    if ($shortcutRollbackPosition -lt 0 -or $operatorRollbackPosition -lt $shortcutRollbackPosition -or
-        $startupRollbackPosition -lt $operatorRollbackPosition -or $rollbackFailureCheckPosition -lt $startupRollbackPosition) {
-        throw 'Фінальний тип запуску можна відновлювати лише після rollback пакета, ярлика й членства операторів.'
-    }
     $rollbackConfigurationPath = Join-Path ([IO.Path]::GetTempPath()) "KGTA config rollback $testId.json"
     try {
         Set-Content -LiteralPath $rollbackConfigurationPath -Value 'configuration created by first install'
@@ -287,7 +796,7 @@ try {
     if ($healthRollbackText -notmatch '(?s)Stop-Service\s+-Name\s+\$serviceName\s+-Force\s+-ErrorAction\s+Stop.*?WaitForStatus\s*\(\s*\[System\.ServiceProcess\.ServiceControllerStatus\]::Stopped\s*,\s*\[TimeSpan\]::FromSeconds\(30\)\s*\).*?\$serviceStopped\s*=\s*\$true') {
         throw 'Health-check rollback має вимагати підтвердженої зупинки служби з обмеженим часом очікування.'
     }
-    if ($healthRollbackText -notmatch '(?s)catch\s*\{\s*\$serviceStopped\s*=\s*\$false\s*\$rollbackFailures\.Add\("Не вдалося підтвердити зупинку Windows-служби перед rollback:') {
+    if ($healthRollbackText -notmatch '(?s)catch\s*\{\s*\$serviceStopped\s*=\s*\$false\s*(?:\$preserveInstallerMaintenanceGate\s*=\s*\$true\s*)?\$rollbackFailures\.Add\("Не вдалося підтвердити зупинку Windows-служби перед rollback:') {
         throw 'Помилка Stop-Service або WaitForStatus має блокувати rollback файлів і конфігурації.'
     }
     $existingServiceRestore = $healthRollbackText.IndexOf('if ($existingService -and $rollbackFailures.Count -eq 0)', [StringComparison]::Ordinal)
@@ -350,6 +859,20 @@ try {
     $finalizationPackageRestorePosition = $finalizationRollbackText.IndexOf(
         'Restore-EdgeAgentPackage -Deployment $packageDeployment',
         [StringComparison]::Ordinal)
+    $startupRollbackCalls = [regex]::Matches(
+        $installerText,
+        'Restore-EdgeAgentServiceStartupAfterRollback\s+`\s*\r?\n\s*-PreviousStartupType\s+\$previousStartupType')
+    $finalizationShortcutPosition = $finalizationRollbackText.IndexOf('Restore-EdgeAgentOperatorShortcut', [StringComparison]::Ordinal)
+    $finalizationOperatorPosition = $finalizationRollbackText.IndexOf('Remove-EdgeAgentOperatorGroupMembers', [StringComparison]::Ordinal)
+    $finalizationStartupPosition = $finalizationRollbackText.IndexOf('Restore-EdgeAgentServiceStartupAfterRollback', [StringComparison]::Ordinal)
+    if ($startupRollbackCalls.Count -ne 3 -or
+        $finalizationShortcutPosition -lt 0 -or
+        $finalizationOperatorPosition -le $finalizationShortcutPosition -or
+        $finalizationStartupPosition -le $finalizationOperatorPosition -or
+        $finalizationRollbackEnd -le $finalizationStartupPosition -or
+        -not $finalizationRollbackText.Contains('} elseif (-not $existingService) {')) {
+        throw 'Автозапуск дозволено відновлювати лише після всіх кроків rollback; при помилці служба має залишитися вимкненою.'
+    }
     if ($finalizationRollbackEnd -lt $finalizationRollbackStart -or
         $finalizationServiceStopPosition -lt 0 -or
         $finalizationConfigurationCleanupPosition -le $finalizationServiceStopPosition -or
@@ -365,12 +888,57 @@ try {
     $installSnapshotPosition = $installerText.IndexOf('$installDirectoryAclSnapshot = Get-EdgeAgentAclSnapshot', [StringComparison]::Ordinal)
     $packageStagePosition = $installerText.IndexOf('Install-EdgeAgentPackageStage -Deployment $packageDeployment', [StringComparison]::Ordinal)
     $installTransactionPosition = $installerText.IndexOf('Invoke-EdgeAgentInstallTransaction -Action', [StringComparison]::Ordinal)
+    $transactionRollbackPosition = $installerText.IndexOf('} -Rollback {', $installTransactionPosition, [StringComparison]::Ordinal)
+    $rollbackStopHelperPosition = $installerText.IndexOf('Stop-EdgeAgentServiceForRollback', $transactionRollbackPosition, [StringComparison]::Ordinal)
+    $rollbackServiceQueryPosition = $installerText.IndexOf('Get-EdgeAgentServiceForRollback', $transactionRollbackPosition, [StringComparison]::Ordinal)
+    $rollbackStopWaitPosition = $installerText.IndexOf('WaitForStatus(', $rollbackStopHelperPosition, [StringComparison]::Ordinal)
+    $rollbackQueryFailureGatePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $rollbackServiceQueryPosition, [StringComparison]::Ordinal)
+    $rollbackQueryFailureAbortPosition = $installerText.IndexOf('Rollback зупинено, бо не вдалося перевірити стан Windows-служби', $rollbackQueryFailureGatePosition, [StringComparison]::Ordinal)
+    $rollbackStopFailureGatePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $rollbackStopHelperPosition, [StringComparison]::Ordinal)
+    $rollbackStopFailureAbortPosition = $installerText.IndexOf('Rollback зупинено', $rollbackStopHelperPosition, [StringComparison]::Ordinal)
     $dataAclRollbackPosition = $installerText.IndexOf('Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot', [StringComparison]::Ordinal)
     $installAclRollbackPosition = $installerText.IndexOf('Restore-EdgeAgentAclSnapshot -Snapshot $installDirectoryAclSnapshot', [StringComparison]::Ordinal)
+    $serviceQueryCallCount = [regex]::Matches($installerText, '\$[A-Za-z]+Service\s*=\s*Get-EdgeAgentServiceForRollback').Count
+    $serviceQueryActionCount = [regex]::Matches($installerText, '-GetServiceAction\s*\{\s*Get-Service\s+-Name\s+\$serviceName\s+-ErrorAction\s+Stop\s*\}').Count
+    $healthRollbackStart = $installerText.IndexOf('if (-not $SkipStart) {', [StringComparison]::Ordinal)
+    $healthServiceQueryPosition = $installerText.IndexOf('Get-EdgeAgentServiceForRollback', $healthRollbackStart, [StringComparison]::Ordinal)
+    $healthQueryFailureGatePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $healthServiceQueryPosition, [StringComparison]::Ordinal)
+    $healthQueryFailureRecordPosition = $installerText.IndexOf('$rollbackFailures.Add("Не вдалося підтвердити зупинку Windows-служби перед rollback:', $healthQueryFailureGatePosition, [StringComparison]::Ordinal)
+    $healthAclRollbackPosition = $installerText.IndexOf('Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot', $healthServiceQueryPosition, [StringComparison]::Ordinal)
+    $finalServiceQueryPosition = $installerText.LastIndexOf('Get-EdgeAgentServiceForRollback', [StringComparison]::Ordinal)
+    $finalQueryFailureGatePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $finalServiceQueryPosition, [StringComparison]::Ordinal)
+    $finalQueryAclRollbackPosition = $installerText.LastIndexOf('Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot', [StringComparison]::Ordinal)
+    $finalShortcutRollbackPosition = $installerText.LastIndexOf('Restore-EdgeAgentOperatorShortcut -ShortcutPath', [StringComparison]::Ordinal)
+    $finalGroupRollbackPosition = $installerText.LastIndexOf('Remove-EdgeAgentOperatorGroupMembers', [StringComparison]::Ordinal)
+    $finalShortcutGuardPosition = $installerText.LastIndexOf('if ($rollbackFailures.Count -eq 0) {', $finalShortcutRollbackPosition, [StringComparison]::Ordinal)
+    $finalGroupGuardPosition = $installerText.LastIndexOf('if ($rollbackFailures.Count -eq 0 -and $addedOperatorGroupMembers.Count -gt 0)', $finalGroupRollbackPosition, [StringComparison]::Ordinal)
     if ($dataSnapshotPosition -lt 0 -or $installSnapshotPosition -lt $dataSnapshotPosition -or
         $packageStagePosition -lt $installSnapshotPosition -or $installTransactionPosition -lt $packageStagePosition -or
+        $transactionRollbackPosition -lt $installTransactionPosition -or
+        $rollbackServiceQueryPosition -lt $transactionRollbackPosition -or
+        $rollbackQueryFailureGatePosition -lt $rollbackServiceQueryPosition -or
+        $rollbackQueryFailureAbortPosition -lt $rollbackQueryFailureGatePosition -or
+        $rollbackStopHelperPosition -lt $rollbackQueryFailureAbortPosition -or
+        $rollbackStopHelperPosition -lt $transactionRollbackPosition -or
+        $rollbackStopWaitPosition -lt $rollbackStopHelperPosition -or
+        $rollbackStopFailureGatePosition -lt $rollbackStopWaitPosition -or
+        $rollbackStopFailureAbortPosition -lt $rollbackStopFailureGatePosition -or
+        $dataAclRollbackPosition -lt $rollbackStopFailureAbortPosition -or
+        $serviceQueryCallCount -ne 5 -or $serviceQueryActionCount -ne 6 -or
+        $installerText -match 'Get-Service\s+-Name\s+\$serviceName\s+-ErrorAction\s+SilentlyContinue' -or
+        $healthServiceQueryPosition -lt $healthRollbackStart -or
+        $healthQueryFailureGatePosition -lt $healthServiceQueryPosition -or
+        $healthQueryFailureRecordPosition -lt $healthQueryFailureGatePosition -or
+        $healthAclRollbackPosition -lt $healthQueryFailureRecordPosition -or
+        $finalServiceQueryPosition -lt 0 -or
+        $finalQueryFailureGatePosition -lt $finalServiceQueryPosition -or
+        $finalQueryAclRollbackPosition -lt $finalQueryFailureGatePosition -or
+        $finalShortcutGuardPosition -lt $finalQueryFailureGatePosition -or
+        $finalShortcutGuardPosition -gt $finalShortcutRollbackPosition -or
+        $finalGroupGuardPosition -lt $finalQueryFailureGatePosition -or
+        $finalGroupGuardPosition -gt $finalGroupRollbackPosition -or
         $dataAclRollbackPosition -lt $installTransactionPosition -or $installAclRollbackPosition -lt $dataAclRollbackPosition) {
-        throw 'До зміни ACL потрібно зберегти їхній стан і відновлювати його в транзакційному rollback.'
+        throw 'Rollback має перевіряти стан служби без приглушення помилок SCM і утримувати startup gate до безпечного відновлення.'
     }
     $failureFlagCommands = [regex]::Matches($installerText, '(?m)^\s*&\s*sc\.exe\s+failureflag\s+\$serviceName\s+1\s+\|\s+Out-Null\s*$')
     if ($installerText -notmatch '\$startupType\s*=\s*Get-EdgeAgentServiceStartupType\s+-SkipStart:\$SkipStart' -or
@@ -383,11 +951,84 @@ try {
         $installerText -notmatch 'start=\s+\$previousStartupType') {
         throw 'Невдалий health check має відновлювати попередній пакет і конфігурацію служби.'
     }
-    $backupInvocation = $installerText.IndexOf('--backup-database', [StringComparison]::Ordinal)
+    $serviceStart = $installerText.IndexOf('Start-Service -Name $serviceName', $installerText.IndexOf('if (-not $SkipStart) {', [StringComparison]::Ordinal), [StringComparison]::Ordinal)
+    $postStartLease = $installerText.IndexOf('$maintenanceLeaseId = Start-EdgeAgentMaintenanceLease -Name $pipeName', $serviceStart, [StringComparison]::Ordinal)
+    $readinessCheck = $installerText.IndexOf('$statusResponse = Get-EdgeAgentStatus $pipeName', $serviceStart, [StringComparison]::Ordinal)
+    $successfulRelease = $installerText.LastIndexOf('Release-EdgeAgentMaintenance -Name $pipeName -LeaseId $maintenanceLeaseId', [StringComparison]::Ordinal)
+    $deploymentCleanup = $installerText.IndexOf('Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment', [StringComparison]::Ordinal)
+    $installerGateAcquire = $installerText.IndexOf('$installerMaintenanceGate = Enter-EdgeAgentInstallerMaintenanceGate', [StringComparison]::Ordinal)
+    $installerGateRelease = $installerText.LastIndexOf('Exit-EdgeAgentInstallerMaintenanceGate -Gate $installerMaintenanceGate', [StringComparison]::Ordinal)
+    $rollbackGateRelease = $installerText.IndexOf('Exit-EdgeAgentInstallerMaintenanceGate -Gate $installerMaintenanceGate', $serviceStart, [StringComparison]::Ordinal)
+    $rollbackServiceStart = $installerText.IndexOf('Start-Service -Name $serviceName', $serviceStart + 1, [StringComparison]::Ordinal)
+    $stageFailureAnchor = $installerText.IndexOf('$stageFailure = $_', [StringComparison]::Ordinal)
+    $stageRollbackGateRelease = $installerText.IndexOf('Exit-EdgeAgentInstallerMaintenanceGate -Gate $installerMaintenanceGate', $stageFailureAnchor, [StringComparison]::Ordinal)
+    $stageRollbackServiceStart = $installerText.IndexOf('Start-Service -Name $serviceName', $stageFailureAnchor, [StringComparison]::Ordinal)
+    $installerGateSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Core\InstallerMaintenanceGate.cs') -Raw
+    $installerGateModuleText = Get-Content -LiteralPath $installerGateModulePath -Raw
+    $recoveryMarkerModuleText = Get-Content -LiteralPath $installerRecoveryMarkerModulePath -Raw
+    $recoveryMarkerWritePosition = $installerText.IndexOf('Set-EdgeAgentInstallerRecoveryMarker', [StringComparison]::Ordinal)
+    $recoveryMarkerStagePosition = $installerText.IndexOf('New-EdgeAgentPackageStage', [StringComparison]::Ordinal)
+    $recoveryMarkerClearPosition = $installerText.LastIndexOf('Clear-EdgeAgentInstallerRecoveryMarker', [StringComparison]::Ordinal)
+    $recoveryMarkerGateReleasePosition = $installerText.LastIndexOf('Exit-EdgeAgentInstallerMaintenanceGate -Gate $installerMaintenanceGate', [StringComparison]::Ordinal)
+    $finalReleaseMarkerPreservePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $successfulRelease, [StringComparison]::Ordinal)
+    $finalReleaseFailureThrowPosition = $installerText.IndexOf('maintenance lease не звільнено або його стан невідомий', $finalReleaseMarkerPreservePosition, [StringComparison]::Ordinal)
+    $finalReleaseValidationPosition = $installerText.IndexOf('Assert-EdgeAgentMaintenanceLeaseReleased -Response $releaseResponse', $successfulRelease, [StringComparison]::Ordinal)
+    $stageReleasePosition = $installerText.IndexOf('Assert-EdgeAgentMaintenanceLeaseReleased -Response $releaseResponse', $stageFailureAnchor, [StringComparison]::Ordinal)
+    $stageReleaseCallPosition = $installerText.IndexOf('Release-EdgeAgentMaintenance -Name $pipeName -LeaseId $maintenanceLeaseId', $stageFailureAnchor, [StringComparison]::Ordinal)
+    $stageReleaseMarkerPreservePosition = $installerText.IndexOf('$preserveInstallerMaintenanceGate = $true', $stageReleasePosition, [StringComparison]::Ordinal)
+    if ($installerGateAcquire -lt 0 -or $installerGateAcquire -gt $serviceStart -or
+        $installerGateRelease -lt $deploymentCleanup -or
+        $installerGateSource -match 'Mutex|Global\\KGTA\.Alert\.EdgeAgent\.InstallationMaintenance\.v1' -or
+        $installerGateSource -notmatch 'MaintenanceMarkerValueName' -or
+        $installerGateSource -notmatch 'RecoveryMarkerValueName' -or
+        $installerGateModuleText -notmatch 'Global\\KGTA\.Alert\.EdgeAgent\.InstallationMaintenance\.v1' -or
+        $recoveryMarkerModuleText -notmatch 'RegistryRights\]::ReadKey' -or
+        $recoveryMarkerModuleText -notmatch 'MaintenanceActive' -or
+        $recoveryMarkerModuleText -notmatch 'MaintenanceLeaseId' -or
+        $recoveryMarkerModuleText -notmatch 'sc\.exe.*showsid' -or
+        $recoveryMarkerWritePosition -lt $installerGateAcquire -or
+        $recoveryMarkerWritePosition -gt $recoveryMarkerStagePosition -or
+        $recoveryMarkerClearPosition -lt $recoveryMarkerWritePosition -or
+        $recoveryMarkerGateReleasePosition -lt $recoveryMarkerClearPosition -or
+        $installerText -notmatch 'finally\s*\{[\s\S]*Exit-EdgeAgentInstallerMaintenanceGate' -or
+        $serviceStart -lt 0 -or $postStartLease -lt $serviceStart -or $readinessCheck -lt $postStartLease -or
+        $successfulRelease -lt $readinessCheck -or $deploymentCleanup -lt $successfulRelease -or
+        $finalReleaseMarkerPreservePosition -lt $successfulRelease -or
+        $finalReleaseFailureThrowPosition -lt $finalReleaseMarkerPreservePosition -or
+        $finalReleaseValidationPosition -lt $successfulRelease -or
+        $stageReleasePosition -lt $stageFailureAnchor -or
+        $stageReleaseCallPosition -lt $stageFailureAnchor -or $stageReleasePosition -lt $stageReleaseCallPosition -or
+        $stageReleaseMarkerPreservePosition -lt $stageReleasePosition -or
+        $installerText -notmatch '\$preserveInstallerMaintenanceGate\s*=\s*\$true' -or
+        $installerText -notmatch 'WaitForStatus\(' -or
+        $rollbackGateRelease -lt 0 -or $rollbackServiceStart -lt 0 -or $rollbackGateRelease -lt $rollbackServiceStart -or
+        $stageFailureAnchor -lt 0 -or $stageRollbackGateRelease -lt 0 -or
+        $stageRollbackServiceStart -lt 0 -or $stageRollbackGateRelease -lt $stageRollbackServiceStart) {
+        throw 'Після перезапуску інсталятор має заблокувати START до перевірки й фіналізації та не зупиняти службу без підтвердженого maintenance lease.'
+    }
+    $maintenanceRequest = $installerText.IndexOf('$maintenanceLeaseId = Start-EdgeAgentMaintenanceLease -Name $pipeName', [StringComparison]::Ordinal)
+    $packageStage = $installerText.IndexOf('$packageDeployment = New-EdgeAgentPackageStage', [StringComparison]::Ordinal)
+    $serviceStop = $installerText.IndexOf('Stop-Service -Name $serviceName -Force', [StringComparison]::Ordinal)
+    $operatorGroupCreate = $installerText.IndexOf("New-LocalGroup -Name `$operatorGroupName", [StringComparison]::Ordinal)
+    if ($maintenanceRequest -lt 0 -or $packageStage -lt 0 -or $serviceStop -lt 0 -or
+        $packageStage -gt $maintenanceRequest -or $maintenanceRequest -gt $serviceStop -or
+        $operatorGroupCreate -lt $serviceStop -or
+        $installerText -notmatch 'Release-EdgeAgentMaintenance\s+-Name\s+\$pipeName\s+-LeaseId\s+\$maintenanceLeaseId') {
+        throw 'Перед зупинкою служби інсталятор має отримати maintenance lease; зміни групи дозволені лише після цього етапу.'
+    }
+    $backupRequest = $installerText.IndexOf('$backupResponse = Backup-EdgeAgentDatabase -Name $pipeName -LeaseId $maintenanceLeaseId', [StringComparison]::Ordinal)
+    $backupPromotion = $installerText.IndexOf('[IO.File]::Move($databaseBackupStagingPath, $databaseBackupPath)', [StringComparison]::Ordinal)
     $packageSwitch = $installerText.IndexOf('Install-EdgeAgentPackageStage -Deployment $packageDeployment', [StringComparison]::Ordinal)
-    if ($backupInvocation -lt 0 -or $packageSwitch -lt 0 -or $backupInvocation -gt $packageSwitch -or
-        $installerText -notmatch 'AreAccessRulesProtected' -or $installerText -notmatch 'FileAttributes\]::ReparsePoint') {
-        throw 'Перед перемиканням пакета інсталятор має створити SQLite-копію в каталозі із захищеним ACL.'
+    $installerProgramText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\src\Watcher.EdgeAgent.Service\Program.cs') -Raw
+    if ($backupRequest -lt 0 -or $serviceStop -lt 0 -or $backupRequest -gt $serviceStop -or
+        $backupPromotion -lt $serviceStop -or $packageSwitch -lt $backupPromotion -or
+        $installerText -match '\$backupExecutable|--backup-database' -or
+        $installerProgramText -match '--backup-database' -or
+        $installerText -notmatch 'Set-EdgeAgentDatabaseBackupStagingAcl' -or
+        $installerText -notmatch 'Assert-EdgeAgentDatabaseBackupResponse' -or
+        $installerText -notmatch 'AreAccessRulesProtected' -or
+        $installerText -notmatch 'FileAttributes\]::ReparsePoint') {
+        throw 'Резервну копію має створювати служба до Stop-Service, а встановник має атомарно перемістити лише перевірений файл без виконання staging EXE.'
     }
     $startupRegistration = $installerText.IndexOf('Set-EdgeAgentDesktopStartupEntry', [StringComparison]::Ordinal)
     $lateRollback = $installerText.LastIndexOf('Restore-EdgeAgentPackage -Deployment $packageDeployment', [StringComparison]::Ordinal)
@@ -403,8 +1044,12 @@ try {
     }
     $hasShortcutRollback = $installerText.Contains('Restore-EdgeAgentOperatorShortcut')
     $hasOperatorMembershipRollback = $installerText.Contains('Remove-EdgeAgentOperatorGroupMembers')
-    if (-not $hasShortcutRollback -or -not $hasOperatorMembershipRollback) {
-        throw 'Rollback першої інсталяції має прибирати власні артефакти лише після невдалої першої інсталяції.'
+    $hasCreatedGroupRollback = $installerText -match '\$createdOperatorGroup\s*=\s*\$false' -and
+        $installerText -match 'New-LocalGroup[\s\S]*?-PassThru' -and
+        $installerText -match 'if\s*\(-not\s+\$installationCompleted\s+-and\s+-not\s+\$existingService\s+-and\s+\$createdOperatorGroup\)' -and
+        $installerText -match 'Remove-EdgeAgentOperatorGroupIfEmpty'
+    if (-not $hasShortcutRollback -or -not $hasOperatorMembershipRollback -or -not $hasCreatedGroupRollback) {
+        throw 'Rollback першої інсталяції має прибирати лише створені нею артефакти й лише після невдалого встановлення.'
     }
 
     $groupMembers = [System.Collections.Generic.List[string]]::new()
@@ -421,6 +1066,48 @@ try {
         -RemoveMember { param($member) $groupMembers.Remove($member) | Out-Null }
     Assert-Equal -Expected 1 -Actual $groupMembers.Count -Message 'Rollback невдалого upgrade має видалити нового оператора.'
     Assert-Equal -Expected 'COMPUTER\ExistingOperator' -Actual $groupMembers[0] -Message 'Rollback має зберегти наявного члена групи.'
+
+    $newOperatorGroupSid = 'S-1-5-21-100-200-300-1001'
+    $newOperatorGroup = [pscustomobject]@{ SID = [Security.Principal.SecurityIdentifier]::new($newOperatorGroupSid) }
+    $removedGroups = [System.Collections.Generic.List[string]]::new()
+    $removedNewGroup = Remove-EdgeAgentOperatorGroupIfEmpty `
+        -Name 'KGTA Alert Operators' `
+        -ExpectedSid $newOperatorGroupSid `
+        -GetGroup { param($name) $newOperatorGroup } `
+        -GetMembers { param($name) @() } `
+        -RemoveGroup { param($name) $removedGroups.Add($name) }
+    Assert-Equal -Expected $true -Actual $removedNewGroup -Message 'Rollback має прибрати порожню групу, створену цією інсталяцією.'
+    Assert-Equal -Expected 1 -Actual $removedGroups.Count -Message 'Щойно створена група має бути видалена рівно один раз.'
+
+    $existingOperatorGroup = [pscustomobject]@{ SID = [Security.Principal.SecurityIdentifier]::new('S-1-5-21-100-200-300-1000') }
+    Assert-Throws {
+        Remove-EdgeAgentOperatorGroupIfEmpty `
+            -Name 'KGTA Alert Operators' `
+            -ExpectedSid $newOperatorGroupSid `
+            -GetGroup { param($name) $existingOperatorGroup } `
+            -GetMembers { param($name) @() } `
+            -RemoveGroup { param($name) $removedGroups.Add($name) }
+    } 'Rollback не має видаляти групу з іншим SID, яка існувала до цієї інсталяції.'
+    Assert-Equal -Expected 1 -Actual $removedGroups.Count -Message 'Раніше наявну групу не можна передавати на видалення.'
+
+    Assert-Throws {
+        Remove-EdgeAgentOperatorGroupIfEmpty `
+            -Name 'KGTA Alert Operators' `
+            -ExpectedSid $newOperatorGroupSid `
+            -GetGroup { param($name) $newOperatorGroup } `
+            -GetMembers { param($name) @('COMPUTER\ConcurrentOperator') } `
+            -RemoveGroup { param($name) $removedGroups.Add($name) }
+    } 'Rollback має відмовитися видаляти створену групу, якщо під час встановлення до неї додано учасника.'
+    Assert-Equal -Expected 1 -Actual $removedGroups.Count -Message 'Непорожню групу не можна передавати на видалення.'
+
+    Assert-Throws {
+        Remove-EdgeAgentOperatorGroupIfEmpty `
+            -Name 'KGTA Alert Operators' `
+            -ExpectedSid $newOperatorGroupSid `
+            -GetGroup { param($name) $newOperatorGroup } `
+            -GetMembers { param($name) @() } `
+            -RemoveGroup { param($name) throw 'simulated group removal failure' }
+    } 'Помилка видалення нової групи має бути повернута інсталятору.'
 
     Assert-Throws {
         Add-EdgeAgentOperatorGroupMembers `
@@ -788,6 +1475,11 @@ try {
 
     Write-Host 'Перевірки автозапуску Windows-вузла пройшли.'
 } finally {
+    if ($script:originalCimFunction) {
+        Set-Item Function:\global:Get-CimInstance $script:originalCimFunction.ScriptBlock
+    } else {
+        Remove-Item Function:\global:Get-CimInstance -ErrorAction SilentlyContinue
+    }
     if ($runKey) { $runKey.Dispose() }
     if ($usersHive -and $actualUserSid -and $actualUserRunSubKey) {
         $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $true)
@@ -801,6 +1493,29 @@ try {
         $usersHive.DeleteSubKeyTree("$actualUserSid\$testRootSubKey", $false)
     }
     if ($usersHive) { $usersHive.Dispose() }
+    $cleanupRegistryBaseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        foreach ($markerPath in @($testInstallerRecoveryMarkerPath, $testDerivedServiceMarkerPath)) {
+            $cleanupMarkerKey = $cleanupRegistryBaseKey.OpenSubKey(
+                $markerPath,
+                [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                [System.Security.AccessControl.RegistryRights]::ChangePermissions
+            )
+            if ($cleanupMarkerKey) {
+                try {
+                    $cleanupMarkerAcl = $cleanupMarkerKey.GetAccessControl()
+                    $cleanupMarkerAcl.SetAccessRuleProtection($false, $true)
+                    $cleanupMarkerKey.SetAccessControl($cleanupMarkerAcl)
+                } finally {
+                    $cleanupMarkerKey.Dispose()
+                }
+            }
+            $cleanupRegistryBaseKey.DeleteSubKeyTree($markerPath, $false)
+        }
+        $cleanupRegistryBaseKey.DeleteSubKeyTree($testRootSubKey, $false)
+    } finally {
+        $cleanupRegistryBaseKey.Dispose()
+    }
     if (Test-Path -LiteralPath $testRegistryPath) { Remove-Item -LiteralPath $testRegistryPath -Recurse -Force }
     if (Test-Path -LiteralPath $testExecutableDirectory) { Remove-Item -LiteralPath $testExecutableDirectory -Recurse -Force }
     if (Test-Path -LiteralPath $testDeploymentRoot) { Remove-Item -LiteralPath $testDeploymentRoot -Recurse -Force }

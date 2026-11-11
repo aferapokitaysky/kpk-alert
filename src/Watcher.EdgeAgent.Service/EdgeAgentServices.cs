@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using System.ComponentModel;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Authentication;
 using System.Security.Cryptography;
@@ -9,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Win32.SafeHandles;
 using Watcher.Contracts.DeviceCommands;
 using Watcher.EdgeAgent.Contracts;
 using Watcher.EdgeAgent.Core;
@@ -100,22 +103,30 @@ internal sealed class EdgeAgentStatusProvider
 internal sealed class EdgeAgentPlaybackEventHandler(
     IEdgeAgentStore store,
     IEdgeAgentClock clock,
-    EdgeAgentStatusProvider status) : IAudioPlaybackEventHandler
+    EdgeAgentStatusProvider status,
+    EdgeAgentMaintenanceCoordinator maintenanceCoordinator) : IAudioPlaybackEventHandler
 {
     public async Task OnPlaybackFinishedAsync(Guid commandId, DeviceCommandState state,
         string? diagnosticCode, CancellationToken cancellationToken)
     {
-        ProcessedCommand? command = await store.FindCommandAsync(commandId, cancellationToken);
-        if (command is null) return;
-        await store.TransitionCommandAsync(commandId, state, diagnosticCode, clock.UtcNow, cancellationToken);
-        status.Update(current => current with
+        try
         {
-            AudioState = diagnosticCode == "audio_output_unavailable" ? "unavailable" : "idle",
-            LastCommandId = commandId,
-            LastSequence = command.Sequence,
-            LastCommandState = state.ToString(),
-            DiagnosticCode = diagnosticCode
-        });
+            ProcessedCommand? command = await store.FindCommandAsync(commandId, cancellationToken);
+            if (command is null) return;
+            await store.TransitionCommandAsync(commandId, state, diagnosticCode, clock.UtcNow, cancellationToken);
+            status.Update(current => current with
+            {
+                AudioState = diagnosticCode == "audio_output_unavailable" ? "unavailable" : "idle",
+                LastCommandId = commandId,
+                LastSequence = command.Sequence,
+                LastCommandState = state.ToString(),
+                DiagnosticCode = diagnosticCode
+            });
+        }
+        finally
+        {
+            maintenanceCoordinator.PlaybackFinished(commandId);
+        }
     }
 }
 
@@ -254,10 +265,18 @@ internal sealed class EdgeAgentStatusPipeService(
     ILogger<EdgeAgentStatusPipeService> logger,
     string pipeName = "KGTA.Alert.EdgeAgent.Status.v1",
     Func<SecurityIdentifier>? serviceSidProvider = null,
-    Func<SecurityIdentifier>? operatorGroupSidProvider = null) : BackgroundService
+    Func<SecurityIdentifier>? operatorGroupSidProvider = null,
+    EdgeAgentMaintenanceCoordinator? maintenanceCoordinator = null,
+    EdgeAgentDatabaseBackup? databaseBackup = null) : BackgroundService
 {
     private const int MaximumFrameBytes = 4096;
     private static readonly TimeSpan ClientRequestTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MaintenanceDrainTimeout = TimeSpan.FromMinutes(15);
+    private readonly object _maintenanceLeaseSync = new();
+    private Guid? _maintenanceLeaseId;
+    private string? _maintenanceLeaseOwnerSid;
+    private readonly EdgeAgentMaintenanceCoordinator _maintenanceCoordinator =
+        maintenanceCoordinator ?? new EdgeAgentMaintenanceCoordinator();
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         MaxDepth = 4,
@@ -273,15 +292,44 @@ internal sealed class EdgeAgentStatusPipeService(
             try
             {
                 await pipe.WaitForConnectionAsync(stoppingToken);
-                using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                requestTimeout.CancelAfter(ClientRequestTimeout);
-                var requestBytes = await ReadFrameAsync(pipe, requestTimeout.Token);
+                using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                readTimeout.CancelAfter(ClientRequestTimeout);
+                var requestBytes = await ReadFrameAsync(pipe, readTimeout.Token);
                 EdgeAgentPipeRequest? request = JsonSerializer.Deserialize<EdgeAgentPipeRequest>(requestBytes, JsonOptions);
-                EdgeAgentPipeResponse response = request is { SchemaVersion: 1, Operation: "get_status" }
-                    ? new EdgeAgentPipeResponse(1, true, status.Get(), null)
-                    : new EdgeAgentPipeResponse(1, false, null, "invalid_request");
-                var payload = JsonSerializer.SerializeToUtf8Bytes(response, JsonOptions);
-                if (payload.Length <= MaximumFrameBytes) await WriteFrameAsync(pipe, payload, requestTimeout.Token);
+                using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                operationTimeout.CancelAfter(MaintenanceDrainTimeout);
+                string? callerSid = null;
+                var isMaintenanceRequest = request?.Operation is "begin_maintenance" or "release_maintenance" or "backup_database";
+                var maintenanceCallerAuthorized = !isMaintenanceRequest || TryGetAuthorizedMaintenanceCaller(pipe, out callerSid);
+                Task? disconnectMonitor = null;
+                using var disconnectMonitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationTimeout.Token);
+                if (request?.Operation == "begin_maintenance" && maintenanceCallerAuthorized)
+                {
+                    disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
+                        pipe, operationTimeout, disconnectMonitorCancellation.Token);
+                }
+
+                EdgeAgentPipeResponse response;
+                try
+                {
+                    response = request is null
+                        ? new EdgeAgentPipeResponse(1, false, null, "invalid_request")
+                        : !maintenanceCallerAuthorized
+                            ? new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied")
+                            : await HandleRequestAsync(request, callerSid, operationTimeout.Token);
+                }
+                finally
+                {
+                    disconnectMonitorCancellation.Cancel();
+                    if (disconnectMonitor is not null)
+                    {
+                        await disconnectMonitor;
+                    }
+                }
+
+                using var writeTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                writeTimeout.CancelAfter(ClientRequestTimeout);
+                await WriteResponseAsync(pipe, response, writeTimeout.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (OperationCanceledException)
@@ -295,15 +343,313 @@ internal sealed class EdgeAgentStatusPipeService(
         }
     }
 
+    internal async Task<EdgeAgentPipeResponse> HandleRequestAsync(
+        EdgeAgentPipeRequest request,
+        string? callerSid,
+        CancellationToken cancellationToken)
+    {
+        if (request.SchemaVersion != 1)
+        {
+            return new EdgeAgentPipeResponse(1, false, null, "invalid_request");
+        }
+
+        switch (request.Operation)
+        {
+            case "get_status" when request.LeaseId is null:
+                return new EdgeAgentPipeResponse(1, true, status.Get(), null);
+
+            case "begin_maintenance" when request.LeaseId is null:
+                if (string.IsNullOrWhiteSpace(callerSid))
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied");
+                }
+
+                lock (_maintenanceLeaseSync)
+                {
+                    if (_maintenanceLeaseId is { } previousLeaseId &&
+                        !_maintenanceCoordinator.IsMaintenanceLeaseActive(previousLeaseId))
+                    {
+                        _maintenanceLeaseId = null;
+                        _maintenanceLeaseOwnerSid = null;
+                    }
+                }
+
+                try
+                {
+                    Guid leaseId = await _maintenanceCoordinator.BeginMaintenanceAsync(
+                        MaintenanceDrainTimeout, cancellationToken);
+                    lock (_maintenanceLeaseSync)
+                    {
+                        _maintenanceLeaseId = leaseId;
+                        _maintenanceLeaseOwnerSid = callerSid;
+                    }
+
+                    return new EdgeAgentPipeResponse(1, true, status.Get(), null, leaseId);
+                }
+                catch (InvalidOperationException)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_already_active");
+                }
+                catch (TimeoutException)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_drain_timeout");
+                }
+
+            case "release_maintenance" when request.LeaseId is { } leaseId:
+                if (string.IsNullOrWhiteSpace(callerSid))
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied");
+                }
+
+                lock (_maintenanceLeaseSync)
+                {
+                    if (_maintenanceLeaseId != leaseId)
+                    {
+                        return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                    }
+
+                    if (!string.Equals(_maintenanceLeaseOwnerSid, callerSid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_owner_mismatch");
+                    }
+
+                    var released = _maintenanceCoordinator.ReleaseMaintenance(leaseId);
+                    _maintenanceLeaseId = null;
+                    _maintenanceLeaseOwnerSid = null;
+                    return released
+                        ? new EdgeAgentPipeResponse(1, true, status.Get(), null)
+                        : new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                }
+
+            case "backup_database" when request.LeaseId is { } backupLeaseId:
+                if (string.IsNullOrWhiteSpace(callerSid))
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied");
+                }
+
+                IDisposable? leaseKeepAlive;
+                lock (_maintenanceLeaseSync)
+                {
+                    if (_maintenanceLeaseId != backupLeaseId)
+                    {
+                        return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                    }
+
+                    if (!string.Equals(_maintenanceLeaseOwnerSid, callerSid, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_owner_mismatch");
+                    }
+
+                    leaseKeepAlive = _maintenanceCoordinator.KeepMaintenanceLeaseAlive(backupLeaseId);
+                }
+
+                if (leaseKeepAlive is null)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                }
+
+                using (leaseKeepAlive)
+                {
+                    if (databaseBackup is null)
+                    {
+                        return new EdgeAgentPipeResponse(1, false, null, "database_backup_unavailable");
+                    }
+
+                    try
+                    {
+                        EdgeAgentDatabaseBackupResult backup = databaseBackup.Create();
+                        return new EdgeAgentPipeResponse(
+                            1, true, status.Get(), null, BackupId: backup.BackupId,
+                            DatabasePathHash: backup.DatabasePathHash, MaintenanceLeaseId: backupLeaseId);
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        logger.LogWarning("Не вдалося створити резервну копію бази Edge Agent: {ExceptionType}.",
+                            exception.GetType().Name);
+                        return new EdgeAgentPipeResponse(
+                            1, false, null, "database_backup_failed", MaintenanceLeaseId: backupLeaseId);
+                    }
+                }
+
+            default:
+                return new EdgeAgentPipeResponse(1, false, null, "invalid_request");
+        }
+    }
+
+    internal async Task WriteResponseAsync(
+        Stream pipe,
+        EdgeAgentPipeResponse response,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var payload = JsonSerializer.SerializeToUtf8Bytes(response, JsonOptions);
+            if (payload.Length > MaximumFrameBytes)
+            {
+                throw new InvalidDataException("Відповідь каналу стану завелика.");
+            }
+
+            await WriteFrameAsync(pipe, payload, cancellationToken);
+        }
+        catch
+        {
+            if (response.LeaseId is { } leaseId)
+            {
+                _maintenanceCoordinator.ReleaseMaintenance(leaseId);
+                lock (_maintenanceLeaseSync)
+                {
+                    if (_maintenanceLeaseId == leaseId)
+                    {
+                        _maintenanceLeaseId = null;
+                        _maintenanceLeaseOwnerSid = null;
+                    }
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private static bool TryGetAuthorizedMaintenanceCaller(NamedPipeServerStream pipe, out string? callerSid)
+    {
+        string? resolvedCallerSid = null;
+        var authorized = false;
+        try
+        {
+            pipe.RunAsClient(() =>
+            {
+                using var identity = WindowsIdentity.GetCurrent();
+                if (identity.User is null)
+                {
+                    return;
+                }
+
+                resolvedCallerSid = identity.User.Value;
+                SecurityIdentifier administratorsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
+                var serviceSid = (SecurityIdentifier)new NTAccount(
+                    "NT SERVICE", "KGTA.Alert.EdgeAgent").Translate(typeof(SecurityIdentifier));
+                authorized = identity.IsSystem || identity.User.Equals(serviceSid) ||
+                    new WindowsPrincipal(identity).IsInRole(administratorsSid);
+            });
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                           System.Security.SecurityException or InvalidOperationException)
+        {
+            callerSid = null;
+            return false;
+        }
+
+        callerSid = resolvedCallerSid;
+        return authorized;
+    }
+
+    private static async Task CancelOperationWhenClientDisconnectsAsync(
+        Stream pipe,
+        CancellationTokenSource operationCancellation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var unexpectedData = new byte[1];
+            await ReadExactlyAsync(pipe, unexpectedData, cancellationToken);
+            operationCancellation.Cancel();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (IOException)
+        {
+            operationCancellation.Cancel();
+        }
+    }
+
     private static NamedPipeServerStream CreatePipe(
         string pipeName,
         Func<SecurityIdentifier>? serviceSidProvider,
         Func<SecurityIdentifier>? operatorGroupSidProvider = null)
     {
         PipeSecurity security = CreatePipeSecurity(serviceSidProvider, operatorGroupSidProvider);
-        return NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1,
-            PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 4096, 4096, security);
+        var securityDescriptor = security.GetSecurityDescriptorBinaryForm();
+        using var descriptor = new SafeLocalAllocHandle(Marshal.AllocHGlobal(securityDescriptor.Length));
+        Marshal.Copy(securityDescriptor, 0, descriptor.DangerousGetHandle(), securityDescriptor.Length);
+        var attributes = new SecurityAttributes
+        {
+            Length = Marshal.SizeOf<SecurityAttributes>(),
+            SecurityDescriptor = descriptor.DangerousGetHandle(),
+            InheritHandle = false
+        };
+
+        SafePipeHandle pipeHandle = CreateNamedPipe(
+            $"\\\\.\\pipe\\{pipeName}",
+            PipeAccessDuplex | FileFlagOverlapped,
+            CreatePipeMode(),
+            1,
+            4096,
+            4096,
+            0,
+            ref attributes);
+        if (pipeHandle.IsInvalid)
+        {
+            var errorCode = Marshal.GetLastWin32Error();
+            pipeHandle.Dispose();
+            throw new Win32Exception(errorCode, "Не вдалося створити локальний status pipe.");
+        }
+
+        try
+        {
+            return new NamedPipeServerStream(PipeDirection.InOut, true, false, pipeHandle);
+        }
+        catch
+        {
+            pipeHandle.Dispose();
+            throw;
+        }
     }
+
+    internal static uint CreatePipeMode() => PipeTypeByte | PipeReadModeByte | PipeWait | PipeRejectRemoteClients;
+
+    private const uint PipeAccessDuplex = 0x00000003;
+    private const uint FileFlagOverlapped = 0x40000000;
+    private const uint PipeTypeByte = 0x00000000;
+    private const uint PipeReadModeByte = 0x00000000;
+    private const uint PipeWait = 0x00000000;
+    private const uint PipeRejectRemoteClients = 0x00000008;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int Length;
+        public IntPtr SecurityDescriptor;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool InheritHandle;
+    }
+
+    private sealed class SafeLocalAllocHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        public SafeLocalAllocHandle(IntPtr value) : base(true)
+        {
+            SetHandle(value);
+        }
+
+        public override bool IsInvalid => IsClosed || handle == IntPtr.Zero || handle == new IntPtr(-1);
+
+        protected override bool ReleaseHandle()
+        {
+            Marshal.FreeHGlobal(handle);
+            return true;
+        }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateNamedPipeW")]
+    private static extern SafePipeHandle CreateNamedPipe(
+        string name,
+        uint openMode,
+        uint pipeMode,
+        uint maxInstances,
+        uint outputBufferSize,
+        uint inputBufferSize,
+        uint defaultTimeout,
+        ref SecurityAttributes securityAttributes);
 
     internal static PipeSecurity CreatePipeSecurity(
         Func<SecurityIdentifier>? serviceSidProvider,
@@ -318,7 +664,8 @@ internal sealed class EdgeAgentStatusPipeService(
             ? (SecurityIdentifier)new NTAccount(Environment.MachineName, "KGTA Alert Operators")
                 .Translate(typeof(SecurityIdentifier))
             : operatorGroupSidProvider();
-        security.AddAccessRule(new PipeAccessRule(serviceSid, PipeAccessRights.ReadWrite, AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(serviceSid,
+            PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(administratorsSid, PipeAccessRights.ReadWrite, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(operatorsSid, PipeAccessRights.ReadWrite, AccessControlType.Allow));
         return security;

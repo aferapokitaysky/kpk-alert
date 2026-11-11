@@ -168,6 +168,71 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StartDuringMaintenance_IsDeferredWithoutAcceptingOrStartingIt()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        Guid leaseId = await maintenance.BeginMaintenanceAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        DeviceCommandProcessor processor = new(_store, _assets, _player, _clock,
+            TimeSpan.FromSeconds(120), 20, "endpoint-1", maintenance);
+        CommandDispatch command = CreateCommand(1);
+
+        CommandProcessingOutcome outcome = await processor.ProcessAsync(
+            command, new DeviceIdentity(DeviceId, LocationId), CancellationToken.None);
+
+        Assert.Equal("maintenance_in_progress", outcome.DiagnosticCode);
+        Assert.Null(await _store.FindCommandAsync(command.CommandId, CancellationToken.None));
+        Assert.Equal(0, _player.StartCount);
+        Assert.True(maintenance.ReleaseMaintenance(leaseId));
+    }
+
+    [Fact]
+    public async Task RestartedProcessor_DefersQueuedStartUntilInstallerClearsProtectedMarker()
+    {
+        var maintenanceMarkerExists = true;
+
+        DeviceCommandProcessor restartedProcessor = new(
+            _store,
+            _assets,
+            _player,
+            _clock,
+            TimeSpan.FromSeconds(120),
+            20,
+            "endpoint-1",
+            installerMaintenanceGate: new InstallerMaintenanceGate(() => maintenanceMarkerExists, () => false));
+        CommandDispatch queuedCommand = CreateCommand(1);
+
+        CommandProcessingOutcome deferred = await restartedProcessor.ProcessAsync(
+            queuedCommand, new DeviceIdentity(DeviceId, LocationId), CancellationToken.None);
+
+        Assert.Equal("maintenance_in_progress", deferred.DiagnosticCode);
+        Assert.Null(await _store.FindCommandAsync(queuedCommand.CommandId, CancellationToken.None));
+        Assert.Equal(0, _player.StartCount);
+
+        maintenanceMarkerExists = false;
+        CommandProcessingOutcome resumed = await restartedProcessor.ProcessAsync(
+            queuedCommand, new DeviceIdentity(DeviceId, LocationId), CancellationToken.None);
+
+        Assert.Equal(DeviceCommandState.Playing, resumed.State);
+        Assert.Equal(1, _player.StartCount);
+    }
+
+    [Fact]
+    public async Task PlaybackFinishingDuringStart_DoesNotLeaveMaintenanceGateStuck()
+    {
+        EdgeAgentMaintenanceCoordinator maintenance = new();
+        _player.OnStart = commandId => maintenance.PlaybackFinished(commandId);
+        DeviceCommandProcessor processor = new(_store, _assets, _player, _clock,
+            TimeSpan.FromSeconds(120), 20, "endpoint-1", maintenance);
+
+        CommandProcessingOutcome outcome = await processor.ProcessAsync(
+            CreateCommand(1), new DeviceIdentity(DeviceId, LocationId), CancellationToken.None);
+
+        Assert.Equal(DeviceCommandState.Playing, outcome.State);
+        Guid leaseId = await maintenance.BeginMaintenanceAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
+        Assert.True(maintenance.ReleaseMaintenance(leaseId));
+    }
+
+    [Fact]
     public async Task MissingLocalPreset_IsRejected()
     {
         _assets.Asset = null;
@@ -386,6 +451,7 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
         public int StopCount { get; private set; }
         public int StopFailuresRemaining { get; set; }
         public int AbortStartCount { get; private set; }
+        public Action<Guid>? OnStart { get; set; }
 
         public void ClearActivePlayback() => ActiveCommandId = null;
 
@@ -394,6 +460,7 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
             StartCount++;
             ActiveCommandId = request.CommandId;
             LastRequest = request;
+            OnStart?.Invoke(request.CommandId);
             return Task.CompletedTask;
         }
 
@@ -475,4 +542,5 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
         public long GetTimestamp() => 0;
         public TimeSpan GetElapsedTime(long startingTimestamp) => TimeSpan.Zero;
     }
+
 }

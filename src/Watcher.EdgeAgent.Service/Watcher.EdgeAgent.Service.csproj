@@ -18,7 +18,7 @@
     <InternalsVisibleTo Include="Watcher.EdgeAgent.Service.IntegrationTests" />
   </ItemGroup>
   <ItemGroup>
-    <None Update="EdgeAgentStartupRegistration.psm1;EdgeAgentPackageDeployment.psm1;install-service.ps1;uninstall-service.ps1;set-operator-panel-startup.ps1"
+    <None Update="EdgeAgentStartupRegistration.psm1;EdgeAgentPackageDeployment.psm1;EdgeAgentUpgradePreflight.psm1;EdgeAgentReadiness.psm1;EdgeAgentInstallerMaintenanceGate.psm1;EdgeAgentInstallerRecoveryMarker.psm1;install-service.ps1;uninstall-service.ps1;set-operator-panel-startup.ps1"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

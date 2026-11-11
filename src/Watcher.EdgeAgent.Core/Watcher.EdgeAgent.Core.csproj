@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Watcher.EdgeAgent.UnitTests" />
     <ProjectReference Include="..\Watcher.Contracts\Watcher.Contracts.csproj" />
     <ProjectReference Include="..\Watcher.EdgeAgent.Contracts\Watcher.EdgeAgent.Contracts.csproj" />
   </ItemGroup>

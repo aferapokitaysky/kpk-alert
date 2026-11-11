@@ -73,6 +73,10 @@ public sealed class DeviceAdministrationEndpointTests(PostgresApiFixture fixture
         AuditEvent[] auditEvents = await db.AuditEvents.OrderBy(item => item.EventType).ToArrayAsync();
         Assert.Equal(2, auditEvents.Length);
         Assert.Contains(auditEvents, item => item.EventType == "device.revoked");
+        AuditEvent revocationAudit = Assert.Single(auditEvents, item => item.EventType == "device.revoked");
+        using JsonDocument revocationAuditPayload = JsonDocument.Parse(revocationAudit.Payload);
+        Assert.Equal(revokedAtUtc,
+            revocationAuditPayload.RootElement.GetProperty("revokedAtUtc").GetDateTimeOffset());
     }
 
     [PostgresFact]
