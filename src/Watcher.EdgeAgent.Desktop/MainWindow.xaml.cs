@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.ComponentModel;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
@@ -60,6 +61,7 @@ public partial class MainWindow : Window
             await _activeAudioOperation;
         }
 
+        NativeAudio.PlaySound(null, IntPtr.Zero, NativeAudio.SoundStop);
         _allowClose = true;
         Close();
     }
@@ -83,6 +85,31 @@ public partial class MainWindow : Window
 
     private async void TestChime_Click(object sender, RoutedEventArgs e) =>
         await StartAudioOperationAsync(AudioTestSound.Chime, applySelection: false);
+
+    private async void TestHeadphones_Click(object sender, RoutedEventArgs e)
+    {
+        TestHeadphonesButton.IsEnabled = false;
+        try
+        {
+            var soundPath = Path.Combine(AppContext.BaseDirectory, "Assets", "audio-test-chime.wav");
+            if (!File.Exists(soundPath) || !NativeAudio.PlaySound(soundPath, IntPtr.Zero,
+                    NativeAudio.SoundFilename | NativeAudio.SoundAsync | NativeAudio.SoundNoDefault))
+            {
+                AudioOutputMessage.Text = "Не вдалося запустити тестовий WAV у вашому сеансі Windows.";
+                return;
+            }
+
+            AudioOutputMessage.Text = "Тестовий WAV надіслано на типовий вихід вашого сеансу Windows.";
+            await Task.Delay(TimeSpan.FromMilliseconds(900), _windowLifetime.Token);
+            AudioOutputMessage.Text = "Тест завершено. Якщо звуку не було, перевірте типовий вихід Windows і гучність.";
+        }
+        catch (OperationCanceledException) when (_windowLifetime.IsCancellationRequested) { }
+        finally
+        {
+            TestHeadphonesButton.IsEnabled = !_windowLifetime.IsCancellationRequested;
+            UpdateAudioButtons();
+        }
+    }
 
     private async void ApplyAudioOutput_Click(object sender, RoutedEventArgs e) =>
         await StartAudioOperationAsync(null, applySelection: true);
@@ -120,7 +147,7 @@ public partial class MainWindow : Window
                 ?? _audioOutputs.FirstOrDefault();
             _loadingAudioOutputs = false;
             AudioOutputMessage.Text = _audioOutputs.Count == 0
-                ? AudioOutputPlaceholderText.Text
+                ? string.Empty
                 : AudioOutputComboBox.SelectedItem is AudioOutputChoice selectedOutput &&
                   selectedOutput.Id != _configuredAudioEndpointId
                     ? "Вибрано інший вихід. Перевірте його, потім застосуйте для тривожних сигналів."
@@ -137,11 +164,16 @@ public partial class MainWindow : Window
             ShowAudioOutputUnavailable(
                 "Служба KGTA Alert Edge Agent не встановлена або не запущена. Встановіть і запустіть службу, потім оновіть список.");
         }
-        catch (Exception exception) when (exception is InvalidDataException or TimeoutException or
-                                          OperationCanceledException or JsonException)
+        catch (OperationCanceledException) when (_windowLifetime.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is TimeoutException or OperationCanceledException)
         {
             ShowAudioOutputUnavailable(
-                "Служба не повернула перелік аудіовиходів. Перевірте її стан і повторіть оновлення.");
+                "Служба не відповідає на запит переліку аудіовиходів. Перевірте, чи вона запущена, і повторіть оновлення.");
+        }
+        catch (Exception exception) when (exception is InvalidDataException or JsonException)
+        {
+            ShowAudioOutputUnavailable(
+                "Служба повернула некоректний перелік аудіовиходів. Перезапустіть її або зверніться до адміністратора.");
         }
     }
 
@@ -266,7 +298,7 @@ public partial class MainWindow : Window
         AudioOutputComboBox.Visibility = _audioOutputs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         AudioOutputComboBox.IsEnabled = _audioOutputs.Count > 0 && !_audioOperationInProgress;
         AudioOutputPlaceholder.Visibility = _audioOutputs.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
-        AudioOutputMessageCard.Visibility = _audioOutputs.Count > 0 && !string.IsNullOrWhiteSpace(AudioOutputMessage.Text)
+        AudioOutputMessageCard.Visibility = !string.IsNullOrWhiteSpace(AudioOutputMessage.Text)
             ? Visibility.Visible
             : Visibility.Collapsed;
         TestToneButton.IsEnabled = canOperate;
@@ -391,7 +423,7 @@ public partial class MainWindow : Window
         "audio_output_save_failed" =>
             "Не вдалося зберегти вихід служби. Зверніться до адміністратора вузла.",
         "audio_output_enumeration_failed" =>
-            "Служба не змогла прочитати список аудіопристроїв. Перевірте Windows Audio та повторіть спробу.",
+            "Служба не змогла отримати список виходів у своєму системному сеансі Windows. Він може відрізнятися від навушників у вашому профілі. Перевірте Windows Audio та драйвер; навушники можна перевірити кнопкою вище.",
         "audio_output_configuration_invalid" =>
             "Збережений вихід служби пошкоджений. Виберіть пристрій зі списку та застосуйте його повторно.",
         "audio_test_failed" =>
@@ -404,7 +436,7 @@ public partial class MainWindow : Window
         "audio_output_unavailable" =>
             "Служба запущена, але перелік аудіовиходів недоступний. Перевірте налаштування служби.",
         "audio_output_enumeration_failed" =>
-            "Служба не змогла отримати перелік аудіовиходів Windows. Перевірте аудіопристрої та оновіть список.",
+            "Служба запущена, але не змогла отримати перелік виходів у своєму системному сеансі Windows. Він може відрізнятися від навушників у вашому профілі. Перевірте службу Windows Audio та драйвер; окремо перевірте навушники кнопкою вище.",
         _ => DescribeAudioOperationFailure(diagnosticCode)
     };
 
@@ -470,5 +502,17 @@ public partial class MainWindow : Window
     private sealed record AudioOutputChoice(string Id, string Name, bool IsDefault)
     {
         public string DisplayName => IsDefault ? $"{Name} (типовий для служби)" : Name;
+    }
+
+    private static class NativeAudio
+    {
+        public const uint SoundAsync = 0x0001;
+        public const uint SoundFilename = 0x0002_0000;
+        public const uint SoundNoDefault = 0x0000_0002;
+        public const uint SoundStop = 0;
+
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool PlaySound(string? soundPath, IntPtr moduleHandle, uint flags);
     }
 }

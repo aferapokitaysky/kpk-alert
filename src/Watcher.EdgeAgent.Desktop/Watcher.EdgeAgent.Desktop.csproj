@@ -6,8 +6,16 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <ApplicationIcon>Assets\kgta-alert.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Watcher.EdgeAgent.Contracts\Watcher.EdgeAgent.Contracts.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\audio-test-*.wav" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\kgta-alert.ico" />
+    <Resource Include="..\Watcher.Api\wwwroot\images\kpk-logo.png" Link="Assets\kpk-logo.png" />
   </ItemGroup>
 </Project>

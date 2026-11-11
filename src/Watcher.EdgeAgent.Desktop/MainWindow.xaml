@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="KGTA Alert — стан вузла" Height="690" Width="760"
         MinHeight="540" MinWidth="600" Background="#F3F6FA"
+        Icon="Assets/kgta-alert.ico"
         FontFamily="Segoe UI" Loaded="Window_Loaded" Closing="Window_Closing" Closed="Window_Closed">
   <Grid Margin="28">
     <Grid.RowDefinitions>
@@ -11,16 +12,7 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
     <DockPanel Margin="0,0,0,18" LastChildFill="True">
-      <Border Width="42" Height="42" CornerRadius="10" Background="{StaticResource AccentBrush}" Margin="0,0,12,0">
-        <Viewbox Margin="9" Stretch="Uniform">
-          <Canvas Width="24" Height="24">
-            <Path Data="M12,2 L21,6 L21,13 C21,18 17,21 12,23 C7,21 3,18 3,13 L3,6 Z"
-                  Stroke="White" StrokeThickness="1.8" StrokeLineJoin="Round" />
-            <Path Data="M5,12 L9,12 L11,8 L14,16 L16,12 L19,12"
-                  Stroke="#FFD166" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
-          </Canvas>
-        </Viewbox>
-      </Border>
+      <Image Source="Assets/kpk-logo.png" Width="42" Height="42" Stretch="Uniform" Margin="0,0,12,0" />
       <StackPanel VerticalAlignment="Center">
         <TextBlock Text="KGTA Alert" FontSize="25" FontWeight="SemiBold" Foreground="#17263B" />
         <TextBlock Text="Стан локального вузла оповіщення" Margin="0,2,0,0" Foreground="{StaticResource MutedBrush}" />
@@ -49,7 +41,11 @@
         <StackPanel Grid.Row="7" Margin="0,20,0,0">
           <TextBlock Text="Тест аудіовиходу" FontSize="17" FontWeight="SemiBold" Foreground="#17263B" />
           <TextBlock Margin="0,4,0,10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
-                     Text="Список пристроїв отримано від служби. Тест і тривожні сигнали перевіряються через той самий вихід служби. Для зміни потрібні права адміністратора; під час тесту нові команди запуску призупиняються." />
+                     Text="Окремий тест перевіряє навушники у вашому сеансі Windows. Виходи нижче надходять від служби та можуть відрізнятися від них. Тест служби й зміна виходу потребують прав адміністратора." />
+          <Button x:Name="TestHeadphonesButton" Content="Перевірити навушники"
+                  Padding="16,8" HorizontalAlignment="Left" Click="TestHeadphones_Click" />
+          <TextBlock Margin="0,5,0,10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                     Text="Цей локальний звук не перевіряє, чи може служба відтворити тривогу у своєму системному сеансі." />
           <DockPanel LastChildFill="True">
             <Button x:Name="RefreshAudioOutputsButton" Content="Оновити список" DockPanel.Dock="Right"
                     Margin="10,0,0,0" Padding="14,8" Click="RefreshAudioOutputs_Click" />
@@ -65,10 +61,10 @@
             </Grid>
           </DockPanel>
           <WrapPanel Margin="0,10,0,0" VerticalAlignment="Center">
-            <Button x:Name="TestToneButton" Content="Короткий тон" DockPanel.Dock="Left"
+            <Button x:Name="TestToneButton" Content="Тест служби: тон" DockPanel.Dock="Left"
                     Padding="16,8" Background="{StaticResource AccentBrush}" Foreground="White"
                     BorderThickness="0" Click="TestTone_Click" IsEnabled="False" />
-            <Button x:Name="TestChimeButton" Content="Три ноти" DockPanel.Dock="Left"
+            <Button x:Name="TestChimeButton" Content="Тест служби: три ноти" DockPanel.Dock="Left"
                     Margin="8,0,0,0" Padding="16,8" Click="TestChime_Click" IsEnabled="False" />
           </WrapPanel>
           <Border x:Name="AudioOutputMessageCard" Margin="0,10,0,0" Padding="10,8"
