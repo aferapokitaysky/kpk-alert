@@ -67,6 +67,70 @@ public sealed class SqliteDatabaseBackupTests
         }
     }
 
+    [Fact]
+    public void Create_RejectsSourceAndDestinationWithSamePath()
+    {
+        var directory = CreateTemporaryDirectory();
+        var sourcePath = Path.Combine(directory, "edge-agent.db");
+        try
+        {
+            using (SqliteConnection source = Open(sourcePath))
+            {
+                Execute(source, "CREATE TABLE records (value TEXT NOT NULL);");
+            }
+
+            Assert.Throws<ArgumentException>(() => SqliteDatabaseBackup.Create(sourcePath, sourcePath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Create_RejectsMissingSourceAndDestinationDirectory()
+    {
+        var directory = CreateTemporaryDirectory();
+        var sourcePath = Path.Combine(directory, "missing.db");
+        try
+        {
+            Assert.Throws<FileNotFoundException>(() => SqliteDatabaseBackup.Create(
+                sourcePath, Path.Combine(directory, "backup.db")));
+
+            using (SqliteConnection source = Open(sourcePath))
+            {
+                Execute(source, "CREATE TABLE records (value TEXT NOT NULL);");
+            }
+
+            Assert.Throws<DirectoryNotFoundException>(() => SqliteDatabaseBackup.Create(
+                sourcePath, Path.Combine(directory, "missing", "backup.db")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Create_RemovesNewDestinationWhenSourceIsNotValidSqlite()
+    {
+        var directory = CreateTemporaryDirectory();
+        var sourcePath = Path.Combine(directory, "invalid.db");
+        var destinationPath = Path.Combine(directory, "backup.db");
+        try
+        {
+            File.WriteAllText(sourcePath, "not a SQLite database");
+
+            Assert.Throws<SqliteException>(() => SqliteDatabaseBackup.Create(sourcePath, destinationPath));
+
+            Assert.False(File.Exists(destinationPath));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static SqliteConnection Open(string path)
     {
         SqliteConnection connection = new(new SqliteConnectionStringBuilder
