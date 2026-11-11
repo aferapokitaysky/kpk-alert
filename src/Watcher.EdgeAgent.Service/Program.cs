@@ -36,6 +36,14 @@ internal static class Program
         builder.Services.AddSingleton<LocalAudioAssetResolver>(_ => new LocalAudioAssetResolver(options.AudioRootDirectory));
         builder.Services.AddSingleton<IAudioAssetResolver>(services => services.GetRequiredService<LocalAudioAssetResolver>());
         builder.Services.AddSingleton<EdgeAgentStatusProvider>();
+        builder.Services.AddSingleton<IAudioEndpointControl, WasapiAudioEndpointControl>();
+        builder.Services.AddSingleton<EdgeAgentAudioOutputManager>(services => new EdgeAgentAudioOutputManager(
+            options.AudioEndpointId!,
+            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "audio-endpoint.json"),
+            services.GetRequiredService<IAudioEndpointControl>(),
+            services.GetRequiredService<EdgeAgentStatusProvider>()));
+        builder.Services.AddSingleton<IAudioEndpointSelection>(services =>
+            services.GetRequiredService<EdgeAgentAudioOutputManager>());
         builder.Services.AddSingleton<EdgeAgentStartupCoordinator>();
         builder.Services.AddSingleton<IAudioPlaybackEventHandler, EdgeAgentPlaybackEventHandler>();
         builder.Services.AddSingleton<WasapiAudioPlayer>();
@@ -49,7 +57,8 @@ internal static class Program
             TimeSpan.FromSeconds(options.MaximumClockSkewSeconds), options.MaximumReceiptQueue,
             options.AudioEndpointId,
             services.GetRequiredService<EdgeAgentMaintenanceCoordinator>(),
-            services.GetRequiredService<InstallerMaintenanceGate>()));
+            services.GetRequiredService<InstallerMaintenanceGate>(),
+            () => services.GetRequiredService<EdgeAgentAudioOutputManager>().CurrentEndpointId));
         builder.Services.AddSingleton<DeviceCommandTransport>(services => new DeviceCommandTransport(
             options,
             services.GetRequiredService<DeviceCommandProcessor>(),

@@ -125,6 +125,262 @@ public sealed class StatusPipeIntegrationTests
     }
 
     [Fact]
+    public async Task AudioOutputSelection_RequiresLeaseOwnerAndPersistsOnlyAnActiveEndpoint()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-settings-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settingsPath = Path.Combine(directory, "audio-endpoint.json");
+            var control = new FakeAudioEndpointControl();
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", settingsPath, control, status);
+            EdgeAgentMaintenanceCoordinator maintenance = new();
+            EdgeAgentStatusPipeService service = CreateService(status, CreatePipeName(), maintenance,
+                audioOutputManager: manager);
+            const string ownerSid = "S-1-5-21-111-222-333-1001";
+            const string otherSid = "S-1-5-21-111-222-333-1002";
+
+            EdgeAgentPipeResponse deniedWithoutLease = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "set_audio_output", Guid.NewGuid(), "endpoint-new"),
+                ownerSid, CancellationToken.None);
+            Assert.Equal("maintenance_lease_invalid", deniedWithoutLease.DiagnosticCode);
+
+            EdgeAgentPipeResponse begun = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "begin_maintenance"), ownerSid, CancellationToken.None);
+            Guid leaseId = Assert.IsType<Guid>(begun.LeaseId);
+
+            EdgeAgentPipeResponse wrongOwner = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "set_audio_output", leaseId, "endpoint-new"),
+                otherSid, CancellationToken.None);
+            Assert.Equal("maintenance_lease_invalid", wrongOwner.DiagnosticCode);
+
+            EdgeAgentPipeResponse invalidEndpoint = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "set_audio_output", leaseId, "\\\\server\\arbitrary"),
+                ownerSid, CancellationToken.None);
+            Assert.Equal("audio_output_unavailable", invalidEndpoint.DiagnosticCode);
+            Assert.Equal("endpoint-old", manager.CurrentEndpointId);
+            Assert.False(File.Exists(settingsPath));
+
+            EdgeAgentPipeResponse changed = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "set_audio_output", leaseId, "endpoint-new"),
+                ownerSid, CancellationToken.None);
+            Assert.True(changed.Succeeded);
+            Assert.Equal("endpoint-new", status.Get().AudioEndpointId);
+            Assert.Equal("endpoint-new", manager.CurrentEndpointId);
+
+            EdgeAgentAudioOutputManager restored = new("endpoint-old", settingsPath, control, status);
+            Assert.Equal("endpoint-new", restored.CurrentEndpointId);
+
+            EdgeAgentPipeResponse released = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), ownerSid, CancellationToken.None);
+            Assert.True(released.Succeeded);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task InvalidSavedAudioOutput_FailsClosedInsteadOfUsingConfiguredFallback()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-invalid-audio-settings-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settingsPath = Path.Combine(directory, "audio-endpoint.json");
+            await File.WriteAllTextAsync(settingsPath, "{ invalid json");
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", settingsPath,
+                new FakeAudioEndpointControl(), status);
+
+            Assert.Null(manager.CurrentEndpointId);
+            Assert.True(manager.HasInvalidSavedSettings);
+
+            var databasePath = Path.Combine(directory, "edge-agent.db");
+            await using SqliteEdgeAgentStore store = new(databasePath, 100);
+            EdgeAgentOptions options = new()
+            {
+                BaseAddress = new Uri("https://watcher.example.invalid"),
+                IdentityPath = "/api/v1/device/identity",
+                WebSocketPath = "/api/v1/device/commands/stream",
+                ReceiptPath = "/api/v1/device/command-receipts",
+                DatabasePath = databasePath,
+                AudioRootDirectory = directory,
+                AudioEndpointId = "endpoint-old"
+            };
+            EdgeAgentStartupCoordinator startup = new(store, new TestClock(), options, status, manager);
+            await startup.InitializeAsync(CancellationToken.None);
+
+            Assert.Null(status.Get().AudioEndpointId);
+            Assert.Equal("audio_output_configuration_invalid", status.Get().DiagnosticCode);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AudioOutputTest_RequiresLeaseAndUsesOnlyEnumeratedCandidate()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var control = new FakeAudioEndpointControl();
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", Path.Combine(directory, "selection.json"), control, status);
+            EdgeAgentMaintenanceCoordinator maintenance = new();
+            EdgeAgentStatusPipeService service = CreateService(status, CreatePipeName(), maintenance,
+                audioOutputManager: manager);
+            const string ownerSid = "S-1-5-21-111-222-333-1001";
+
+            EdgeAgentPipeResponse deniedWithoutLease = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "test_audio_output", Guid.NewGuid(), "endpoint-new", AudioTestSound.Chime),
+                ownerSid, CancellationToken.None);
+            Assert.Equal("maintenance_lease_invalid", deniedWithoutLease.DiagnosticCode);
+
+            EdgeAgentPipeResponse begun = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "begin_maintenance"), ownerSid, CancellationToken.None);
+            Guid leaseId = Assert.IsType<Guid>(begun.LeaseId);
+
+            EdgeAgentPipeResponse missing = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "test_audio_output", leaseId, "\\\\server\\arbitrary", AudioTestSound.Tone),
+                ownerSid, CancellationToken.None);
+            Assert.Equal("audio_test_failed", missing.DiagnosticCode);
+            Assert.Null(control.LastTestEndpointId);
+
+            EdgeAgentPipeResponse tested = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "test_audio_output", leaseId, "endpoint-new", AudioTestSound.Chime),
+                ownerSid, CancellationToken.None);
+            Assert.True(tested.Succeeded);
+            Assert.Equal("endpoint-new", control.LastTestEndpointId);
+            Assert.Equal(AudioTestSound.Chime, control.LastTestSound);
+            Assert.Equal("endpoint-old", manager.CurrentEndpointId);
+            Assert.False(File.Exists(Path.Combine(directory, "selection.json")));
+
+            Assert.True((await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "release_maintenance", leaseId), ownerSid,
+                CancellationToken.None)).Succeeded);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AudioOutputInventoryIsVisibleThroughTheLocalPipeWithoutMaintenanceLease()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-list-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            FakeAudioEndpointControl control = new();
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", Path.Combine(directory, "selection.json"), control, status);
+            EdgeAgentStatusPipeService service = CreateService(status, CreatePipeName(), audioOutputManager: manager);
+
+            EdgeAgentPipeResponse response = await service.HandleRequestAsync(
+                new EdgeAgentPipeRequest(1, "get_audio_outputs"), null, CancellationToken.None);
+
+            Assert.True(response.Succeeded);
+            Assert.Collection(Assert.IsAssignableFrom<IReadOnlyList<EdgeAgentAudioEndpoint>>(response.AudioEndpoints),
+                endpoint => Assert.Equal("endpoint-old", endpoint.Id),
+                endpoint => Assert.Equal("endpoint-new", endpoint.Id));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AudioOutputInventoryWithMaximumEscapedNamesFitsTheBoundedResponseFrame()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-frame-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var pipeName = CreatePipeName();
+        EdgeAgentAudioEndpoint[] outputs = Enumerable.Range(0, 16)
+            .Select(index => new EdgeAgentAudioEndpoint(
+                $"{index}{new string('\\', 512 - index.ToString().Length)}", new string('Ж', 256), index == 0))
+            .ToArray();
+        try
+        {
+            FakeAudioEndpointControl control = new(outputs);
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", Path.Combine(directory, "selection.json"), control, status);
+            EdgeAgentStatusPipeService service = CreateService(status, pipeName, audioOutputManager: manager);
+            await service.StartAsync(CancellationToken.None);
+
+            try
+            {
+                EdgeAgentPipeResponse response = await SendRequestAsync(pipeName,
+                    new EdgeAgentPipeRequest(1, "get_audio_outputs"));
+
+                Assert.True(response.Succeeded);
+                Assert.Equal(16, response.AudioEndpoints?.Count);
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AudioOutputMutationAndTestAreRejectedForAnUnauthenticatedPipeCaller()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-auth-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var pipeName = CreatePipeName();
+        try
+        {
+            FakeAudioEndpointControl control = new();
+            EdgeAgentStatusProvider status = new(new TestClock());
+            EdgeAgentAudioOutputManager manager = new("endpoint-old", Path.Combine(directory, "selection.json"),
+                control, status);
+            SecurityIdentifier currentUser = WindowsIdentity.GetCurrent().User ??
+                throw new InvalidOperationException("Тестовий процес не має Windows SID.");
+            EdgeAgentStatusPipeService service = new(status, NullLogger<EdgeAgentStatusPipeService>.Instance,
+                pipeName, () => currentUser, () => currentUser, audioOutputManager: manager,
+                privilegedCallerResolver: _ => (false, null));
+            await service.StartAsync(CancellationToken.None);
+
+            try
+            {
+                EdgeAgentPipeResponse inventory = await SendRequestAsync(pipeName,
+                    new EdgeAgentPipeRequest(1, "get_audio_outputs"));
+                Assert.True(inventory.Succeeded);
+
+                EdgeAgentPipeResponse setResponse = await SendRequestAsync(pipeName,
+                    new EdgeAgentPipeRequest(1, "set_audio_output", Guid.NewGuid(), "endpoint-new"));
+                Assert.Equal("maintenance_access_denied", setResponse.DiagnosticCode);
+
+                EdgeAgentPipeResponse testResponse = await SendRequestAsync(pipeName,
+                    new EdgeAgentPipeRequest(1, "test_audio_output", Guid.NewGuid(), "endpoint-new", AudioTestSound.Tone));
+                Assert.Equal("maintenance_access_denied", testResponse.DiagnosticCode);
+                Assert.Null(control.LastTestEndpointId);
+                Assert.Equal("endpoint-old", manager.CurrentEndpointId);
+            }
+            finally
+            {
+                await service.StopAsync(CancellationToken.None);
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DatabaseBackup_UsesConfiguredDatabaseAndKeepsMaintenanceLeaseOnLostResponse()
     {
         var root = Path.Combine(Path.GetTempPath(), $"kgta-edge-backup-{Guid.NewGuid():N}");
@@ -256,7 +512,7 @@ public sealed class StatusPipeIntegrationTests
 
         try
         {
-            await AssertRejectedFrameAsync(pipeName, [0x01, 0x10, 0x00, 0x00]);
+            await AssertRejectedFrameAsync(pipeName, [0x01, 0x40, 0x00, 0x00]);
             await AssertRejectedFrameAsync(pipeName, [0x01, 0x00, 0x00, 0x00, (byte)'{']);
             var unsupportedField = "{\"schemaVersion\":1,\"operation\":\"get_status\",\"command\":\"stop\"}"u8.ToArray();
             byte[] unsupportedFieldFrame = [.. BitConverter.GetBytes(unsupportedField.Length), .. unsupportedField];
@@ -300,12 +556,44 @@ public sealed class StatusPipeIntegrationTests
         EdgeAgentStatusProvider status,
         string pipeName,
         EdgeAgentMaintenanceCoordinator? maintenance = null,
-        EdgeAgentDatabaseBackup? databaseBackup = null)
+        EdgeAgentDatabaseBackup? databaseBackup = null,
+        EdgeAgentAudioOutputManager? audioOutputManager = null,
+        Func<NamedPipeServerStream, (bool Authorized, string? CallerSid)>? privilegedCallerResolver = null)
     {
         SecurityIdentifier currentUser = WindowsIdentity.GetCurrent().User ??
             throw new InvalidOperationException("Тестовий процес не має Windows SID.");
         return new EdgeAgentStatusPipeService(status, NullLogger<EdgeAgentStatusPipeService>.Instance,
-            pipeName, () => currentUser, () => currentUser, maintenance, databaseBackup);
+            pipeName, () => currentUser, () => currentUser, maintenance, databaseBackup, audioOutputManager,
+            privilegedCallerResolver);
+    }
+
+    private sealed class FakeAudioEndpointControl : IAudioEndpointControl
+    {
+        private readonly IReadOnlyList<EdgeAgentAudioEndpoint> _outputs;
+
+        public FakeAudioEndpointControl(IReadOnlyList<EdgeAgentAudioEndpoint>? outputs = null) =>
+            _outputs = outputs ??
+            [
+                new EdgeAgentAudioEndpoint("endpoint-old", "Старий вихід", true),
+                new EdgeAgentAudioEndpoint("endpoint-new", "Новий вихід", false)
+            ];
+
+        public string? LastTestEndpointId { get; private set; }
+        public AudioTestSound? LastTestSound { get; private set; }
+
+        public IReadOnlyList<EdgeAgentAudioEndpoint> GetActiveOutputs() => _outputs;
+
+        public Task PlayTestSoundAsync(string endpointId, AudioTestSound sound, CancellationToken cancellationToken)
+        {
+            if (!GetActiveOutputs().Any(endpoint => endpoint.Id == endpointId))
+            {
+                throw new InvalidOperationException("Вибраний аудіовихід недоступний.");
+            }
+
+            LastTestEndpointId = endpointId;
+            LastTestSound = sound;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class DisconnectedWriteStream : Stream
@@ -374,7 +662,7 @@ public sealed class StatusPipeIntegrationTests
         var header = new byte[4];
         await ReadExactlyAsync(stream, header, token);
         var length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        Assert.InRange(length, 1, 4096);
+        Assert.InRange(length, 1, 128 * 1024);
         var payload = new byte[length];
         await ReadExactlyAsync(stream, payload, token);
         return payload;

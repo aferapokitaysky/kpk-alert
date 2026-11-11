@@ -1,9 +1,9 @@
 <Window x:Class="Watcher.EdgeAgent.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="KGTA Alert — стан вузла" Height="560" Width="720"
-        MinHeight="480" MinWidth="600" Background="#F3F6FA"
-        FontFamily="Segoe UI" Loaded="Window_Loaded" Closed="Window_Closed">
+        Title="KGTA Alert — стан вузла" Height="690" Width="760"
+        MinHeight="600" MinWidth="620" Background="#F3F6FA"
+        FontFamily="Segoe UI" Loaded="Window_Loaded" Closing="Window_Closing" Closed="Window_Closed">
   <Grid Margin="28">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
@@ -14,11 +14,13 @@
       <TextBlock Text="KGTA Alert" FontSize="25" FontWeight="SemiBold" Foreground="#17263B" />
       <TextBlock Text="Стан локального вузла оповіщення" Margin="0,4,0,22" Foreground="{StaticResource MutedBrush}" />
     </StackPanel>
-    <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" CornerRadius="10" Padding="24">
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+    <Border Background="{StaticResource SurfaceBrush}" CornerRadius="10" Padding="24">
       <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         <DockPanel>
           <Ellipse x:Name="StateIndicator" Width="11" Height="11" Fill="#8995A5" Margin="0,0,10,0" VerticalAlignment="Center" />
@@ -32,11 +34,35 @@
         <Border Grid.Row="6" Margin="0,18,0,0" Padding="12" Background="#F5F7FA" CornerRadius="6" VerticalAlignment="Top">
           <TextBlock x:Name="DiagnosticText" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" Text="Діагностика: немає" />
         </Border>
+        <StackPanel Grid.Row="7" Margin="0,20,0,0">
+          <TextBlock Text="Тест аудіовиходу" FontSize="17" FontWeight="SemiBold" Foreground="#17263B" />
+          <TextBlock Margin="0,4,0,10" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                     Text="Список пристроїв отримано від служби. Тест і тривожні сигнали перевіряються через той самий вихід служби. Для зміни потрібні права адміністратора; під час тесту нові команди запуску призупиняються." />
+          <DockPanel LastChildFill="True">
+            <Button x:Name="RefreshAudioOutputsButton" Content="Оновити список" DockPanel.Dock="Right"
+                    Margin="10,0,0,0" Padding="12,7" Click="RefreshAudioOutputs_Click" />
+            <ComboBox x:Name="AudioOutputComboBox" MinHeight="34" VerticalContentAlignment="Center"
+                      SelectionChanged="AudioOutput_SelectionChanged" />
+          </DockPanel>
+          <DockPanel Margin="0,10,0,0">
+            <Button x:Name="TestToneButton" Content="Короткий тон" DockPanel.Dock="Left"
+                    Padding="16,8" Background="{StaticResource AccentBrush}" Foreground="White"
+                    BorderThickness="0" Click="TestTone_Click" IsEnabled="False" />
+            <Button x:Name="TestChimeButton" Content="Три ноти" DockPanel.Dock="Left"
+                    Margin="8,0,0,0" Padding="16,8" Click="TestChime_Click" IsEnabled="False" />
+            <TextBlock x:Name="AudioOutputMessage" Margin="12,0,0,0" VerticalAlignment="Center"
+                       Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap" />
+          </DockPanel>
+          <Button x:Name="ApplyAudioOutputButton" Content="Застосувати для тривожних сигналів"
+                  Margin="0,10,0,0" Padding="16,8" HorizontalAlignment="Left"
+                  Click="ApplyAudioOutput_Click" IsEnabled="False" />
+        </StackPanel>
       </Grid>
     </Border>
+    </ScrollViewer>
     <DockPanel Grid.Row="2" Margin="0,18,0,0">
       <TextBlock x:Name="UpdatedText" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" />
-      <Button Content="Оновити" DockPanel.Dock="Right" Padding="18,9" Background="{StaticResource AccentBrush}"
+      <Button x:Name="RefreshStatusButton" Content="Оновити" DockPanel.Dock="Right" Padding="18,9" Background="{StaticResource AccentBrush}"
               Foreground="White" BorderThickness="0" Click="Refresh_Click" />
     </DockPanel>
   </Grid>

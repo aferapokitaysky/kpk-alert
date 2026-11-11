@@ -26,7 +26,20 @@ public sealed record EdgeAgentStatus(
     int PendingReceiptCount,
     string? DiagnosticCode);
 
-public sealed record EdgeAgentPipeRequest(int SchemaVersion, string Operation, Guid? LeaseId = null);
+public sealed record EdgeAgentPipeRequest(
+    int SchemaVersion,
+    string Operation,
+    Guid? LeaseId = null,
+    string? AudioEndpointId = null,
+    AudioTestSound? AudioTestSound = null);
+
+public sealed record EdgeAgentAudioEndpoint(string Id, string Name, bool IsDefault);
+
+public enum AudioTestSound
+{
+    Tone,
+    Chime
+}
 
 public sealed record EdgeAgentPipeResponse(
     int SchemaVersion,
@@ -36,4 +49,5 @@ public sealed record EdgeAgentPipeResponse(
     Guid? LeaseId = null,
     Guid? BackupId = null,
     string? DatabasePathHash = null,
-    Guid? MaintenanceLeaseId = null);
+    Guid? MaintenanceLeaseId = null,
+    IReadOnlyList<EdgeAgentAudioEndpoint>? AudioEndpoints = null);

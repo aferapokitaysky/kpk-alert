@@ -237,7 +237,8 @@ internal sealed class EdgeAgentStartupCoordinator(
     IEdgeAgentStore store,
     IEdgeAgentClock clock,
     EdgeAgentOptions options,
-    EdgeAgentStatusProvider status)
+    EdgeAgentStatusProvider status,
+    IAudioEndpointSelection? audioEndpointSelection = null)
 {
     public async Task<IReadOnlyList<PendingCommandReceipt>> InitializeAsync(CancellationToken cancellationToken)
     {
@@ -247,8 +248,12 @@ internal sealed class EdgeAgentStartupCoordinator(
         status.Update(current => current with
         {
             ConnectionState = EdgeAgentConnectionState.Connecting,
-            AudioEndpointId = options.AudioEndpointId,
-            AudioState = "unavailable"
+            AudioEndpointId = audioEndpointSelection is null
+                ? options.AudioEndpointId
+                : audioEndpointSelection.CurrentEndpointId,
+            AudioState = "unavailable",
+            DiagnosticCode = audioEndpointSelection is EdgeAgentAudioOutputManager
+            { HasInvalidSavedSettings: true } ? "audio_output_configuration_invalid" : current.DiagnosticCode
         });
         return recoveredReceipts;
     }
@@ -267,9 +272,12 @@ internal sealed class EdgeAgentStatusPipeService(
     Func<SecurityIdentifier>? serviceSidProvider = null,
     Func<SecurityIdentifier>? operatorGroupSidProvider = null,
     EdgeAgentMaintenanceCoordinator? maintenanceCoordinator = null,
-    EdgeAgentDatabaseBackup? databaseBackup = null) : BackgroundService
+    EdgeAgentDatabaseBackup? databaseBackup = null,
+    EdgeAgentAudioOutputManager? audioOutputManager = null,
+    Func<NamedPipeServerStream, (bool Authorized, string? CallerSid)>? privilegedCallerResolver = null) : BackgroundService
 {
-    private const int MaximumFrameBytes = 4096;
+    private const int MaximumRequestFrameBytes = 4096;
+    private const int MaximumResponseFrameBytes = 128 * 1024;
     private static readonly TimeSpan ClientRequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaintenanceDrainTimeout = TimeSpan.FromMinutes(15);
     private readonly object _maintenanceLeaseSync = new();
@@ -299,11 +307,23 @@ internal sealed class EdgeAgentStatusPipeService(
                 using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 operationTimeout.CancelAfter(MaintenanceDrainTimeout);
                 string? callerSid = null;
-                var isMaintenanceRequest = request?.Operation is "begin_maintenance" or "release_maintenance" or "backup_database";
-                var maintenanceCallerAuthorized = !isMaintenanceRequest || TryGetAuthorizedMaintenanceCaller(pipe, out callerSid);
+                var requiresAdministrator = request?.Operation is "begin_maintenance" or "release_maintenance" or
+                    "backup_database" or "set_audio_output" or "test_audio_output";
+                var administratorAuthorized = true;
+                if (requiresAdministrator)
+                {
+                    if (privilegedCallerResolver is not null)
+                    {
+                        (administratorAuthorized, callerSid) = privilegedCallerResolver(pipe);
+                    }
+                    else
+                    {
+                        administratorAuthorized = TryGetAuthorizedMaintenanceCaller(pipe, out callerSid);
+                    }
+                }
                 Task? disconnectMonitor = null;
                 using var disconnectMonitorCancellation = CancellationTokenSource.CreateLinkedTokenSource(operationTimeout.Token);
-                if (request?.Operation == "begin_maintenance" && maintenanceCallerAuthorized)
+                if (request?.Operation == "begin_maintenance" && administratorAuthorized)
                 {
                     disconnectMonitor = CancelOperationWhenClientDisconnectsAsync(
                         pipe, operationTimeout, disconnectMonitorCancellation.Token);
@@ -314,7 +334,7 @@ internal sealed class EdgeAgentStatusPipeService(
                 {
                     response = request is null
                         ? new EdgeAgentPipeResponse(1, false, null, "invalid_request")
-                        : !maintenanceCallerAuthorized
+                        : !administratorAuthorized
                             ? new EdgeAgentPipeResponse(1, false, null, "maintenance_access_denied")
                             : await HandleRequestAsync(request, callerSid, operationTimeout.Token);
                 }
@@ -357,6 +377,81 @@ internal sealed class EdgeAgentStatusPipeService(
         {
             case "get_status" when request.LeaseId is null:
                 return new EdgeAgentPipeResponse(1, true, status.Get(), null);
+
+            case "get_audio_outputs" when request.LeaseId is null && request.AudioEndpointId is null &&
+                                               request.AudioTestSound is null:
+                if (audioOutputManager is null)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_output_unavailable");
+                }
+
+                try
+                {
+                    return new EdgeAgentPipeResponse(1, true, status.Get(), null,
+                        AudioEndpoints: audioOutputManager.GetActiveOutputs());
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning("Не вдалося отримати перелік аудіовиходів: {ExceptionType}.",
+                        exception.GetType().Name);
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_output_enumeration_failed");
+                }
+
+            case "set_audio_output" when request.LeaseId is { } audioLeaseId &&
+                                              request.AudioEndpointId is not null && request.AudioTestSound is null:
+                if (!IsLeaseOwner(audioLeaseId, callerSid))
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                }
+
+                if (audioOutputManager is null)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_output_unavailable");
+                }
+
+                try
+                {
+                    var setDiagnostic = await audioOutputManager.SetEndpointAsync(
+                        request.AudioEndpointId, cancellationToken);
+                    return setDiagnostic is null
+                        ? new EdgeAgentPipeResponse(1, true, status.Get(), null,
+                            MaintenanceLeaseId: audioLeaseId)
+                        : new EdgeAgentPipeResponse(1, false, null, setDiagnostic,
+                            MaintenanceLeaseId: audioLeaseId);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning("Не вдалося зберегти аудіовихід: {ExceptionType}.", exception.GetType().Name);
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_output_save_failed",
+                        MaintenanceLeaseId: audioLeaseId);
+                }
+
+            case "test_audio_output" when request.LeaseId is { } testLeaseId &&
+                                               request.AudioEndpointId is not null &&
+                                               request.AudioTestSound is { } testSound && Enum.IsDefined(testSound):
+                if (!IsLeaseOwner(testLeaseId, callerSid))
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "maintenance_lease_invalid");
+                }
+
+                if (audioOutputManager is null)
+                {
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_output_unavailable");
+                }
+
+                try
+                {
+                    await audioOutputManager.TestOutputAsync(request.AudioEndpointId, testSound, cancellationToken);
+                    return new EdgeAgentPipeResponse(1, true, status.Get(), null,
+                        MaintenanceLeaseId: testLeaseId);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning("Не вдалося відтворити тестовий звук: {ExceptionType}.",
+                        exception.GetType().Name);
+                    return new EdgeAgentPipeResponse(1, false, null, "audio_test_failed",
+                        MaintenanceLeaseId: testLeaseId);
+                }
 
             case "begin_maintenance" when request.LeaseId is null:
                 if (string.IsNullOrWhiteSpace(callerSid))
@@ -476,6 +571,16 @@ internal sealed class EdgeAgentStatusPipeService(
         }
     }
 
+    private bool IsLeaseOwner(Guid leaseId, string? callerSid)
+    {
+        if (string.IsNullOrWhiteSpace(callerSid)) return false;
+        lock (_maintenanceLeaseSync)
+        {
+            return _maintenanceLeaseId == leaseId && _maintenanceCoordinator.IsMaintenanceLeaseActive(leaseId) &&
+                string.Equals(_maintenanceLeaseOwnerSid, callerSid, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     internal async Task WriteResponseAsync(
         Stream pipe,
         EdgeAgentPipeResponse response,
@@ -484,7 +589,7 @@ internal sealed class EdgeAgentStatusPipeService(
         try
         {
             var payload = JsonSerializer.SerializeToUtf8Bytes(response, JsonOptions);
-            if (payload.Length > MaximumFrameBytes)
+            if (payload.Length > MaximumResponseFrameBytes)
             {
                 throw new InvalidDataException("Відповідь каналу стану завелика.");
             }
@@ -584,8 +689,8 @@ internal sealed class EdgeAgentStatusPipeService(
             PipeAccessDuplex | FileFlagOverlapped,
             CreatePipeMode(),
             1,
-            4096,
-            4096,
+            MaximumResponseFrameBytes,
+            MaximumRequestFrameBytes,
             0,
             ref attributes);
         if (pipeHandle.IsInvalid)
@@ -676,7 +781,7 @@ internal sealed class EdgeAgentStatusPipeService(
         var header = new byte[4];
         await ReadExactlyAsync(stream, header, cancellationToken);
         var length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        if (length is <= 0 or > MaximumFrameBytes) throw new InvalidDataException("Некоректний розмір запиту.");
+        if (length is <= 0 or > MaximumRequestFrameBytes) throw new InvalidDataException("Некоректний розмір запиту.");
         var payload = new byte[length];
         await ReadExactlyAsync(stream, payload, cancellationToken);
         return payload;

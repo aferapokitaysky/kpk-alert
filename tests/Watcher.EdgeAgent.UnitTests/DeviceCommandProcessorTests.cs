@@ -52,6 +52,22 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ValidStart_UsesCurrentServiceAudioOutputSelection()
+    {
+        var selectedEndpointId = "endpoint-at-startup";
+        DeviceCommandProcessor processor = new(
+            _store, _assets, _player, _clock, TimeSpan.FromSeconds(120), 20, "endpoint-from-config",
+            audioEndpointIdProvider: () => selectedEndpointId);
+        selectedEndpointId = "endpoint-selected-in-panel";
+
+        CommandProcessingOutcome result = await processor.ProcessAsync(
+            CreateCommand(1), new DeviceIdentity(DeviceId, LocationId), CancellationToken.None);
+
+        Assert.Equal(DeviceCommandState.Playing, result.State);
+        Assert.Equal("endpoint-selected-in-panel", _player.LastRequest?.AudioEndpointId);
+    }
+
+    [Fact]
     public async Task ExactRedelivery_RequeuesLastStableReceipt_WithoutStartingAudioAgain()
     {
         CommandDispatch command = CreateCommand(1);

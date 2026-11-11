@@ -13,7 +13,8 @@ public sealed class DeviceCommandProcessor(
     int maximumReceiptQueue,
     string? audioEndpointId = null,
     EdgeAgentMaintenanceCoordinator? maintenanceCoordinator = null,
-    InstallerMaintenanceGate? installerMaintenanceGate = null)
+    InstallerMaintenanceGate? installerMaintenanceGate = null,
+    Func<string?>? audioEndpointIdProvider = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _processingGate = new(1, 1);
@@ -186,7 +187,8 @@ public sealed class DeviceCommandProcessor(
             try
             {
                 await audioPlayer.StartAsync(
-                    new PlaybackRequest(command.CommandId, command.PresetCode!, asset!.FilePath, deadlineUtc, audioEndpointId),
+                    new PlaybackRequest(command.CommandId, command.PresetCode!, asset!.FilePath, deadlineUtc,
+                        audioEndpointIdProvider is null ? audioEndpointId : audioEndpointIdProvider()),
                     cancellationToken);
             }
             catch
