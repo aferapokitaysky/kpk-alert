@@ -101,10 +101,9 @@ public partial class MainWindow : Window
 
             _audioOutputs = response.AudioEndpoints.Select(endpoint =>
                 new AudioOutputChoice(endpoint.Id, endpoint.Name, endpoint.IsDefault)).ToArray();
-            AudioOutputPlaceholder.Text = _audioOutputs.Count == 0
+            AudioOutputPlaceholderText.Text = _audioOutputs.Count == 0
                 ? "Служба працює, але Windows не повідомила активних аудіовиходів. Перевірте аудіопристрої та оновіть список."
                 : string.Empty;
-            AudioOutputPlaceholder.Visibility = _audioOutputs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             if (response.Status is { } status)
             {
                 _configuredAudioEndpointId = status.AudioEndpointId;
@@ -121,7 +120,7 @@ public partial class MainWindow : Window
                 ?? _audioOutputs.FirstOrDefault();
             _loadingAudioOutputs = false;
             AudioOutputMessage.Text = _audioOutputs.Count == 0
-                ? AudioOutputPlaceholder.Text
+                ? AudioOutputPlaceholderText.Text
                 : AudioOutputComboBox.SelectedItem is AudioOutputChoice selectedOutput &&
                   selectedOutput.Id != _configuredAudioEndpointId
                     ? "Вибрано інший вихід. Перевірте його, потім застосуйте для тривожних сигналів."
@@ -153,9 +152,8 @@ public partial class MainWindow : Window
         AudioOutputComboBox.ItemsSource = _audioOutputs;
         AudioOutputComboBox.SelectedItem = null;
         _loadingAudioOutputs = false;
-        AudioOutputPlaceholder.Text = message;
-        AudioOutputPlaceholder.Visibility = Visibility.Visible;
-        AudioOutputMessage.Text = message;
+        AudioOutputPlaceholderText.Text = message;
+        AudioOutputMessage.Text = string.Empty;
         UpdateAudioButtons();
     }
 
@@ -265,8 +263,12 @@ public partial class MainWindow : Window
     {
         var hasSelection = AudioOutputComboBox.SelectedItem is AudioOutputChoice;
         var canOperate = hasSelection && !_audioOperationInProgress && !_windowLifetime.IsCancellationRequested;
+        AudioOutputComboBox.Visibility = _audioOutputs.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         AudioOutputComboBox.IsEnabled = _audioOutputs.Count > 0 && !_audioOperationInProgress;
         AudioOutputPlaceholder.Visibility = _audioOutputs.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+        AudioOutputMessageCard.Visibility = _audioOutputs.Count > 0 && !string.IsNullOrWhiteSpace(AudioOutputMessage.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         TestToneButton.IsEnabled = canOperate;
         TestChimeButton.IsEnabled = canOperate;
         RefreshAudioOutputsButton.IsEnabled = !_audioOperationInProgress;
