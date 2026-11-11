@@ -187,7 +187,65 @@ public sealed class CommandReceiptSenderTests
         Assert.Equal(receipt.OccurredAtUtc, sent.RootElement.GetProperty("occurredAtUtc").GetDateTimeOffset());
     }
 
-    private static CommandReceiptSender CreateSender(HttpClient client, IEdgeAgentClock? clock = null)
+    [Fact]
+    public async Task RunAsync_MarksDeliveredReceiptAndContinuesUntilStopped()
+    {
+        using CancellationTokenSource cancellation = new();
+        ControlledStore store = new(CreateReceipt(), cancellation.Cancel);
+        using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted)));
+        CommandReceiptSender sender = CreateSender(client, store: store);
+
+        await sender.RunAsync(cancellation.Token);
+
+        Assert.Equal(store.ReceiptEventId, store.DeliveredEventId);
+        Assert.Null(store.ScheduledRetryAtUtc);
+    }
+
+    [Fact]
+    public async Task RunAsync_QuarantinesPermanentlyRejectedReceiptAndReportsReason()
+    {
+        using CancellationTokenSource cancellation = new();
+        ControlledStore store = new(CreateReceipt(), cancellation.Cancel);
+        using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)));
+        List<string> diagnostics = [];
+        CommandReceiptSender sender = CreateSender(client, store: store, reportDiagnostic: (code, _) =>
+        {
+            diagnostics.Add(code);
+            return ValueTask.CompletedTask;
+        });
+
+        await sender.RunAsync(cancellation.Token);
+
+        Assert.Null(store.DeliveredEventId);
+        Assert.Equal(DateTimeOffset.MaxValue, store.ScheduledRetryAtUtc);
+        Assert.Equal(["receipt_contract_rejected"], diagnostics);
+    }
+
+    [Fact]
+    public async Task RunAsync_SchedulesTransientFailureUsingServerRetryAfter()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T18:00:00Z");
+        using CancellationTokenSource cancellation = new();
+        ControlledStore store = new(CreateReceipt(), cancellation.Cancel);
+        using HttpClient client = new(new StubHandler(_ =>
+        {
+            HttpResponseMessage response = new(HttpStatusCode.ServiceUnavailable);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(17));
+            return response;
+        }));
+        CommandReceiptSender sender = CreateSender(client, new FixedClock(now), store);
+
+        await sender.RunAsync(cancellation.Token);
+
+        Assert.Null(store.DeliveredEventId);
+        Assert.Equal(now.AddSeconds(17), store.ScheduledRetryAtUtc);
+    }
+
+    private static CommandReceiptSender CreateSender(
+        HttpClient client,
+        IEdgeAgentClock? clock = null,
+        IEdgeAgentStore? store = null,
+        Func<string, Exception?, ValueTask>? reportDiagnostic = null)
     {
         client.BaseAddress = new Uri("https://watcher.example.test");
         return new CommandReceiptSender(
@@ -198,11 +256,13 @@ public sealed class CommandReceiptSenderTests
             WebSocketPath = "/api/v1/device/commands/stream",
             ReceiptPath = "/api/v1/device/command-receipts",
             DatabasePath = "unused.db",
-            AudioRootDirectory = "unused-audio"
+            AudioRootDirectory = "unused-audio",
+            ReceiptRetryMaximumDelaySeconds = 60
         },
-        new StubStore(),
+        store ?? new StubStore(),
         client,
-        clock ?? new FixedClock());
+        clock ?? new FixedClock(),
+        reportDiagnostic);
     }
 
     private static PendingCommandReceipt CreateReceipt() => new(
@@ -243,6 +303,54 @@ public sealed class CommandReceiptSenderTests
         public Task<PendingCommandReceipt?> GetNextReceiptAsync(DateTimeOffset nowUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task MarkReceiptDeliveredAsync(Guid eventId, CancellationToken cancellationToken) => throw new NotImplementedException();
         public Task ScheduleReceiptRetryAsync(Guid eventId, DateTimeOffset nextAttemptAtUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
+    }
+
+    private sealed class ControlledStore(
+        PendingCommandReceipt receipt,
+        Action stopRunLoop) : IEdgeAgentStore
+    {
+        private PendingCommandReceipt? _pendingReceipt = receipt;
+
+        public Guid ReceiptEventId { get; } = receipt.EventId;
+        public Guid? DeliveredEventId { get; private set; }
+        public DateTimeOffset? ScheduledRetryAtUtc { get; private set; }
+
+        public Task<PendingCommandReceipt?> GetNextReceiptAsync(
+            DateTimeOffset nowUtc,
+            CancellationToken cancellationToken)
+        {
+            PendingCommandReceipt? pending = _pendingReceipt;
+            _pendingReceipt = null;
+            return Task.FromResult(pending);
+        }
+
+        public Task MarkReceiptDeliveredAsync(Guid eventId, CancellationToken cancellationToken)
+        {
+            DeliveredEventId = eventId;
+            stopRunLoop();
+            return Task.CompletedTask;
+        }
+
+        public Task ScheduleReceiptRetryAsync(
+            Guid eventId,
+            DateTimeOffset nextAttemptAtUtc,
+            CancellationToken cancellationToken)
+        {
+            ScheduledRetryAtUtc = nextAttemptAtUtc;
+            stopRunLoop();
+            return Task.CompletedTask;
+        }
+
+        public Task InitializeAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<IReadOnlyList<PendingCommandReceipt>> RecoverInterruptedPlaybackAsync(DateTimeOffset nowUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<ProcessedCommand?> FindCommandAsync(Guid commandId, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task RequeueLatestReceiptAsync(Guid commandId, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<AcceptCommandResult> TryAcceptAsync(Watcher.Contracts.DeviceCommands.CommandDispatch command, string payloadHash, DateTimeOffset nowUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<bool> RecordRejectedCommandAsync(Watcher.Contracts.DeviceCommands.CommandDispatch command, string payloadHash, Watcher.Contracts.DeviceCommands.DeviceCommandState state, string diagnosticCode, DateTimeOffset nowUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<PendingCommandReceipt> AddReceiptAsync(Guid commandId, long sequence, Watcher.Contracts.DeviceCommands.DeviceCommandState state, DateTimeOffset occurredAtUtc, string? diagnosticCode, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task UpdateCommandStateAsync(Guid commandId, Watcher.Contracts.DeviceCommands.DeviceCommandState state, string? diagnosticCode, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task TransitionCommandAsync(Guid commandId, Watcher.Contracts.DeviceCommands.DeviceCommandState state, string? diagnosticCode, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public Task<int> GetPendingReceiptCountAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 
     private sealed class FixedClock(DateTimeOffset? now = null) : IEdgeAgentClock
