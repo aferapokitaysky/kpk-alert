@@ -39,10 +39,10 @@ internal static class Program
         builder.Services.AddSingleton<IAudioEndpointControl, WasapiAudioEndpointControl>();
         builder.Services.AddSingleton<EdgeAgentAudioOutputManager>(services => new EdgeAgentAudioOutputManager(
             options.AudioEndpointId,
-            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "..", "audio-settings", "audio-endpoint.json"),
+            GetAudioOutputSettingsPath(configurationPath),
             services.GetRequiredService<IAudioEndpointControl>(),
             services.GetRequiredService<EdgeAgentStatusProvider>(),
-            Path.Combine(Path.GetDirectoryName(options.DatabasePath)!, "audio-endpoint.json")));
+            GetLegacyAudioOutputSettingsPath(options.DatabasePath)));
         builder.Services.AddSingleton<IAudioEndpointSelection>(services =>
             services.GetRequiredService<EdgeAgentAudioOutputManager>());
         builder.Services.AddSingleton<EdgeAgentStartupCoordinator>();
@@ -109,5 +109,19 @@ internal static class Program
             ReconnectMaximumDelaySeconds = section.GetValue("ReconnectMaximumDelaySeconds", 30),
             ReceiptRetryMaximumDelaySeconds = section.GetValue("ReceiptRetryMaximumDelaySeconds", 60)
         };
+    }
+
+    internal static string GetAudioOutputSettingsPath(string configurationPath)
+    {
+        var configurationDirectory = Path.GetDirectoryName(Path.GetFullPath(configurationPath))
+            ?? throw new InvalidOperationException("Не вдалося визначити каталог конфігурації вузла.");
+        return Path.Combine(configurationDirectory, "audio-settings", "audio-endpoint.json");
+    }
+
+    internal static string GetLegacyAudioOutputSettingsPath(string databasePath)
+    {
+        var databaseDirectory = Path.GetDirectoryName(Path.GetFullPath(databasePath))
+            ?? throw new InvalidOperationException("Не вдалося визначити каталог бази даних вузла.");
+        return Path.Combine(databaseDirectory, "audio-endpoint.json");
     }
 }

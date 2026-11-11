@@ -370,6 +370,21 @@ public sealed class StatusPipeIntegrationTests
     }
 
     [Fact]
+    public void AudioOutputSettingsPath_UsesInstallerManagedDirectoryWhenDatabasePathIsCustomized()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-paths-{Guid.NewGuid():N}");
+        var configurationPath = Path.Combine(root, "KGTA", "Alert", "edge-agent.json");
+        var databasePath = Path.Combine(root, "custom-database", "edge-agent.db");
+
+        Assert.Equal(
+            Path.Combine(root, "KGTA", "Alert", "audio-settings", "audio-endpoint.json"),
+            Program.GetAudioOutputSettingsPath(configurationPath));
+        Assert.Equal(
+            Path.Combine(root, "custom-database", "audio-endpoint.json"),
+            Program.GetLegacyAudioOutputSettingsPath(databasePath));
+    }
+
+    [Fact]
     public async Task AudioOutputTest_RequiresLeaseAndUsesOnlyEnumeratedCandidate()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"edge-agent-audio-test-{Guid.NewGuid():N}");
