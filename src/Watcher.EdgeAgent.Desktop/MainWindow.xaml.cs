@@ -95,17 +95,16 @@ public partial class MainWindow : Window
                 new EdgeAgentPipeRequest(1, "get_audio_outputs"), _windowLifetime.Token);
             if (!response.Succeeded || response.AudioEndpoints is null)
             {
-                _audioOutputs = Array.Empty<AudioOutputChoice>();
-                _loadingAudioOutputs = true;
-                AudioOutputComboBox.ItemsSource = _audioOutputs;
-                _loadingAudioOutputs = false;
-                UpdateAudioButtons();
-                AudioOutputMessage.Text = DescribeAudioOperationFailure(response.DiagnosticCode);
+                ShowAudioOutputUnavailable(DescribeAudioInventoryFailure(response.DiagnosticCode));
                 return;
             }
 
             _audioOutputs = response.AudioEndpoints.Select(endpoint =>
                 new AudioOutputChoice(endpoint.Id, endpoint.Name, endpoint.IsDefault)).ToArray();
+            AudioOutputPlaceholder.Text = _audioOutputs.Count == 0
+                ? "Служба працює, але Windows не повідомила активних аудіовиходів. Перевірте аудіопристрої та оновіть список."
+                : string.Empty;
+            AudioOutputPlaceholder.Visibility = _audioOutputs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             if (response.Status is { } status)
             {
                 _configuredAudioEndpointId = status.AudioEndpointId;
@@ -122,23 +121,42 @@ public partial class MainWindow : Window
                 ?? _audioOutputs.FirstOrDefault();
             _loadingAudioOutputs = false;
             AudioOutputMessage.Text = _audioOutputs.Count == 0
-                ? "Служба не бачить активних аудіовиходів. Перевірте пристрої Windows у контексті служби."
+                ? AudioOutputPlaceholder.Text
                 : AudioOutputComboBox.SelectedItem is AudioOutputChoice selectedOutput &&
                   selectedOutput.Id != _configuredAudioEndpointId
                     ? "Вибрано інший вихід. Перевірте його, потім застосуйте для тривожних сигналів."
                     : "Тест і тривожні сигнали відтворюються службою через поточний вихід.";
             UpdateAudioButtons();
         }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or TimeoutException or
-                                          UnauthorizedAccessException or OperationCanceledException or JsonException)
+        catch (UnauthorizedAccessException)
         {
-            _audioOutputs = Array.Empty<AudioOutputChoice>();
-            _loadingAudioOutputs = true;
-            AudioOutputComboBox.ItemsSource = _audioOutputs;
-            _loadingAudioOutputs = false;
-            UpdateAudioButtons();
-            AudioOutputMessage.Text = "Не вдалося отримати список виходів служби. Перевірте, чи запущена служба, і оновіть список.";
+            ShowAudioOutputUnavailable(
+                "Обліковий запис не має доступу до служби. Адміністратор має додати його до групи KGTA Alert Operators.");
         }
+        catch (IOException)
+        {
+            ShowAudioOutputUnavailable(
+                "Служба KGTA Alert Edge Agent не встановлена або не запущена. Встановіть і запустіть службу, потім оновіть список.");
+        }
+        catch (Exception exception) when (exception is InvalidDataException or TimeoutException or
+                                          OperationCanceledException or JsonException)
+        {
+            ShowAudioOutputUnavailable(
+                "Служба не повернула перелік аудіовиходів. Перевірте її стан і повторіть оновлення.");
+        }
+    }
+
+    private void ShowAudioOutputUnavailable(string message)
+    {
+        _audioOutputs = Array.Empty<AudioOutputChoice>();
+        _loadingAudioOutputs = true;
+        AudioOutputComboBox.ItemsSource = _audioOutputs;
+        AudioOutputComboBox.SelectedItem = null;
+        _loadingAudioOutputs = false;
+        AudioOutputPlaceholder.Text = message;
+        AudioOutputPlaceholder.Visibility = Visibility.Visible;
+        AudioOutputMessage.Text = message;
+        UpdateAudioButtons();
     }
 
     private async Task StartAudioOperationAsync(AudioTestSound? testSound, bool applySelection)
@@ -247,7 +265,8 @@ public partial class MainWindow : Window
     {
         var hasSelection = AudioOutputComboBox.SelectedItem is AudioOutputChoice;
         var canOperate = hasSelection && !_audioOperationInProgress && !_windowLifetime.IsCancellationRequested;
-        AudioOutputComboBox.IsEnabled = !_audioOperationInProgress;
+        AudioOutputComboBox.IsEnabled = _audioOutputs.Count > 0 && !_audioOperationInProgress;
+        AudioOutputPlaceholder.Visibility = _audioOutputs.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
         TestToneButton.IsEnabled = canOperate;
         TestChimeButton.IsEnabled = canOperate;
         RefreshAudioOutputsButton.IsEnabled = !_audioOperationInProgress;
@@ -376,6 +395,15 @@ public partial class MainWindow : Window
         "audio_test_failed" =>
             "Служба не змогла відтворити тестовий звук на цьому виході.",
         _ => FormatDiagnostic(diagnosticCode)
+    };
+
+    private static string DescribeAudioInventoryFailure(string? diagnosticCode) => diagnosticCode switch
+    {
+        "audio_output_unavailable" =>
+            "Служба запущена, але перелік аудіовиходів недоступний. Перевірте налаштування служби.",
+        "audio_output_enumeration_failed" =>
+            "Служба не змогла отримати перелік аудіовиходів Windows. Перевірте аудіопристрої та оновіть список.",
+        _ => DescribeAudioOperationFailure(diagnosticCode)
     };
 
     private static async Task<EdgeAgentPipeResponse> SendPipeRequestAsync(
