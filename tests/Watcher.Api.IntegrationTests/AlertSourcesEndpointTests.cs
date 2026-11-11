@@ -26,6 +26,8 @@ public sealed class AlertSourcesEndpointTests
         var content = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.NotNull(response.Headers.CacheControl);
+        Assert.True(response.Headers.CacheControl.NoStore);
         using var document = JsonDocument.Parse(content);
         JsonElement targets = document.RootElement.GetProperty("targets");
         JsonElement hromada = Assert.Single(targets.EnumerateArray(), target =>
