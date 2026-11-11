@@ -21,6 +21,10 @@ $installDirectory = Join-Path $env:ProgramFiles 'KGTA\Alert\EdgeAgent'
 $dataDirectory = Join-Path $env:ProgramData 'KGTA\Alert'
 $executable = Join-Path $installDirectory 'Watcher.EdgeAgent.Service.exe'
 $pipeName = 'KGTA.Alert.EdgeAgent.Status.v1'
+$operatorShortcutPath = Join-Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert') 'Стан вузла.lnk'
+$createdOperatorShortcut = $false
+$operatorShortcutBackupPath = $null
+$addedOperatorGroupMembers = @()
 
 function Read-PipeBytes([System.IO.Stream]$Stream, [int]$Length) {
     $buffer = [byte[]]::new($Length)
@@ -96,14 +100,6 @@ if (-not $certificate) {
 if (-not (Get-LocalGroup -Name $operatorGroupName -ErrorAction SilentlyContinue)) {
     New-LocalGroup -Name $operatorGroupName -Description 'Користувачі панелі стану KGTA Alert' | Out-Null
 }
-foreach ($member in $OperatorMembers) {
-    $alreadyMember = Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq $member -or $_.Name -eq "$env:COMPUTERNAME\$member" }
-    if (-not $alreadyMember) {
-        Add-LocalGroupMember -Group $operatorGroupName -Member $member
-    }
-}
-
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 $previousStartupType = $null
 $previousServicePathName = $null
@@ -137,6 +133,9 @@ $packageDeployment = New-EdgeAgentPackageStage `
     -ServicePublishDirectory $PublishDirectory `
     -DesktopPublishDirectory $DesktopPublishDirectory `
     -InstallDirectory $installDirectory
+$installDirectoryAclSnapshot = @()
+$aclSnapshot = @()
+$configurationExistedBeforeInstall = Test-Path -LiteralPath $installedConfiguration -PathType Leaf
 $wasServiceRunning = $existingService -and $existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped
 try {
     if ($existingService -and $existingService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -144,6 +143,18 @@ try {
         $existingService.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
     }
     New-Item -ItemType Directory -Force -Path (Join-Path $dataDirectory 'data'), (Join-Path $dataDirectory 'audio'), (Join-Path $dataDirectory 'logs') | Out-Null
+    $aclSnapshot = Get-EdgeAgentAclSnapshot -Path @(
+        $dataDirectory,
+        $installedConfiguration,
+        (Join-Path $dataDirectory 'data'),
+        (Join-Path $dataDirectory 'audio'),
+        (Join-Path $dataDirectory 'logs')
+    ) -RequiredPath @(
+        $dataDirectory,
+        (Join-Path $dataDirectory 'data'),
+        (Join-Path $dataDirectory 'audio'),
+        (Join-Path $dataDirectory 'logs')
+    )
     if ($packageDeployment.HadPreviousPackage) {
         $databasePath = [IO.Path]::GetFullPath([string]$configuration.EdgeAgent.DatabasePath)
         if (-not [IO.Path]::IsPathFullyQualified([string]$configuration.EdgeAgent.DatabasePath) -or
@@ -171,7 +182,7 @@ try {
         $backupName = 'edge-agent-{0}-{1}.db' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'), [guid]::NewGuid().ToString('N')
         $databaseBackupPath = Join-Path $backupDirectory $backupName
         if (Test-Path -LiteralPath $databaseBackupPath) {
-            throw 'Файл резервної копії з таким ім’ям уже існує; наявний файл не перезаписано.'
+            throw 'Файл резервної копії з таким позначенням уже існує; наявний файл не перезаписано.'
         }
         $backupExecutable = Join-Path $packageDeployment.StageDirectory 'Watcher.EdgeAgent.Service.exe'
         & $backupExecutable --backup-database $databasePath $databaseBackupPath
@@ -179,6 +190,7 @@ try {
             throw 'Не вдалося створити узгоджену резервну копію SQLite; оновлення скасовано.'
         }
     }
+    $installDirectoryAclSnapshot = Get-EdgeAgentAclSnapshot -Path @($installDirectory) -RequiredPath $(if ($packageDeployment.HadPreviousPackage) { @($installDirectory) } else { @() })
     Install-EdgeAgentPackageStage -Deployment $packageDeployment
 } catch {
     $stageFailure = $_
@@ -208,6 +220,7 @@ try {
     }
     throw $stageFailure
 }
+Invoke-EdgeAgentInstallTransaction -Action {
 if (-not (Test-Path -LiteralPath (Join-Path $dataDirectory 'edge-agent.json'))) {
     Copy-Item -LiteralPath $ConfigurationFile -Destination (Join-Path $dataDirectory 'edge-agent.json')
 }
@@ -231,6 +244,50 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі 
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до аудіопакетів.' }
 & icacls.exe (Join-Path $dataDirectory 'logs') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до журналів.' }
+} -Rollback {
+    $rollbackFailures = [System.Collections.Generic.List[string]]::new()
+    $currentService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($currentService -and $currentService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+        try { Stop-Service -Name $serviceName -Force -ErrorAction Stop } catch { $rollbackFailures.Add("Не вдалося зупинити службу: $_") }
+    }
+    try { Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL до попереднього стану: $_") }
+    try {
+        Remove-EdgeAgentConfigurationAfterFailedInstall `
+            -ConfigurationPath $installedConfiguration `
+            -ExistedBeforeInstall $configurationExistedBeforeInstall
+    } catch { $rollbackFailures.Add("Не вдалося прибрати створену конфігурацію вузла: $_") }
+    $packageRestored = $false
+    try {
+        Restore-EdgeAgentPackage -Deployment $packageDeployment
+        $packageRestored = $true
+    } catch {
+        $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
+    }
+    if ($packageRestored) {
+        try { Restore-EdgeAgentAclSnapshot -Snapshot $installDirectoryAclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL каталогу програми: $_") }
+    }
+    if ($existingService) {
+        & sc.exe config $serviceName binPath= $previousServicePathName obj= $previousServiceAccount start= demand | Out-Null
+        if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося відновити конфігурацію попередньої Windows-служби.') }
+        if ($wasServiceRunning -and $rollbackFailures.Count -eq 0) {
+            try { Start-Service -Name $serviceName -ErrorAction Stop } catch { $rollbackFailures.Add("Не вдалося запустити попередню Windows-службу: $_") }
+        }
+        Restore-EdgeAgentServiceStartupAfterRollback `
+            -PreviousStartupType $previousStartupType `
+            -RollbackFailures $rollbackFailures `
+            -SetStartupType {
+                param($startupType)
+                & sc.exe config $serviceName start= $startupType | Out-Null
+                $LASTEXITCODE -eq 0
+            }
+    } else {
+        if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+            & sc.exe delete $serviceName | Out-Null
+            if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося видалити створену Windows-службу.') }
+        }
+    }
+    if ($rollbackFailures.Count -gt 0) { throw ($rollbackFailures -join ' ') }
+}
 if (-not $SkipStart) {
     try {
         if ($existingService -and $serviceConfiguration.StartMode -eq 'Disabled') {
@@ -251,15 +308,45 @@ if (-not $SkipStart) {
             throw "Вузол перейшов у стан Degraded ($($statusResponse.status.diagnosticCode)). Перевірте права приватного ключа для $serviceAccount та журнал KGTA Alert."
         }
     } catch {
-        if ((Get-Service -Name $serviceName -ErrorAction SilentlyContinue).Status -ne 'Stopped') {
-            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
-        }
         $healthCheckFailure = $_
         $rollbackFailures = [System.Collections.Generic.List[string]]::new()
         try {
-            Restore-EdgeAgentPackage -Deployment $packageDeployment
+            $healthCheckService = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($healthCheckService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+                if ($healthCheckService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::StopPending) {
+                    Stop-Service -Name $serviceName -Force -ErrorAction Stop
+                }
+            }
+            $healthCheckService.WaitForStatus(
+                [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+                [TimeSpan]::FromSeconds(30))
+            $healthCheckService.Refresh()
+            if ($healthCheckService.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
+                throw 'Windows не підтвердила зупинку служби.'
+            }
+            $serviceStopped = $true
         } catch {
-            $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
+            $serviceStopped = $false
+            $rollbackFailures.Add("Не вдалося підтвердити зупинку Windows-служби перед rollback: $_")
+        }
+
+        if ($serviceStopped) {
+            try { Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL до попереднього стану: $_") }
+            try {
+                Remove-EdgeAgentConfigurationAfterFailedInstall `
+                    -ConfigurationPath $installedConfiguration `
+                    -ExistedBeforeInstall $configurationExistedBeforeInstall
+            } catch { $rollbackFailures.Add("Не вдалося прибрати створену конфігурацію вузла: $_") }
+            $packageRestored = $false
+            try {
+                Restore-EdgeAgentPackage -Deployment $packageDeployment
+                $packageRestored = $true
+            } catch {
+                $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
+            }
+            if ($packageRestored) {
+                try { Restore-EdgeAgentAclSnapshot -Snapshot $installDirectoryAclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL каталогу програми: $_") }
+            }
         }
         if ($existingService -and $rollbackFailures.Count -eq 0) {
             & sc.exe config $serviceName binPath= $previousServicePathName obj= $previousServiceAccount start= demand | Out-Null
@@ -273,11 +360,28 @@ if (-not $SkipStart) {
                     $rollbackFailures.Add("Не вдалося повторно запустити попередню Windows-службу: $_")
                 }
             }
-            & sc.exe config $serviceName start= $previousStartupType | Out-Null
-            if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add("Не вдалося відновити тип запуску '$previousStartupType'.") }
-        } elseif (-not $existingService) {
-            & sc.exe delete $serviceName | Out-Null
-            if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося видалити створену під час невдалої інсталяції службу.') }
+        }
+        if ($existingService) {
+            Restore-EdgeAgentServiceStartupAfterRollback `
+                -PreviousStartupType $previousStartupType `
+                -RollbackFailures $rollbackFailures `
+                -SetStartupType {
+                    param($startupType)
+                    & sc.exe config $serviceName start= $startupType | Out-Null
+                    $LASTEXITCODE -eq 0
+                }
+        } else {
+            if ($serviceStopped) {
+                & sc.exe delete $serviceName | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    $rollbackFailures.Add('Не вдалося видалити створену під час невдалої інсталяції службу.')
+                    & sc.exe config $serviceName start= disabled | Out-Null
+                    if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося вимкнути автозапуск служби після невдалого rollback.') }
+                }
+            } else {
+                & sc.exe config $serviceName start= disabled | Out-Null
+                if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося вимкнути автозапуск служби після невдалого rollback.') }
+            }
         }
         if ($rollbackFailures.Count -gt 0) {
             throw "Перевірка служби не пройшла. $($rollbackFailures -join ' ') Зверніться до адміністратора. Причина: $healthCheckFailure"
@@ -293,15 +397,31 @@ try {
     & sc.exe failureflag $serviceName 1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Не вдалося ввімкнути відновлення служби після помилки фонового процесу.' }
 
-    $startMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\KGTA Alert'
+    $startMenu = Split-Path -Parent $operatorShortcutPath
     New-Item -ItemType Directory -Force -Path $startMenu | Out-Null
-    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $startMenu 'Стан вузла.lnk'))
+    $operatorShortcutBackupPath = Backup-EdgeAgentOperatorShortcut -ShortcutPath $operatorShortcutPath
+    $createdOperatorShortcut = -not $operatorShortcutBackupPath
+    $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($operatorShortcutPath)
     $shortcut.TargetPath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
     $shortcut.WorkingDirectory = $installDirectory
     $shortcut.Save()
+    $membersToAdd = @($OperatorMembers) + @($interactiveUserAccount)
+    $addedOperatorGroupMembers = Add-EdgeAgentOperatorGroupMembers `
+        -Members $membersToAdd `
+        -GetMembers {
+            Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                    $_.Name
+                    if ($_.Name.StartsWith("$env:COMPUTERNAME\", [StringComparison]::OrdinalIgnoreCase)) {
+                        $_.Name.Substring($env:COMPUTERNAME.Length + 1)
+                    }
+                }
+        } `
+        -AddMember { param($member) Add-LocalGroupMember -Group $operatorGroupName -Member $member } `
+        -RemoveMember { param($member) Remove-LocalGroupMember -Group $operatorGroupName -Member $member -ErrorAction Stop }
     if (-not (Get-LocalGroupMember -Group $operatorGroupName -ErrorAction SilentlyContinue |
             Where-Object { $_.SID.Value -eq $interactiveUserSid })) {
-        Add-LocalGroupMember -Group $operatorGroupName -Member $interactiveUserAccount
+        throw 'Не вдалося підтвердити членство інтерактивного користувача в групі операторів.'
     }
 
     $startupType = Get-EdgeAgentServiceStartupType -SkipStart:$SkipStart
@@ -332,12 +452,27 @@ try {
         }
     }
 
+    $packageRestored = $false
+    if ($rollbackFailures.Count -eq 0) {
+        try { Restore-EdgeAgentAclSnapshot -Snapshot $aclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL до попереднього стану: $_") }
+    }
+    if ($rollbackFailures.Count -eq 0) {
+        try {
+            Remove-EdgeAgentConfigurationAfterFailedInstall `
+                -ConfigurationPath $installedConfiguration `
+                -ExistedBeforeInstall $configurationExistedBeforeInstall
+        } catch { $rollbackFailures.Add("Не вдалося прибрати створену конфігурацію вузла: $_") }
+    }
     if ($rollbackFailures.Count -eq 0) {
         try {
             Restore-EdgeAgentPackage -Deployment $packageDeployment
+            $packageRestored = $true
         } catch {
             $rollbackFailures.Add("Не вдалося відновити попередній пакет: $_")
         }
+    }
+    if ($packageRestored) {
+        try { Restore-EdgeAgentAclSnapshot -Snapshot $installDirectoryAclSnapshot } catch { $rollbackFailures.Add("Не вдалося відновити ACL каталогу програми: $_") }
     }
     if ($existingService) {
         & sc.exe config $serviceName binPath= $previousServicePathName obj= $previousServiceAccount start= demand | Out-Null
@@ -351,16 +486,45 @@ try {
                 $rollbackFailures.Add("Не вдалося повторно запустити попередню Windows-службу: $_")
             }
         }
-        & sc.exe config $serviceName start= $previousStartupType | Out-Null
-        if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add("Не вдалося відновити тип запуску '$previousStartupType'.") }
     } else {
         & sc.exe delete $serviceName | Out-Null
         if ($LASTEXITCODE -ne 0) { $rollbackFailures.Add('Не вдалося видалити створену під час інсталяції службу.') }
+    }
+    try {
+        Restore-EdgeAgentOperatorShortcut -ShortcutPath $operatorShortcutPath -BackupPath $operatorShortcutBackupPath -Created $createdOperatorShortcut
+    } catch {
+        $rollbackFailures.Add("Не вдалося відновити ярлик оператора: $_")
+    }
+    if ($addedOperatorGroupMembers.Count -gt 0) {
+        try {
+            Remove-EdgeAgentOperatorGroupMembers `
+                -Members $addedOperatorGroupMembers `
+                -RemoveMember { param($member) Remove-LocalGroupMember -Group $operatorGroupName -Member $member -ErrorAction Stop }
+        } catch {
+            $rollbackFailures.Add("Не вдалося скасувати нове членство операторів: $_")
+        }
+    }
+    if ($existingService) {
+        Restore-EdgeAgentServiceStartupAfterRollback `
+            -PreviousStartupType $previousStartupType `
+            -RollbackFailures $rollbackFailures `
+            -SetStartupType {
+                param($startupType)
+                & sc.exe config $serviceName start= $startupType | Out-Null
+                $LASTEXITCODE -eq 0
+            }
     }
     if ($rollbackFailures.Count -gt 0) {
         throw "Фіналізація інсталяції не пройшла, а автоматичне відновлення має помилки: $($rollbackFailures -join ' ') Зверніться до адміністратора. Причина: $finalizationFailure"
     }
     throw "Фіналізація інсталяції не пройшла; попередній пакет і конфігурацію Windows-служби відновлено. Деталь: $finalizationFailure"
 }
-Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment
+if ($operatorShortcutBackupPath -and (Test-Path -LiteralPath $operatorShortcutBackupPath -PathType Leaf)) {
+    try { Remove-Item -LiteralPath $operatorShortcutBackupPath -Force -ErrorAction Stop }
+    catch { Write-Warning ("Інсталяцію завершено, але резервну копію ярлика не прибрано: $_") }
+}
+$deploymentCleanup = Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment
+if (-not $deploymentCleanup.Succeeded) {
+    Write-Warning ("Інсталяцію завершено, але не вдалося прибрати тимчасові каталоги пакета: {0}" -f ($deploymentCleanup.Failures -join '; '))
+}
 $finalService | Select-Object Name, Status, StartType
