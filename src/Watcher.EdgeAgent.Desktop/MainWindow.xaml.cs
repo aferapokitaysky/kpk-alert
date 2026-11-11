@@ -128,7 +128,8 @@ public partial class MainWindow : Window
                     : "Тест і тривожні сигнали відтворюються службою через поточний вихід.";
             UpdateAudioButtons();
         }
-        catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException or OperationCanceledException or JsonException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or TimeoutException or
+                                          UnauthorizedAccessException or OperationCanceledException or JsonException)
         {
             _audioOutputs = Array.Empty<AudioOutputChoice>();
             _loadingAudioOutputs = true;
