@@ -35,6 +35,7 @@ services:
       ALERTS_IN_UA_TOKEN: ${ALERTS_IN_UA_TOKEN:?Set ALERTS_IN_UA_TOKEN}
       AlertSources__AutomaticDispatch__Enabled: "${AlertSources__AutomaticDispatch__Enabled:-false}"
       AlertSources__AutomaticDispatch__PresetCode: "${AlertSources__AutomaticDispatch__PresetCode:-air_raid}"
+      AlertSources__AutomaticDispatch__AlertLevelPresetsJson: "${AlertSources__AutomaticDispatch__AlertLevelPresetsJson:-}"
       AlertSources__AutomaticDispatch__PollInterval: "${AlertSources__AutomaticDispatch__PollInterval:-00:01:00}"
       AlertSources__Neptun__Realtime__Enabled: "true"
       Authentication__Google__Enabled: ${GOOGLE_AUTH_ENABLED:-false}

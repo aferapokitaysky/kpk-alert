@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 
@@ -19,9 +20,11 @@ public static class AlertSourcesServiceCollectionExtensions
         services.TryAddSingleton<IAlertSourceChangeSignal, AlertSourceChangeSignal>();
         services.AddSingleton<AlertStatusAggregator>();
         services.AddSingleton<AutomaticAlertDispatchPolicy>();
-        AutomaticAlertDispatchOptions automaticDispatchOptions = configuration
-            .GetSection(AutomaticAlertDispatchOptions.SectionName)
+        IConfigurationSection automaticDispatchSection = configuration
+            .GetSection(AutomaticAlertDispatchOptions.SectionName);
+        AutomaticAlertDispatchOptions automaticDispatchOptions = automaticDispatchSection
             .Get<AutomaticAlertDispatchOptions>() ?? new AutomaticAlertDispatchOptions();
+        BindAlertLevelPresetsJson(automaticDispatchSection, automaticDispatchOptions);
         if (automaticDispatchOptions.PollInterval < TimeSpan.FromSeconds(15))
         {
             throw new InvalidOperationException("Інтервал оцінювання автоматичного оповіщення має бути не меншим за 15 секунд.");
@@ -38,6 +41,14 @@ public static class AlertSourcesServiceCollectionExtensions
                 pair.Value.Any(character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '_'))))
         {
             throw new InvalidOperationException("Налаштування пресетів рівня тривоги некоректне.");
+        }
+
+        if (automaticDispatchOptions.Enabled &&
+            (!automaticDispatchOptions.AlertLevelPresets.ContainsKey("red") ||
+             !automaticDispatchOptions.AlertLevelPresets.ContainsKey("yellow")))
+        {
+            throw new InvalidOperationException(
+                "Для автоматичного оповіщення налаштуйте окремі опубліковані пресети рівнів red і yellow.");
         }
 
         services.AddSingleton(automaticDispatchOptions);
@@ -101,5 +112,39 @@ public static class AlertSourcesServiceCollectionExtensions
         });
 
         return services;
+    }
+
+    private static void BindAlertLevelPresetsJson(
+        IConfigurationSection section,
+        AutomaticAlertDispatchOptions options)
+    {
+        var json = section["AlertLevelPresetsJson"];
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return;
+        }
+
+        if (section.GetSection("AlertLevelPresets").GetChildren().Any())
+        {
+            throw new InvalidOperationException(
+                "Задайте пресети рівнів або через AlertLevelPresetsJson, або через вкладені параметри, але не обома способами.");
+        }
+
+        try
+        {
+            Dictionary<string, string>? presets = JsonSerializer.Deserialize<Dictionary<string, string>>(json);
+            if (presets is null)
+            {
+                throw new JsonException("JSON має містити об'єкт пресетів.");
+            }
+
+            options.AlertLevelPresets = new Dictionary<string, string>(presets, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException(
+                "AlertLevelPresetsJson має бути JSON-об'єктом із кодами рівнів та пресетів.",
+                exception);
+        }
     }
 }

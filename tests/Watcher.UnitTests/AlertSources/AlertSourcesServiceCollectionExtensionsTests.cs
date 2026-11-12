@@ -93,7 +93,9 @@ public sealed class AlertSourcesServiceCollectionExtensionsTests
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["AlertSources:AutomaticDispatch:Enabled"] = "true"
+                ["AlertSources:AutomaticDispatch:Enabled"] = "true",
+                ["AlertSources:AutomaticDispatch:AlertLevelPresetsJson"] =
+                    "{\"red\":\"red_alert\",\"yellow\":\"yellow_alert\"}"
             })
             .Build();
         ServiceCollection services = new();
@@ -106,6 +108,61 @@ public sealed class AlertSourcesServiceCollectionExtensionsTests
         Assert.Contains(services, descriptor =>
             descriptor.ServiceType == typeof(IHostedService) &&
             descriptor.ImplementationType == typeof(AutomaticAlertDispatchBackgroundService));
+    }
+
+    [Fact]
+    public void Binds_colored_presets_from_json_environment_setting()
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AlertSources:AutomaticDispatch:AlertLevelPresetsJson"] =
+                    "{\"red\":\"red_alert\",\"yellow\":\"yellow_alert\"}"
+            })
+            .Build();
+        ServiceCollection services = new();
+
+        services.AddAlertSources(configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        AutomaticAlertDispatchOptions options = provider.GetRequiredService<AutomaticAlertDispatchOptions>();
+        Assert.Equal("red_alert", options.GetPresetCode("red"));
+        Assert.Equal("yellow_alert", options.GetPresetCode("yellow"));
+        Assert.Null(options.GetPresetCode("green"));
+    }
+
+    [Theory]
+    [InlineData("not-json")]
+    [InlineData("[]")]
+    public void Rejects_invalid_colored_preset_json(string json)
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AlertSources:AutomaticDispatch:AlertLevelPresetsJson"] = json
+            })
+            .Build();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(
+            () => new ServiceCollection().AddAlertSources(configuration));
+
+        Assert.Contains("AlertLevelPresetsJson", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("{\"red\":\"red_alert\"}")]
+    [InlineData("{\"red\":\"red_alert\",\"yellow\":\"yellow_alert\",\"green\":\"green_alert\"}")]
+    public void Rejects_enabled_dispatch_with_incomplete_or_unsupported_level_presets(string json)
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AlertSources:AutomaticDispatch:Enabled"] = "true",
+                ["AlertSources:AutomaticDispatch:AlertLevelPresetsJson"] = json
+            })
+            .Build();
+
+        Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddAlertSources(configuration));
     }
 
     [Fact]
