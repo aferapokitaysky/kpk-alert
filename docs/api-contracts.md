@@ -159,12 +159,12 @@
 
 DTO та назви подій визначаються в `Watcher.Contracts`; клієнти не дублюють їх як довільні рядки.
 
-| Напрямок        | Подія                    | Обов’язкові дані                                                                                                                                                                                                          |
-| --------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Напрямок        | Подія                    | Обов’язкові дані                                                                                                                                                                                                                                            |
+| --------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Watcher → вузол | `CommandDispatch`        | `schemaVersion`, `commandId`, `deviceId`, `locationId`, `sequence`, `action`, `issuedAtUtc`, `expiresAtUtc`; `start` v1 і `replace` v2 також мають `presetCode`, `manifestHash`, `maxPlaybackDurationSeconds`; `stop` v1 і `replace` v2 — `targetCommandId` |
-| Вузол → Watcher | `CommandReceipt`         | `schemaVersion`, `eventId`, `commandId`, `sequence`, `state`, `occurredAtUtc`, код причини для відмови                                                                                                                    |
-| Вузол → Watcher | `Heartbeat`              | `deviceId`, `sentAtUtc`, `audioState`, `configVersion`                                                                                                                                                                    |
-| Watcher → вузол | `ConfigurationAvailable` | `version`, адреса переліку файлів, підпис                                                                                                                                                                                 |
+| Вузол → Watcher | `CommandReceipt`         | `schemaVersion`, `eventId`, `commandId`, `sequence`, `state`, `occurredAtUtc`, код причини для відмови                                                                                                                                                      |
+| Вузол → Watcher | `Heartbeat`              | `deviceId`, `sentAtUtc`, `audioState`, `configVersion`                                                                                                                                                                                                      |
+| Watcher → вузол | `ConfigurationAvailable` | `version`, адреса переліку файлів, підпис                                                                                                                                                                                                                   |
 
 Допустимі стани підтвердження: `Accepted`, `Playing`, `Completed`, `Stopped`, `Rejected`, `Failed`, `Expired`. Для `Rejected`, `Failed` і `Expired` потрібен код причини. Технічні подробиці не показуються кінцевому користувачу.
 
