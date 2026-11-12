@@ -623,6 +623,7 @@ public sealed class AutomaticAlertDispatchProcessor(
         state.LastAttemptedAlertLevel = null;
         state.LastAttemptedAlertLevelScope = null;
         state.LastAttemptedAlertLevelScopeId = null;
+        state.LastAttemptedAlertLevelDataUpdatedAtUtc = null;
     }
 
     private static OpenAlertEpisode? CreateOpenEpisode(AutomaticAlertDispatchState state)
@@ -654,7 +655,8 @@ public sealed class AutomaticAlertDispatchProcessor(
             state.LastObservedAlertLevel,
             state.LastAttemptedAlertLevel,
             state.LastAttemptedAlertLevelScope,
-            state.LastAttemptedAlertLevelScopeId);
+            state.LastAttemptedAlertLevelScopeId,
+            state.LastAttemptedAlertLevelDataUpdatedAtUtc);
     }
 
     private static void UpdateBaseline(
@@ -682,6 +684,7 @@ public sealed class AutomaticAlertDispatchProcessor(
             state.LastAttemptedAlertLevel = null;
             state.LastAttemptedAlertLevelScope = null;
             state.LastAttemptedAlertLevelScopeId = null;
+            state.LastAttemptedAlertLevelDataUpdatedAtUtc = null;
             return;
         }
 
@@ -690,6 +693,9 @@ public sealed class AutomaticAlertDispatchProcessor(
             : null;
         state.LastAttemptedAlertLevelScope = observation.Scope;
         state.LastAttemptedAlertLevelScopeId = observation.ScopeId;
+        state.LastAttemptedAlertLevelDataUpdatedAtUtc = state.LastAttemptedAlertLevel is null
+            ? null
+            : observation.DataUpdatedAtUtc;
     }
 
     private async Task<CommandDelivery[]> LoadActiveEpisodeDeliveriesAsync(

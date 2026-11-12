@@ -118,6 +118,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             .ToArrayAsync();
         Assert.False(state.HasOpenEpisode);
         Assert.Null(state.StartCommandId);
+        Assert.Null(state.LastAttemptedAlertLevelDataUpdatedAtUtc);
         Assert.Equal(2, commands.Length);
         Assert.Equal("start", commands[0].Action);
         Assert.Equal("stop", commands[1].Action);
@@ -334,6 +335,31 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     }
 
     [PostgresFact]
+    public async Task Older_colored_snapshot_does_not_roll_back_the_applied_level()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await AddLevelPresetsAsync();
+        await ProcessAsync(InactiveStatus());
+        Assert.Equal(AutomaticAlertDispatchResult.Started,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red")));
+        Guid[] deviceIds = await MaterializeStartDeliveriesAsync();
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "start", CommandDeliveryState.Playing);
+
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(-1)),
+                Now.AddSeconds(1)));
+        Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(1)),
+                Now.AddSeconds(2)));
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AlertCommand[] commands = await verifyDb.AlertCommands.OrderBy(item => item.CreatedAtUtc).ToArrayAsync();
+        Assert.Equal(["start", "replace"], commands.Select(item => item.Action));
+        Assert.Equal("yellow_alert", commands[1].PresetCode);
+    }
+
+    [PostgresFact]
     public async Task Stale_observation_is_included_in_deduplicated_hold_audit()
     {
         await ResetEnvironmentAsync();
@@ -521,6 +547,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         state.LastAttemptedAlertLevel = null;
         state.LastAttemptedAlertLevelScope = null;
         state.LastAttemptedAlertLevelScopeId = null;
+        state.LastAttemptedAlertLevelDataUpdatedAtUtc = null;
         state.UpdatedAtUtc = Now;
         await db.SaveChangesAsync();
         return seed;
