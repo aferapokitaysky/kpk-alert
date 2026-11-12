@@ -11,6 +11,60 @@ namespace Watcher.EdgeAgent.Service.IntegrationTests;
 public sealed class AudioWorkerSecurityTests
 {
     [Fact]
+    public void CommandRegistry_RemainsAvailableBeyondRetentionLimitAndRejectsOldSequenceReplay()
+    {
+        AudioWorkerCommandRegistry registry = new();
+        string payloadHash = new('A', 64);
+        Guid firstCommandId = Guid.Empty;
+        string? error;
+
+        for (var sequence = 1; sequence <= AudioWorkerCommandRegistry.MaximumRememberedCommands + 1; sequence++)
+        {
+            Guid commandId = Guid.NewGuid();
+            if (sequence == 1) firstCommandId = commandId;
+            Assert.True(registry.TryRegister(commandId, sequence, payloadHash,
+                allowExactStopRetry: false, out error));
+            Assert.Null(error);
+        }
+
+        Assert.Equal(AudioWorkerCommandRegistry.MaximumRememberedCommands, registry.RememberedCommandCount);
+        Assert.True(registry.TryRegister(Guid.NewGuid(),
+            AudioWorkerCommandRegistry.MaximumRememberedCommands + 2, payloadHash,
+            allowExactStopRetry: false, out error));
+        Assert.Null(error);
+
+        Assert.False(registry.TryRegister(firstCommandId, 1, payloadHash,
+            allowExactStopRetry: false, out error));
+        Assert.Equal("stale_sequence", error);
+    }
+
+    [Fact]
+    public void CommandRegistry_PreservesRecentDuplicateConflictAndStopRetryRules()
+    {
+        AudioWorkerCommandRegistry registry = new();
+        Guid startId = Guid.NewGuid();
+        Guid stopId = Guid.NewGuid();
+        string payloadHash = new('A', 64);
+
+        Assert.True(registry.TryRegister(startId, 1, payloadHash,
+            allowExactStopRetry: false, out string? error));
+        Assert.Null(error);
+        Assert.False(registry.TryRegister(startId, 1, payloadHash,
+            allowExactStopRetry: false, out error));
+        Assert.Equal("duplicate_command", error);
+        Assert.False(registry.TryRegister(startId, 1, new string('B', 64),
+            allowExactStopRetry: true, out error));
+        Assert.Equal("command_id_conflict", error);
+
+        Assert.True(registry.TryRegister(stopId, 2, payloadHash,
+            allowExactStopRetry: false, out error));
+        Assert.Null(error);
+        Assert.True(registry.TryRegister(stopId, 2, payloadHash,
+            allowExactStopRetry: true, out error));
+        Assert.Null(error);
+    }
+
+    [Fact]
     public async Task WorkerRestartDuringPlayback_ReportsFailureWithoutReplayingCommand()
     {
         var commandId = Guid.NewGuid();

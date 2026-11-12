@@ -221,6 +221,50 @@ internal sealed class AudioWorkerPlaybackEventQueue : IAudioPlaybackEventHandler
     }
 }
 
+internal sealed class AudioWorkerCommandRegistry
+{
+    internal const int MaximumRememberedCommands = 10_000;
+    private readonly Dictionary<Guid, (string PayloadHash, long Sequence)> _commands = [];
+    private readonly Queue<Guid> _commandOrder = new();
+    private long _lastSequence;
+
+    internal int RememberedCommandCount => _commands.Count;
+
+    public bool TryRegister(Guid commandId, long sequence, string payloadHash,
+        bool allowExactStopRetry, out string? diagnosticCode)
+    {
+        if (_commands.TryGetValue(commandId, out (string PayloadHash, long Sequence) existing))
+        {
+            if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
+            {
+                diagnosticCode = "command_id_conflict";
+                return false;
+            }
+
+            diagnosticCode = allowExactStopRetry ? null : "duplicate_command";
+            return allowExactStopRetry;
+        }
+
+        if (sequence <= _lastSequence)
+        {
+            diagnosticCode = "stale_sequence";
+            return false;
+        }
+
+        if (_commands.Count == MaximumRememberedCommands)
+        {
+            Guid oldestCommandId = _commandOrder.Dequeue();
+            _commands.Remove(oldestCommandId);
+        }
+
+        _commands.Add(commandId, (payloadHash, sequence));
+        _commandOrder.Enqueue(commandId);
+        _lastSequence = sequence;
+        diagnosticCode = null;
+        return true;
+    }
+}
+
 internal sealed class AudioWorkerPipeServer(
     WasapiAudioPlayer player,
     WasapiAudioEndpointControl endpoints,
@@ -230,7 +274,6 @@ internal sealed class AudioWorkerPipeServer(
 {
     private const int MaximumRequestBytes = 16 * 1024;
     private const int MaximumResponseBytes = 64 * 1024;
-    private const int MaximumRememberedCommands = 10_000;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan ServiceHeartbeatTimeout = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -240,9 +283,8 @@ internal sealed class AudioWorkerPipeServer(
         Converters = { new JsonStringEnumConverter() }
     };
     private readonly string _audioRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(audioRoot));
-    private readonly Dictionary<Guid, (string PayloadHash, long Sequence)> _commands = [];
+    private readonly AudioWorkerCommandRegistry _commands = new();
     private readonly SemaphoreSlim _commandGate = new(1, 1);
-    private long _lastSequence;
     private long _lastServiceContact = Stopwatch.GetTimestamp();
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -373,7 +415,7 @@ internal sealed class AudioWorkerPipeServer(
             return Failed(request.RequestId, "invalid_request");
         }
 
-        if (!TryRegisterCommand(commandId, sequence, payloadHash, allowExactStopRetry: false,
+        if (!_commands.TryRegister(commandId, sequence, payloadHash, allowExactStopRetry: false,
                 out var registrationError))
         {
             return Failed(request.RequestId, registrationError!);
@@ -413,7 +455,7 @@ internal sealed class AudioWorkerPipeServer(
             return Failed(request.RequestId, "invalid_request");
         }
 
-        if (!TryRegisterCommand(commandId, sequence, payloadHash, allowExactStopRetry: true,
+        if (!_commands.TryRegister(commandId, sequence, payloadHash, allowExactStopRetry: true,
                 out var registrationError))
         {
             return Failed(request.RequestId, registrationError!);
@@ -422,38 +464,6 @@ internal sealed class AudioWorkerPipeServer(
         var stopped = await player.StopAsync(anchor, cancellationToken);
         return Success(request.RequestId, DiagnosticCode: stopped ? null : "stop_target_pending",
             ActiveCommandId: player.ActiveCommandId, ActiveEpisodeAnchorCommandId: player.ActiveEpisodeAnchorId);
-    }
-
-    private bool TryRegisterCommand(Guid commandId, long sequence, string payloadHash,
-        bool allowExactStopRetry, out string? diagnosticCode)
-    {
-        if (_commands.TryGetValue(commandId, out (string PayloadHash, long Sequence) existing))
-        {
-            if (!string.Equals(existing.PayloadHash, payloadHash, StringComparison.Ordinal))
-            {
-                diagnosticCode = "command_id_conflict";
-                return false;
-            }
-
-            diagnosticCode = allowExactStopRetry ? null : "duplicate_command";
-            return allowExactStopRetry;
-        }
-
-        if (sequence <= _lastSequence)
-        {
-            diagnosticCode = "stale_sequence";
-            return false;
-        }
-        if (_commands.Count >= MaximumRememberedCommands)
-        {
-            diagnosticCode = "audio_worker_capacity_reached";
-            return false;
-        }
-
-        _commands.Add(commandId, (payloadHash, sequence));
-        _lastSequence = sequence;
-        diagnosticCode = null;
-        return true;
     }
 
     private string? ResolveAudioFile(string relativePath)
