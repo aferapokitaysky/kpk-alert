@@ -26,6 +26,19 @@ public static class AlertSourcesServiceCollectionExtensions
             throw new InvalidOperationException("Інтервал оцінювання автоматичного оповіщення має бути не меншим за 15 секунд.");
         }
 
+        if (automaticDispatchOptions.StartCommandValiditySeconds is < 15 or > 300)
+        {
+            throw new InvalidOperationException("Строк дії автоматичної команди має бути від 15 до 300 секунд.");
+        }
+
+        if (automaticDispatchOptions.AlertLevelPresets.Any(pair =>
+                pair.Key is not ("red" or "yellow") ||
+                pair.Value is not { Length: > 0 and <= 80 } ||
+                pair.Value.Any(character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '_'))))
+        {
+            throw new InvalidOperationException("Налаштування пресетів рівня тривоги некоректне.");
+        }
+
         services.AddSingleton(automaticDispatchOptions);
         if (automaticDispatchOptions.Enabled)
         {

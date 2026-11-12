@@ -49,9 +49,29 @@ public sealed class CommandDeliveryMaterializer(WatcherDbContext db, TimeProvide
             .SingleAsync(item => item.Id == outbox.CommandId, cancellationToken);
 
         // Набір вузлів STOP зафіксований API разом із командою, щоб outbox не додав нові пристрої.
-        Guid[] eligibleDeviceIds = command.Action == "stop"
-            ? []
-            : await (
+        Guid[] eligibleDeviceIds = command.Action switch
+        {
+            "stop" => [],
+            "replace" when command.TargetCommandId is { } episodeAnchorId =>
+                await (from delivery in db.CommandDeliveries.AsNoTracking()
+                       join activeCommand in db.AlertCommands.AsNoTracking()
+                           on delivery.CommandId equals activeCommand.Id
+                       join device in db.Devices.AsNoTracking() on delivery.DeviceId equals device.Id
+                       join location in db.Locations.AsNoTracking() on device.LocationId equals location.Id
+                       where (activeCommand.Id == episodeAnchorId ||
+                              (activeCommand.Action == "replace" &&
+                               activeCommand.TargetCommandId == episodeAnchorId)) &&
+                             (delivery.State == CommandDeliveryState.Pending ||
+                              delivery.State == CommandDeliveryState.InFlight ||
+                              delivery.State == CommandDeliveryState.Accepted ||
+                              delivery.State == CommandDeliveryState.Playing) &&
+                             location.IsActive && device.RevokedAtUtc == null
+                       select device.Id)
+                    .Distinct()
+                    .OrderBy(deviceId => deviceId)
+                    .ToArrayAsync(cancellationToken),
+            "replace" => [],
+            _ => await (
                 from target in db.CommandTargets.AsNoTracking()
                 join device in db.Devices.AsNoTracking() on target.LocationId equals device.LocationId
                 join location in db.Locations.AsNoTracking() on target.LocationId equals location.Id
@@ -59,7 +79,8 @@ public sealed class CommandDeliveryMaterializer(WatcherDbContext db, TimeProvide
                 select device.Id)
                 .Distinct()
                 .OrderBy(deviceId => deviceId)
-                .ToArrayAsync(cancellationToken);
+                .ToArrayAsync(cancellationToken)
+        };
 
         HashSet<Guid> existingDeviceIds = await db.CommandDeliveries.AsNoTracking()
             .Where(delivery => delivery.CommandId == command.Id)

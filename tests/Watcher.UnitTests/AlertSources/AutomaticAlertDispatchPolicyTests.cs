@@ -14,11 +14,11 @@ public sealed class AutomaticAlertDispatchPolicyTests
             AlertSourceCatalog.AlertsInUaCode, "hromada", AlertSourceCatalog.KremenchukHromadaId,
             "active", "red");
 
-        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null);
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null, InactiveBaseline(observation));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("tertiary_alert_active", decision.ReasonCode);
-        Assert.Equal(observation, decision.Observation);
+        Assert.Equal("confirmed_inactive_to_active", decision.ReasonCode);
+        Assert.Equal(observation with { AlertLevel = null }, decision.Observation);
     }
 
     [Fact]
@@ -28,10 +28,10 @@ public sealed class AutomaticAlertDispatchPolicyTests
             AlertSourceCatalog.AlertsInUaCode, "oblast", AlertSourceCatalog.PoltavaOblastId,
             "active", "red");
 
-        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null);
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null, InactiveBaseline(observation));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal(observation, decision.Observation);
+        Assert.Equal(observation with { AlertLevel = null }, decision.Observation);
     }
 
     [Fact]
@@ -47,10 +47,8 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(observation, fallback, aggregateLevel: "conflict")), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("primary_alert_active", decision.ReasonCode);
-        Assert.Equal(observation, decision.Observation);
-        Assert.Null(decision.Observation?.AlertLevel);
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal("observation_not_actionable", decision.ReasonCode);
     }
 
     [Fact]
@@ -80,8 +78,8 @@ public sealed class AutomaticAlertDispatchPolicyTests
             Status(Target(observation, fallback, aggregateLevel: "conflict")),
             new OpenAlertEpisode(AlertScope.Oblast, AlertSourceCatalog.PoltavaOblastId));
 
-        Assert.Equal(AutomaticAlertDispatchAction.Stop, decision.Action);
-        Assert.Equal(observation, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
+        Assert.Equal("observation_not_actionable", decision.ReasonCode);
     }
 
     [Theory]
@@ -99,7 +97,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
             "active");
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(primary), Target(fallback)), null);
+            Status(Target(primary), Target(fallback)), null, InactiveBaseline(fallback));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
         Assert.Equal(fallback, decision.Observation);
@@ -119,11 +117,10 @@ public sealed class AutomaticAlertDispatchPolicyTests
             "active", "red");
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(primary), Target(fallback), Target(tertiary)), null);
+            Status(Target(primary), Target(fallback), Target(tertiary)), null, InactiveBaseline(tertiary));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("tertiary_alert_active", decision.ReasonCode);
-        Assert.Equal(tertiary, decision.Observation);
+        Assert.Null(decision.Observation?.AlertLevel);
     }
 
     [Fact]
@@ -137,10 +134,10 @@ public sealed class AutomaticAlertDispatchPolicyTests
             "active");
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(fallback), Target(primary)), null);
+            Status(Target(fallback), Target(primary)), null, InactiveBaseline(fallback));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal("fallback_alert_active", decision.ReasonCode);
+        Assert.Equal("confirmed_inactive_to_active", decision.ReasonCode);
         Assert.Equal(fallback, decision.Observation);
     }
 
@@ -155,7 +152,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
             "active");
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(primary), Target(fallback)), null);
+            Status(Target(primary), Target(fallback)), null, InactiveBaseline(fallback));
 
         Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
         Assert.Equal(fallback, decision.Observation);
@@ -174,13 +171,12 @@ public sealed class AutomaticAlertDispatchPolicyTests
             "active", alertLevel);
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
-            Status(Target(primary), Target(fallback)), null);
+            Status(Target(primary), Target(fallback)), null, InactiveBaseline(fallback));
 
         Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
     }
 
     [Theory]
-    [InlineData("active", "yellow", "fresh")]
     [InlineData("partial", null, "fresh")]
     [InlineData("active", "red", "stale")]
     [InlineData("unknown", null, "fresh")]
@@ -198,8 +194,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary, aggregateLevel: "conflict"), Target(fallback)), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal(fallback, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.InitializeBaseline, decision.Action);
     }
 
     [Fact]
@@ -215,12 +210,10 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary), Target(fallback)), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal(fallback, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.InitializeBaseline, decision.Action);
     }
 
     [Theory]
-    [InlineData("active", "yellow", "fresh", "active")]
     [InlineData("partial", null, "fresh", "partial")]
     [InlineData("unknown", null, "fresh", "unknown")]
     [InlineData("active", "red", "stale", "unknown")]
@@ -255,8 +248,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
             Status(Target(primary, aggregateLevel: "conflict"), Target(fallback)),
             new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId));
 
-        Assert.Equal(AutomaticAlertDispatchAction.Stop, decision.Action);
-        Assert.Equal(primary, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
     }
 
     [Fact]
@@ -286,8 +278,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary, fallback, aggregateLevel: "conflict")), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.NoChange, decision.Action);
-        Assert.Null(decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
     }
 
     [Fact]
@@ -303,8 +294,7 @@ public sealed class AutomaticAlertDispatchPolicyTests
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(
             Status(Target(primary, fallback, aggregateLevel: "conflict")), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.Start, decision.Action);
-        Assert.Equal(fallback, decision.Observation);
+        Assert.Equal(AutomaticAlertDispatchAction.Hold, decision.Action);
     }
 
     [Fact]
@@ -489,8 +479,8 @@ public sealed class AutomaticAlertDispatchPolicyTests
 
         AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(observation)), null);
 
-        Assert.Equal(AutomaticAlertDispatchAction.NoChange, decision.Action);
-        Assert.Equal("no_open_alert", decision.ReasonCode);
+        Assert.Equal(AutomaticAlertDispatchAction.InitializeBaseline, decision.Action);
+        Assert.Equal("observation_baseline_initialized", decision.ReasonCode);
     }
 
     [Fact]
@@ -508,8 +498,103 @@ public sealed class AutomaticAlertDispatchPolicyTests
         Assert.Equal("invalid_open_episode", decision.ReasonCode);
     }
 
+    [Fact]
+    public void Active_cold_start_initializes_baseline_without_starting_and_duplicate_is_noop()
+    {
+        AlertSourceObservationResponse active = Observation(
+            AlertSourceCatalog.UkraineAlarmCode, "hromada", AlertSourceCatalog.KremenchukHromadaId, "active");
+        AlertSourcesStatusResponse status = Status(Target(active));
+
+        AutomaticAlertDispatchDecision coldStart = _policy.Evaluate(status, null);
+        AutomaticAlertDispatchDecision duplicate = _policy.Evaluate(status, null,
+            new AlertObservationBaseline(active.Source, active.Scope, active.ScopeId, active.Level, null,
+                null, null, null));
+
+        Assert.Equal(AutomaticAlertDispatchAction.InitializeBaseline, coldStart.Action);
+        Assert.Equal(AutomaticAlertDispatchAction.NoChange, duplicate.Action);
+    }
+
+    [Theory]
+    [InlineData("red", "yellow")]
+    [InlineData("yellow", "red")]
+    public void Corroborated_primary_active_episode_replaces_audio_in_both_directions(
+        string previousLevel,
+        string currentLevel)
+    {
+        AlertTargetStatus target = CorroboratedColorTarget(currentLevel, CheckedAtUtc.AddMinutes(-1));
+        AlertObservationBaseline baseline = new(AlertSourceCatalog.UkraineAlarmCode, "hromada",
+            AlertSourceCatalog.KremenchukHromadaId, "active", null, previousLevel,
+            "hromada", AlertSourceCatalog.KremenchukHromadaId);
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(target),
+            new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId), baseline);
+
+        Assert.Equal(AutomaticAlertDispatchAction.Replace, decision.Action);
+        Assert.Equal(currentLevel, decision.Observation?.AlertLevel);
+    }
+
+    [Fact]
+    public void Source_switch_from_inactive_to_active_only_rebases_without_starting()
+    {
+        AlertSourceObservationResponse primary = Observation(AlertSourceCatalog.UkraineAlarmCode,
+            "oblast", AlertSourceCatalog.PoltavaOblastId, "inactive");
+        AlertSourceObservationResponse fallback = Observation(AlertSourceCatalog.NeptunCode,
+            "oblast", AlertSourceCatalog.PoltavaOblastId, "active");
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(Target(fallback)), null,
+            InactiveBaseline(primary));
+
+        Assert.Equal(AutomaticAlertDispatchAction.InitializeBaseline, decision.Action);
+    }
+
+    [Theory]
+    [InlineData(2, true)]
+    [InlineData(3, false)]
+    public void Color_transition_requires_source_event_timestamps_within_two_minutes(
+        int skewMinutes,
+        bool shouldReplace)
+    {
+        AlertTargetStatus target = CorroboratedColorTarget("yellow", CheckedAtUtc) with
+        {
+            Observations = CorroboratedColorTarget("yellow", CheckedAtUtc).Observations
+                .Select(item => item.Source == AlertSourceCatalog.AlertsInUaCode
+                    ? item with { DataUpdatedAtUtc = CheckedAtUtc.AddMinutes(-skewMinutes) }
+                    : item)
+                .ToArray()
+        };
+        AlertObservationBaseline baseline = new(AlertSourceCatalog.UkraineAlarmCode, "hromada",
+            AlertSourceCatalog.KremenchukHromadaId, "active", null, "red",
+            "hromada", AlertSourceCatalog.KremenchukHromadaId);
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(target),
+            new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId), baseline);
+
+        Assert.Equal(shouldReplace ? AutomaticAlertDispatchAction.Replace : AutomaticAlertDispatchAction.NoChange,
+            decision.Action);
+    }
+
+    private static AlertTargetStatus CorroboratedColorTarget(string level, DateTimeOffset sourceUpdatedAt)
+    {
+        AlertSourceObservationResponse primary = Observation(AlertSourceCatalog.UkraineAlarmCode,
+            "hromada", AlertSourceCatalog.KremenchukHromadaId, "active") with
+        {
+            DataUpdatedAtUtc = sourceUpdatedAt
+        };
+        AlertSourceObservationResponse color = Observation(AlertSourceCatalog.AlertsInUaCode,
+            "hromada", AlertSourceCatalog.KremenchukHromadaId, "active", level) with
+        {
+            DataUpdatedAtUtc = sourceUpdatedAt
+        };
+        return new(primary.Scope, primary.ScopeId, primary.ScopeName, "active", null, "fresh",
+            CheckedAtUtc, null, primary, [primary, color]);
+    }
+
     private static AlertSourcesStatusResponse Status(params AlertTargetStatus[] targets) =>
         new(CheckedAtUtc, targets);
+
+    private static AlertObservationBaseline InactiveBaseline(AlertSourceObservationResponse observation) =>
+        new(observation.Source, observation.Scope, observation.ScopeId, "inactive", null,
+            null, observation.Scope, observation.ScopeId);
 
     private static AlertTargetStatus Target(
         AlertSourceObservationResponse first,

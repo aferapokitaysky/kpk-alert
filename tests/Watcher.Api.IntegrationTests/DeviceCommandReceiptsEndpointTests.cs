@@ -55,6 +55,40 @@ public sealed class DeviceCommandReceiptsEndpointTests : IClassFixture<DeviceRec
     }
 
     [PostgresFact]
+    public async Task Stopped_receipt_for_replaced_child_updates_that_delivery_and_late_playing_cannot_reopen_it()
+    {
+        ReplacementEpisodeSeed seed = await _fixture.CreateReplacementEpisodeAsync();
+        CommandReceipt stopped = CreateReceipt(seed.ReplacedCommandId, seed.ReplacedSequence) with
+        {
+            SchemaVersion = DeviceCommandValidator.ReplaceSchemaVersion,
+            State = DeviceCommandState.Stopped
+        };
+
+        using HttpResponseMessage stoppedResponse = await _fixture.Client.SendAsync(CreateAuthenticatedRequest(stopped));
+        using IServiceScope scope = _fixture.CreateServiceScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        CommandDelivery replacedDelivery = await db.CommandDeliveries.SingleAsync(
+            item => item.CommandId == seed.ReplacedCommandId);
+        Assert.Equal(HttpStatusCode.Accepted, stoppedResponse.StatusCode);
+        Assert.Equal(CommandDeliveryState.Stopped, replacedDelivery.State);
+
+        CommandReceipt latePlaying = stopped with
+        {
+            EventId = Guid.NewGuid(),
+            State = DeviceCommandState.Playing,
+            OccurredAtUtc = stopped.OccurredAtUtc.AddSeconds(1)
+        };
+        using HttpResponseMessage lateResponse = await _fixture.Client.SendAsync(
+            CreateAuthenticatedRequest(latePlaying));
+
+        Assert.Equal(HttpStatusCode.Accepted, lateResponse.StatusCode);
+        Assert.Equal(CommandDeliveryState.Stopped,
+            (await db.CommandDeliveries.SingleAsync(item => item.CommandId == seed.ReplacedCommandId)).State);
+        Assert.Equal(CommandDeliveryState.Playing,
+            (await db.CommandDeliveries.SingleAsync(item => item.CommandId == seed.CurrentCommandId)).State);
+    }
+
+    [PostgresFact]
     public async Task Receipt_endpoint_returns_no_store_not_found_for_an_unknown_command()
     {
         using HttpResponseMessage response = await _fixture.Client.SendAsync(
@@ -79,7 +113,7 @@ public sealed class DeviceCommandReceiptsEndpointTests : IClassFixture<DeviceRec
     [PostgresFact]
     public async Task Receipt_endpoint_returns_bad_request_for_an_invalid_contract()
     {
-        CommandReceipt receipt = CreateReceipt(Guid.NewGuid()) with { SchemaVersion = 2 };
+        CommandReceipt receipt = CreateReceipt(Guid.NewGuid()) with { SchemaVersion = 3 };
 
         using HttpResponseMessage response = await _fixture.Client.SendAsync(CreateAuthenticatedRequest(receipt));
 
@@ -245,6 +279,97 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
         return new ReceiptCommandSeed(commandId, sequence);
     }
 
+    internal async Task<ReplacementEpisodeSeed> CreateReplacementEpisodeAsync()
+    {
+        if (_factory is null)
+        {
+            throw new InvalidOperationException("Для тестів квитанцій потрібен PostgreSQL.");
+        }
+
+        var rootCommandId = Guid.NewGuid();
+        var replacedCommandId = Guid.NewGuid();
+        var currentCommandId = Guid.NewGuid();
+        var rootSequence = Interlocked.Increment(ref _nextSequence);
+        var replacedSequence = Interlocked.Increment(ref _nextSequence);
+        var currentSequence = Interlocked.Increment(ref _nextSequence);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        using IServiceScope scope = _factory.Services.CreateScope();
+        WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
+        db.AlertCommands.AddRange(
+            new AlertCommand
+            {
+                Id = rootCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "start",
+                PresetCode = "red_alert",
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(5),
+                Targets = [new CommandTarget { Id = Guid.NewGuid(), LocationId = _locationId, Sequence = rootSequence }]
+            },
+            new AlertCommand
+            {
+                Id = replacedCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "replace",
+                PresetCode = "yellow_alert",
+                TargetCommandId = rootCommandId,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(1),
+                Targets = [new CommandTarget { Id = Guid.NewGuid(), LocationId = _locationId, Sequence = replacedSequence }]
+            },
+            new AlertCommand
+            {
+                Id = currentCommandId,
+                IdempotencyKey = Guid.NewGuid(),
+                Action = "replace",
+                PresetCode = "red_alert",
+                TargetCommandId = rootCommandId,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(1),
+                Targets = [new CommandTarget { Id = Guid.NewGuid(), LocationId = _locationId, Sequence = currentSequence }]
+            });
+        db.CommandDeliveries.AddRange(
+            new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = rootCommandId,
+                DeviceId = _deviceId,
+                State = CommandDeliveryState.Stopped,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(5)
+            },
+            new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = replacedCommandId,
+                DeviceId = _deviceId,
+                State = CommandDeliveryState.Playing,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(1)
+            },
+            new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = currentCommandId,
+                DeviceId = _deviceId,
+                State = CommandDeliveryState.Playing,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = now.AddMinutes(1)
+            });
+        await db.SaveChangesAsync();
+        return new(rootCommandId, replacedCommandId, replacedSequence, currentCommandId);
+    }
+
+    internal IServiceScope CreateServiceScope()
+    {
+        if (_factory is null)
+        {
+            throw new InvalidOperationException("Для тестів квитанцій потрібен PostgreSQL.");
+        }
+
+        return _factory.Services.CreateScope();
+    }
+
     public async Task DisposeAsync()
     {
         _factory?.Dispose();
@@ -265,6 +390,8 @@ public sealed class DeviceReceiptApiFixture : IAsyncLifetime
 }
 
 internal sealed record ReceiptCommandSeed(Guid CommandId, long Sequence);
+internal sealed record ReplacementEpisodeSeed(Guid RootCommandId, Guid ReplacedCommandId,
+    long ReplacedSequence, Guid CurrentCommandId);
 
 internal sealed class DeviceReceiptApiWebApplicationFactory(
     string connectionString,

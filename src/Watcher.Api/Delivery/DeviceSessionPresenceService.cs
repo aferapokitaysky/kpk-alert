@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Watcher.Contracts.DeviceCommands;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -15,8 +16,20 @@ public sealed class DeviceSessionPresenceService(
     private static readonly System.Text.Json.JsonSerializerOptions AuditJsonOptions =
         new(System.Text.Json.JsonSerializerDefaults.Web);
 
-    public async Task<Guid> OpenSessionAsync(Guid deviceId, CancellationToken cancellationToken)
+    public Task<Guid> OpenSessionAsync(Guid deviceId, CancellationToken cancellationToken) =>
+        OpenSessionAsync(deviceId, DeviceCommandValidator.CurrentSchemaVersion, cancellationToken);
+
+    public async Task<Guid> OpenSessionAsync(
+        Guid deviceId,
+        int commandSchemaVersion,
+        CancellationToken cancellationToken)
     {
+        if (commandSchemaVersion is not (DeviceCommandValidator.CurrentSchemaVersion or
+            DeviceCommandValidator.ReplaceSchemaVersion))
+        {
+            throw new ArgumentOutOfRangeException(nameof(commandSchemaVersion));
+        }
+
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
         WatcherDbContext db = scope.ServiceProvider.GetRequiredService<WatcherDbContext>();
         await using IDbContextTransaction? transaction = db.Database.IsRelational()
@@ -80,6 +93,7 @@ public sealed class DeviceSessionPresenceService(
         {
             Id = sessionId,
             DeviceId = deviceId,
+            CommandSchemaVersion = commandSchemaVersion,
             ConnectedAtUtc = now,
             LastSeenAtUtc = now
         });
@@ -218,6 +232,7 @@ public sealed class DeviceSessionPresenceService(
             Payload = System.Text.Json.JsonSerializer.Serialize(new
             {
                 session.Id,
+                session.CommandSchemaVersion,
                 DeviceId = device.Id,
                 device.LocationId,
                 OccurredAtUtc = occurredAtUtc

@@ -21,7 +21,8 @@ public sealed class AutomaticAlertDispatchBackgroundService(
                 AutomaticAlertDispatchProcessor processor =
                     scope.ServiceProvider.GetRequiredService<AutomaticAlertDispatchProcessor>();
                 AutomaticAlertDispatchResult result = await processor.ProcessAsync(status, stoppingToken);
-                if (result is AutomaticAlertDispatchResult.Started or AutomaticAlertDispatchResult.Stopped)
+                if (result is AutomaticAlertDispatchResult.Started or AutomaticAlertDispatchResult.Replaced or
+                    AutomaticAlertDispatchResult.Stopped)
                 {
                     logger.LogInformation("Автоматичну команду оповіщення створено: {Result}.", result);
                 }

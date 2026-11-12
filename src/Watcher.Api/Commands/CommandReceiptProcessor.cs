@@ -81,7 +81,8 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
 
         CommandDelivery? stoppedDelivery = null;
         var targetWasStopped = false;
-        var preserveStoppedState = command.Action == "start" && delivery.State == CommandDeliveryState.Stopped;
+        var preserveStoppedState = (command.Action is "start" or "replace") &&
+            delivery.State == CommandDeliveryState.Stopped;
         CommandDeliveryState deliveryStateBefore = delivery.State;
         CommandDeliveryState? stoppedDeliveryStateBefore = null;
         if (command.Action == "stop" && receipt.State is (
@@ -241,7 +242,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
         CommandDeliveryState current,
         DeviceCommandState next)
     {
-        if (action == "start" && current == CommandDeliveryState.Stopped)
+        if ((action is "start" or "replace") && current == CommandDeliveryState.Stopped)
         {
             return true;
         }
