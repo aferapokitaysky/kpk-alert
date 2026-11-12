@@ -230,6 +230,8 @@ internal sealed class AudioWorkerCommandRegistry
 
     internal int RememberedCommandCount => _commands.Count;
 
+    // Довготривалу перевірку ID і хешу виконує SQLite служби; цей обмежений кеш зберігає недавні повтори.
+    // Монотонний номер відхиляє старі команди після витіснення їхніх ID.
     public bool TryRegister(Guid commandId, long sequence, string payloadHash,
         bool allowExactStopRetry, out string? diagnosticCode)
     {
