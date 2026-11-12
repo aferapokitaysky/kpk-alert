@@ -34,6 +34,20 @@ public sealed class CommandReceiptSenderTests
     }
 
     [Fact]
+    public async Task SendOnceAsync_OkWithMalformedDuplicateResponseIsPermanentFailure()
+    {
+        using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{ malformed json")
+        }));
+        CommandReceiptSender sender = CreateSender(client);
+
+        ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
+
+        Assert.Equal(ReceiptSendDisposition.PermanentFailure, result.Disposition);
+    }
+
+    [Fact]
     public async Task SendOnceAsync_DuplicateResponseMarksReceiptDelivered()
     {
         using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -133,6 +147,21 @@ public sealed class CommandReceiptSenderTests
     }
 
     [Fact]
+    public async Task SendOnceAsync_RequestTimeoutIsRetryable()
+    {
+        using CancellationTokenSource timeout = new();
+        timeout.Cancel();
+        using HttpClient client = new(new StubHandler((_, _) =>
+            Task.FromCanceled<HttpResponseMessage>(timeout.Token)));
+        CommandReceiptSender sender = CreateSender(client);
+
+        ReceiptSendResult result = await sender.SendOnceAsync(CreateReceipt(), CancellationToken.None);
+
+        Assert.Equal(ReceiptSendDisposition.Retry, result.Disposition);
+        Assert.Equal("receipt_request_timeout", result.DiagnosticCode);
+    }
+
+    [Fact]
     public async Task SendOnceAsync_CallerCancellationPropagates()
     {
         TaskCompletionSource requestStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -163,6 +192,19 @@ public sealed class CommandReceiptSenderTests
             jitterFactor: 0.75);
 
         Assert.Equal(TimeSpan.FromSeconds(30), delay);
+    }
+
+    [Fact]
+    public void GetRetryDelay_AppliesBoundedExponentialBackoffWithoutServerHint()
+    {
+        TimeSpan delay = CommandReceiptSender.GetRetryDelay(
+            attempt: 2,
+            initial: TimeSpan.FromSeconds(2),
+            maximum: TimeSpan.FromSeconds(30),
+            retryAfter: null,
+            jitterFactor: 1.25);
+
+        Assert.Equal(TimeSpan.FromSeconds(10), delay);
     }
 
     [Fact]
@@ -199,6 +241,18 @@ public sealed class CommandReceiptSenderTests
 
         Assert.Equal(store.ReceiptEventId, store.DeliveredEventId);
         Assert.Null(store.ScheduledRetryAtUtc);
+    }
+
+    [Fact]
+    public async Task RunAsync_StopsWaitingWhenCanceledWhileOutboxIsEmpty()
+    {
+        using CancellationTokenSource cancellation = new();
+        ControlledStore store = new(null, cancellation.Cancel);
+        using HttpClient client = new(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Accepted)));
+        CommandReceiptSender sender = CreateSender(client, store: store);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => sender.RunAsync(cancellation.Token));
     }
 
     [Fact]
@@ -306,14 +360,15 @@ public sealed class CommandReceiptSenderTests
     }
 
     private sealed class ControlledStore(
-        PendingCommandReceipt receipt,
+        PendingCommandReceipt? receipt,
         Action stopRunLoop) : IEdgeAgentStore
     {
         private PendingCommandReceipt? _pendingReceipt = receipt;
 
-        public Guid ReceiptEventId { get; } = receipt.EventId;
+        public Guid ReceiptEventId { get; } = receipt?.EventId ?? Guid.Empty;
         public Guid? DeliveredEventId { get; private set; }
         public DateTimeOffset? ScheduledRetryAtUtc { get; private set; }
+        private int _emptyReadCount;
 
         public Task<PendingCommandReceipt?> GetNextReceiptAsync(
             DateTimeOffset nowUtc,
@@ -321,6 +376,10 @@ public sealed class CommandReceiptSenderTests
         {
             PendingCommandReceipt? pending = _pendingReceipt;
             _pendingReceipt = null;
+            if (pending is null && Interlocked.Increment(ref _emptyReadCount) >= 2)
+            {
+                stopRunLoop();
+            }
             return Task.FromResult(pending);
         }
 

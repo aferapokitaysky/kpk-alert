@@ -169,6 +169,40 @@ public sealed class LocalAudioAssetResolverTests : IDisposable
         Assert.Null(asset);
     }
 
+    [Fact]
+    public async Task ResolveAsync_RejectsAudioLargerThanConfiguredLimitBeforeHashing()
+    {
+        var packageDirectory = CreatePackage(CreatePcmWave(), PresetCode);
+        var audioPath = Path.Combine(packageDirectory, "alarm.wav");
+        await using (FileStream audio = new(audioPath, FileMode.Open, FileAccess.Write, FileShare.None))
+        {
+            audio.SetLength(100L * 1024 * 1024 + 1);
+        }
+
+        var manifest = Encoding.UTF8.GetBytes(MakeManifest(
+            _locationId, PresetCode, "alarm.wav", new string('0', 64)));
+        await File.WriteAllBytesAsync(Path.Combine(packageDirectory, "manifest.json"), manifest);
+        var digest = Convert.ToHexString(SHA256.HashData(manifest));
+        LocalAudioAssetResolver resolver = new(_root);
+
+        LocalAudioAsset? asset = await resolver.ResolveAsync(
+            _locationId, PresetCode, digest, CancellationToken.None);
+
+        Assert.Null(asset);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_PropagatesCancellationDuringManifestRead()
+    {
+        CreatePackage(CreatePcmWave(), PresetCode);
+        LocalAudioAssetResolver resolver = new(_root);
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resolver.ResolveAsync(
+            _locationId, PresetCode, new string('a', 64), cancellation.Token));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

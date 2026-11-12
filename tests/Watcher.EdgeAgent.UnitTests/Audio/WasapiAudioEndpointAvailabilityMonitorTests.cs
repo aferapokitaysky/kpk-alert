@@ -46,4 +46,11 @@ public sealed class WasapiAudioEndpointAvailabilityMonitorTests
         Assert.False(WasapiAudioEndpointAvailabilityMonitor.IsEndpointActive("stable-endpoint-id",
             _ => throw new InvalidOperationException("probe failed")));
     }
+
+    [Fact]
+    public void UnknownSystemEndpointIsUnavailable()
+    {
+        Assert.False(new WasapiAudioEndpointAvailabilityMonitor().IsAvailable(
+            "{00000000-0000-0000-0000-000000000000}"));
+    }
 }

@@ -275,9 +275,25 @@ public sealed class SqliteEdgeAgentStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpdateCommandState_RejectsUnknownCommand()
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _store.TransitionCommandAsync(
+            Guid.NewGuid(), DeviceCommandState.Playing, null, DateTimeOffset.UtcNow, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task GetLastSequence_ReturnsZeroForLocationWithoutStoredSequence()
     {
         Assert.Equal(0L, await _store.GetLastSequenceAsync(Guid.NewGuid(), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetLastSequence_ReturnsPersistedSequenceForLocation()
+    {
+        CommandDispatch command = CreateCommand(Guid.NewGuid(), 12);
+        await _store.TryAcceptAsync(command, new string('a', 64), DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(12L, await _store.GetLastSequenceAsync(command.LocationId, CancellationToken.None));
     }
 
     [Fact]

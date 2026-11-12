@@ -111,6 +111,40 @@ public sealed class DeviceCommandTransportTests
     }
 
     [Fact]
+    public void ConfigureWebSocketCapabilities_AdvertisesVersionTwoProtocol()
+    {
+        using ClientWebSocket socket = new();
+
+        DeviceCommandTransport.ConfigureWebSocketCapabilities(socket.Options);
+    }
+
+    [Fact]
+    public async Task ReportProcessingOutcomeAsync_ContainsDiagnosticObserverFailure()
+    {
+        DeviceCommandTransport transport = new(CreateOptions(), null!, (_, _) =>
+            ValueTask.FromException(new InvalidOperationException("observer failed")));
+
+        await transport.ReportProcessingOutcomeAsync(new(
+            Accepted: false,
+            Duplicate: false,
+            CloseConnection: false,
+            DiagnosticCode: "receipt_queue_full",
+            State: null));
+    }
+
+    [Fact]
+    public void GetRetryDelay_UsesBoundedExponentialBackoff()
+    {
+        TimeSpan delay = DeviceCommandTransport.GetRetryDelay(
+            attempt: 2,
+            initial: TimeSpan.FromSeconds(2),
+            maximum: TimeSpan.FromSeconds(30),
+            jitterFactor: 1.25);
+
+        Assert.Equal(TimeSpan.FromSeconds(10), delay);
+    }
+
+    [Fact]
     public async Task ReportProcessingOutcomeAsync_NotifiesQueuePressureWithoutClosingConnection()
     {
         string? reportedDiagnostic = null;
