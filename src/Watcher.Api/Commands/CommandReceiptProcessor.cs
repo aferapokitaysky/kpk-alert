@@ -79,12 +79,10 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             return CommandReceiptOutcome.Conflict;
         }
 
-        CommandDelivery? stoppedDelivery = null;
-        var targetWasStopped = false;
         var preserveStoppedState = (command.Action is "start" or "replace") &&
             delivery.State == CommandDeliveryState.Stopped;
         CommandDeliveryState deliveryStateBefore = delivery.State;
-        CommandDeliveryState? stoppedDeliveryStateBefore = null;
+        List<(CommandDelivery Delivery, CommandDeliveryState StateBefore)> stoppedEpisodeDeliveries = [];
         if (command.Action == "stop" && receipt.State is (
                 DeviceCommandState.Completed or DeviceCommandState.Stopped))
         {
@@ -93,9 +91,6 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 return CommandReceiptOutcome.Conflict;
             }
 
-            stoppedDelivery = await db.CommandDeliveries.SingleOrDefaultAsync(
-                item => item.CommandId == targetCommandId && item.DeviceId == deviceId,
-                cancellationToken);
             var targetSequence = await db.CommandTargets.AsNoTracking()
                 .Where(item => item.CommandId == targetCommandId && item.LocationId == device.LocationId)
                 .Select(item => item.Sequence)
@@ -103,11 +98,34 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             var targetIsStart = await db.AlertCommands.AsNoTracking().AnyAsync(
                 item => item.Id == targetCommandId && item.Action == "start",
                 cancellationToken);
-            if (stoppedDelivery is null || targetSequence == 0 || !targetIsStart ||
+            var targetDeliveryExists = await db.CommandDeliveries.AsNoTracking().AnyAsync(
+                item => item.CommandId == targetCommandId && item.DeviceId == deviceId,
+                cancellationToken);
+            if (!targetDeliveryExists || targetSequence == 0 || !targetIsStart ||
                 targetSequence >= receipt.Sequence)
             {
                 return CommandReceiptOutcome.Conflict;
             }
+
+            CommandDelivery[] activeEpisodeDeliveries = await (
+                    from episodeDelivery in db.CommandDeliveries
+                    join episodeCommand in db.AlertCommands
+                        on episodeDelivery.CommandId equals episodeCommand.Id
+                    join episodeTarget in db.CommandTargets
+                        on episodeCommand.Id equals episodeTarget.CommandId
+                    where episodeDelivery.DeviceId == deviceId &&
+                          episodeTarget.LocationId == device.LocationId &&
+                          episodeTarget.Sequence < receipt.Sequence &&
+                          (episodeCommand.Id == targetCommandId ||
+                           (episodeCommand.Action == "replace" &&
+                            episodeCommand.TargetCommandId == targetCommandId)) &&
+                          (episodeDelivery.State == CommandDeliveryState.Pending ||
+                           episodeDelivery.State == CommandDeliveryState.InFlight ||
+                           episodeDelivery.State == CommandDeliveryState.Accepted ||
+                           episodeDelivery.State == CommandDeliveryState.Playing)
+                    select episodeDelivery)
+                .ToArrayAsync(cancellationToken);
+            stoppedEpisodeDeliveries.AddRange(activeEpisodeDeliveries.Select(item => (item, item.State)));
         }
 
         DateTimeOffset receivedAtUtc = clock.GetUtcNow();
@@ -127,14 +145,10 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
             delivery.State = ToDeliveryState(receipt.State);
         }
         delivery.NextAttemptAtUtc = null;
-        if (stoppedDelivery is not null && stoppedDelivery.State is (
-                CommandDeliveryState.Pending or CommandDeliveryState.InFlight or
-                CommandDeliveryState.Accepted or CommandDeliveryState.Playing))
+        foreach ((CommandDelivery episodeDelivery, _) in stoppedEpisodeDeliveries)
         {
-            stoppedDeliveryStateBefore = stoppedDelivery.State;
-            stoppedDelivery.State = CommandDeliveryState.Stopped;
-            stoppedDelivery.NextAttemptAtUtc = null;
-            targetWasStopped = true;
+            episodeDelivery.State = CommandDeliveryState.Stopped;
+            episodeDelivery.NextAttemptAtUtc = null;
         }
         db.AuditEvents.Add(new AuditEvent
         {
@@ -188,7 +202,7 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 })
             });
         }
-        if (targetWasStopped && stoppedDelivery is not null)
+        foreach ((CommandDelivery episodeDelivery, CommandDeliveryState stateBefore) in stoppedEpisodeDeliveries)
         {
             db.AuditEvents.Add(new AuditEvent
             {
@@ -199,13 +213,13 @@ public sealed class CommandReceiptProcessor(WatcherDbContext db, TimeProvider cl
                 OccurredAtUtc = receivedAtUtc,
                 Payload = JsonSerializer.Serialize(new
                 {
-                    CommandId = stoppedDelivery.CommandId,
-                    DeliveryId = stoppedDelivery.Id,
+                    CommandId = episodeDelivery.CommandId,
+                    DeliveryId = episodeDelivery.Id,
                     StopCommandId = receipt.CommandId,
                     StopDeliveryId = delivery.Id,
                     DeviceId = deviceId,
-                    DeliveryStateBefore = stoppedDeliveryStateBefore?.ToString(),
-                    DeliveryStateAfter = stoppedDelivery.State.ToString()
+                    DeliveryStateBefore = stateBefore.ToString(),
+                    DeliveryStateAfter = episodeDelivery.State.ToString()
                 })
             });
         }
