@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Watcher.Api.AlertSources;
 
@@ -60,7 +61,7 @@ public sealed class NeptunRealtimeMonitorTests
             httpFactory,
             TimeProvider.System,
             NullLogger<NeptunProvider>.Instance);
-        FakeConnectionFactory connectionFactory = new();
+        FakeConnectionFactory connectionFactory = new(holdAlertFrame: true);
         NeptunRealtimeOptions options = new()
         {
             HeartbeatTimeout = TimeSpan.FromSeconds(5),
@@ -68,17 +69,37 @@ public sealed class NeptunRealtimeMonitorTests
             InitialReconnectDelay = TimeSpan.FromMilliseconds(10),
             MaximumReconnectDelay = TimeSpan.FromMilliseconds(20)
         };
-        NeptunRealtimeMonitor monitor = new(
-            provider,
-            connectionFactory,
-            options,
-            TimeProvider.System,
-            NullLogger<NeptunRealtimeMonitor>.Instance);
+        (NeptunRealtimeMonitor monitor, AlertSourceChangeSignal changeSignal, ServiceProvider serviceProvider,
+            AlertSourcesStatusService statusService) =
+            CreateMonitor(provider, connectionFactory, options);
 
         await monitor.StartAsync(CancellationToken.None);
         try
         {
+            await WaitForAsync(() => connectionFactory.FirstConnection is not null);
+            using (CancellationTokenSource startupSignalTimeout = new(TimeSpan.FromSeconds(3)))
+            {
+                await changeSignal.WaitForChangeAsync(startupSignalTimeout.Token);
+            }
+
+            AlertSourcesStatusResponse cachedStatus = await statusService.GetStatusAsync(CancellationToken.None);
+            AlertTargetStatus cachedOblast = cachedStatus.Targets.Single(item => item.Scope == "oblast");
+            Assert.Equal("inactive", cachedOblast.AuthoritativeObservation?.Level);
+            connectionFactory.ReleaseAlertFrame();
             await WaitForAsync(() => connectionFactory.FirstConnection?.AlertApplied.Task.IsCompleted == true);
+            await WaitForAsync(async () =>
+            {
+                IReadOnlyList<AlertSourceObservation> current = await provider.ReadAsync(CancellationToken.None);
+                return current.All(item => item.State == AlertState.Active);
+            });
+            using (CancellationTokenSource alertChangeTimeout = new(TimeSpan.FromSeconds(3)))
+            {
+                await changeSignal.WaitForChangeAsync(alertChangeTimeout.Token);
+            }
+
+            AlertSourcesStatusResponse updatedStatus = await statusService.GetStatusAsync(CancellationToken.None);
+            AlertTargetStatus updatedOblast = updatedStatus.Targets.Single(item => item.Scope == "oblast");
+            Assert.Equal("active", updatedOblast.AuthoritativeObservation?.Level);
             await WaitForAsync(async () =>
             {
                 IReadOnlyList<AlertSourceObservation> current = await provider.ReadAsync(CancellationToken.None);
@@ -102,6 +123,7 @@ public sealed class NeptunRealtimeMonitorTests
         finally
         {
             await monitor.StopAsync(CancellationToken.None);
+            await serviceProvider.DisposeAsync();
         }
     }
 
@@ -116,7 +138,7 @@ public sealed class NeptunRealtimeMonitorTests
         }));
         NeptunProvider provider = new(httpFactory, TimeProvider.System, NullLogger<NeptunProvider>.Instance);
         FakeConnectionFactory connectionFactory = new(blockAfterAlerts: true);
-        NeptunRealtimeMonitor monitor = new(
+        (NeptunRealtimeMonitor monitor, _, ServiceProvider serviceProvider, _) = CreateMonitor(
             provider,
             connectionFactory,
             new NeptunRealtimeOptions
@@ -125,9 +147,7 @@ public sealed class NeptunRealtimeMonitorTests
                 RestFallbackInterval = TimeSpan.FromSeconds(15),
                 InitialReconnectDelay = TimeSpan.FromSeconds(5),
                 MaximumReconnectDelay = TimeSpan.FromSeconds(5)
-            },
-            TimeProvider.System,
-            NullLogger<NeptunRealtimeMonitor>.Instance);
+            });
 
         await monitor.StartAsync(CancellationToken.None);
         try
@@ -143,6 +163,7 @@ public sealed class NeptunRealtimeMonitorTests
         finally
         {
             await monitor.StopAsync(CancellationToken.None);
+            await serviceProvider.DisposeAsync();
         }
     }
 
@@ -157,7 +178,7 @@ public sealed class NeptunRealtimeMonitorTests
         }));
         NeptunProvider provider = new(httpFactory, TimeProvider.System, NullLogger<NeptunProvider>.Instance);
         FakeConnectionFactory connectionFactory = new(sendMalformedFrame: true);
-        NeptunRealtimeMonitor monitor = new(
+        (NeptunRealtimeMonitor monitor, _, ServiceProvider serviceProvider, _) = CreateMonitor(
             provider,
             connectionFactory,
             new NeptunRealtimeOptions
@@ -166,9 +187,7 @@ public sealed class NeptunRealtimeMonitorTests
                 RestFallbackInterval = TimeSpan.FromSeconds(15),
                 InitialReconnectDelay = TimeSpan.FromSeconds(5),
                 MaximumReconnectDelay = TimeSpan.FromSeconds(5)
-            },
-            TimeProvider.System,
-            NullLogger<NeptunRealtimeMonitor>.Instance);
+            });
 
         await monitor.StartAsync(CancellationToken.None);
         try
@@ -183,6 +202,7 @@ public sealed class NeptunRealtimeMonitorTests
         finally
         {
             await monitor.StopAsync(CancellationToken.None);
+            await serviceProvider.DisposeAsync();
         }
     }
 
@@ -204,14 +224,57 @@ public sealed class NeptunRealtimeMonitorTests
         }
     }
 
-    private sealed class FakeConnectionFactory(
-        bool blockAfterAlerts = false,
-        bool sendMalformedFrame = false) : INeptunRealtimeConnectionFactory
+    private static (NeptunRealtimeMonitor Monitor, AlertSourceChangeSignal ChangeSignal, ServiceProvider Services,
+        AlertSourcesStatusService StatusService)
+        CreateMonitor(
+            NeptunProvider provider,
+            INeptunRealtimeConnectionFactory connectionFactory,
+            NeptunRealtimeOptions options)
+    {
+        ServiceProvider services = new ServiceCollection().BuildServiceProvider();
+        var statusService = new AlertSourcesStatusService(
+            [provider],
+            new AlertStatusAggregator(),
+            services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System,
+            NullLogger<AlertSourcesStatusService>.Instance);
+        var changeSignal = new AlertSourceChangeSignal();
+        var monitor = new NeptunRealtimeMonitor(
+            provider,
+            statusService,
+            changeSignal,
+            connectionFactory,
+            options,
+            TimeProvider.System,
+            NullLogger<NeptunRealtimeMonitor>.Instance);
+        return (monitor, changeSignal, services, statusService);
+    }
+
+    private sealed class FakeConnectionFactory : INeptunRealtimeConnectionFactory
     {
         private int _connectionCount;
+        private readonly TaskCompletionSource _alertFrameGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public FakeConnectionFactory(
+            bool blockAfterAlerts = false,
+            bool sendMalformedFrame = false,
+            bool holdAlertFrame = false)
+        {
+            this.blockAfterAlerts = blockAfterAlerts;
+            this.sendMalformedFrame = sendMalformedFrame;
+            if (!holdAlertFrame)
+            {
+                _alertFrameGate.TrySetResult();
+            }
+        }
+
+        private readonly bool blockAfterAlerts;
+        private readonly bool sendMalformedFrame;
 
         public int ConnectionCount => Volatile.Read(ref _connectionCount);
         public FakeConnection? FirstConnection { get; private set; }
+
+        public void ReleaseAlertFrame() => _alertFrameGate.TrySetResult();
 
         public Task<INeptunRealtimeConnection> ConnectAsync(Uri streamUri, CancellationToken cancellationToken)
         {
@@ -219,7 +282,8 @@ public sealed class NeptunRealtimeMonitorTests
             FakeConnection connection = new(
                 number == 1 && !blockAfterAlerts,
                 number == 1,
-                number == 1 && sendMalformedFrame);
+                number == 1 && sendMalformedFrame,
+                _alertFrameGate.Task);
             FirstConnection ??= connection;
             return Task.FromResult<INeptunRealtimeConnection>(connection);
         }
@@ -228,7 +292,8 @@ public sealed class NeptunRealtimeMonitorTests
     private sealed class FakeConnection(
         bool closeAfterDelay,
         bool sendAlertFrame,
-        bool sendMalformedFrame) : INeptunRealtimeConnection
+        bool sendMalformedFrame,
+        Task alertFrameGate) : INeptunRealtimeConnection
     {
         private int _received;
         public TaskCompletionSource AlertApplied { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -256,6 +321,7 @@ public sealed class NeptunRealtimeMonitorTests
                     return new(WebSocketMessageType.Text, Encoding.UTF8.GetBytes("""{"type":"heartbeat"}"""));
                 }
 
+                await alertFrameGate.WaitAsync(cancellationToken);
                 NeptunRealtimeMessage message = new(WebSocketMessageType.Text, Encoding.UTF8.GetBytes("""
                     {"type":"alerts","data":{"oblasts":[{"key":"poltavska","name":"Полтавська область","oblast":""}],"raions":[{"key":"poltavska:kremenchutskyi","name":"Кременчуцький район","oblast":"Полтавська область"}]}}
                     """));

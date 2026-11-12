@@ -56,13 +56,15 @@ public sealed class NeptunProvider(
         }
     }
 
-    internal void ApplyRealtimeSnapshot(NeptunAlertSnapshot snapshot)
+    internal bool ApplyRealtimeSnapshot(NeptunAlertSnapshot snapshot)
     {
         lock (_stateLock)
         {
+            var changed = _lastSuccessfulSnapshot != snapshot || _errorCode is not null;
             _lastSuccessfulSnapshot = snapshot;
             _checkedAtUtc = timeProvider.GetUtcNow();
             _errorCode = null;
+            return changed;
         }
     }
 

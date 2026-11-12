@@ -4,6 +4,8 @@ namespace Watcher.Api.AlertSources;
 
 internal sealed class NeptunRealtimeMonitor(
     NeptunProvider provider,
+    AlertSourcesStatusService statusService,
+    IAlertSourceChangeSignal changeSignal,
     INeptunRealtimeConnectionFactory connectionFactory,
     NeptunRealtimeOptions options,
     TimeProvider timeProvider,
@@ -14,6 +16,7 @@ internal sealed class NeptunRealtimeMonitor(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         provider.EnableRealtime();
+        NotifyStatusChanged();
         DateTimeOffset lastRestAttempt = DateTimeOffset.MinValue;
         NeptunReconnectBackoff reconnectBackoff = new(
             options.InitialReconnectDelay,
@@ -45,6 +48,7 @@ internal sealed class NeptunRealtimeMonitor(
                 {
                     provider.MarkRealtimeUnavailable("source_unavailable");
                 }
+                NotifyStatusChanged();
             }
 
             if (!readResult.ShouldReconnect)
@@ -68,8 +72,17 @@ internal sealed class NeptunRealtimeMonitor(
             }
 
             lastRestAttempt = now;
-            await provider.RefreshFromRestAsync(cancellationToken, allowRealtimeStateUpdate: true);
+            if (await provider.RefreshFromRestAsync(cancellationToken, allowRealtimeStateUpdate: true))
+            {
+                NotifyStatusChanged();
+            }
         }
+    }
+
+    private void NotifyStatusChanged()
+    {
+        statusService.InvalidateCache();
+        changeSignal.Signal();
     }
 
     private async Task<NeptunConnectionReadResult> ReadConnectionAsync(
@@ -84,6 +97,7 @@ internal sealed class NeptunRealtimeMonitor(
             if (remaining <= TimeSpan.Zero)
             {
                 provider.MarkRealtimeUnavailable("heartbeat_timeout");
+                NotifyStatusChanged();
                 return new(ShouldReconnect: true, hadValidAlertActivity);
             }
 
@@ -98,18 +112,21 @@ internal sealed class NeptunRealtimeMonitor(
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 provider.MarkRealtimeUnavailable("heartbeat_timeout");
+                NotifyStatusChanged();
                 return new(ShouldReconnect: true, hadValidAlertActivity);
             }
 
             if (message.MessageType == WebSocketMessageType.Close)
             {
                 provider.MarkRealtimeUnavailable("source_unavailable");
+                NotifyStatusChanged();
                 return new(ShouldReconnect: true, hadValidAlertActivity);
             }
 
             if (message.MessageType != WebSocketMessageType.Text)
             {
                 provider.InvalidateRealtimeSnapshot("invalid_response");
+                NotifyStatusChanged();
                 return new(ShouldReconnect: true, hadValidAlertActivity);
             }
 
@@ -117,7 +134,10 @@ internal sealed class NeptunRealtimeMonitor(
             switch (frame.Kind)
             {
                 case NeptunRealtimeFrameKind.Alerts when frame.AlertSnapshot is not null:
-                    provider.ApplyRealtimeSnapshot(frame.AlertSnapshot.Value);
+                    if (provider.ApplyRealtimeSnapshot(frame.AlertSnapshot.Value))
+                    {
+                        NotifyStatusChanged();
+                    }
                     lastHeartbeat = timeProvider.GetUtcNow();
                     hadValidAlertActivity = true;
                     break;
@@ -130,6 +150,7 @@ internal sealed class NeptunRealtimeMonitor(
                     break;
                 default:
                     provider.InvalidateRealtimeSnapshot("invalid_response");
+                    NotifyStatusChanged();
                     return new(ShouldReconnect: true, hadValidAlertActivity);
             }
         }

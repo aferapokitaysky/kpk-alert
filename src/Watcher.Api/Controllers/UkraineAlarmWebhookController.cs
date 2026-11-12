@@ -12,6 +12,7 @@ namespace Watcher.Api.Controllers;
 [Route("api/v1/alert-sources/ukrainealarm/webhook")]
 public sealed class UkraineAlarmWebhookController(
     IUkraineAlarmRefreshSignal refreshSignal,
+    IAlertSourceChangeSignal changeSignal,
     AlertSourcesStatusService statusService,
     TimeProvider timeProvider,
     ILogger<UkraineAlarmWebhookController> logger) : ControllerBase
@@ -60,6 +61,10 @@ public sealed class UkraineAlarmWebhookController(
 
         var refreshQueued = refreshSignal.TrySignal(now);
         statusService.InvalidateCache();
+        if (refreshQueued)
+        {
+            changeSignal.Signal();
+        }
         Requests.Add(1, new KeyValuePair<string, object?>("result", "accepted"));
         if (refreshQueued)
         {

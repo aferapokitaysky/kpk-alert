@@ -19,7 +19,8 @@ public sealed class UkraineAlarmWebhookEndpointTests
     public async Task Valid_callback_only_signals_reconciliation_and_returns_no_store()
     {
         UkraineAlarmRefreshSignal signal = new();
-        using WebApplicationFactory<Program> factory = CreateFactory(signal);
+        AlertSourceChangeSignal changeSignal = new();
+        using WebApplicationFactory<Program> factory = CreateFactory(signal, changeSignal: changeSignal);
         using HttpClient client = factory.CreateClient();
         using StringContent body = new("""{"status":"active","regionId":"untrusted"}""", Encoding.UTF8,
             "application/json");
@@ -29,6 +30,28 @@ public sealed class UkraineAlarmWebhookEndpointTests
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
         Assert.True(signal.Consume());
+        using CancellationTokenSource changeTimeout = new(TimeSpan.FromSeconds(1));
+        await changeSignal.WaitForChangeAsync(changeTimeout.Token);
+    }
+
+    [Fact]
+    public async Task Coalesced_callback_does_not_queue_an_extra_dispatch_wakeup()
+    {
+        UkraineAlarmRefreshSignal signal = new();
+        AlertSourceChangeSignal changeSignal = new();
+        using WebApplicationFactory<Program> factory = CreateFactory(signal, changeSignal: changeSignal);
+        using HttpClient client = factory.CreateClient();
+
+        using HttpResponseMessage first = await client.PostAsync(CallbackPath, null);
+        using CancellationTokenSource firstChangeTimeout = new(TimeSpan.FromSeconds(1));
+        await changeSignal.WaitForChangeAsync(firstChangeTimeout.Token);
+        using HttpResponseMessage coalesced = await client.PostAsync(CallbackPath, null);
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, coalesced.StatusCode);
+        using CancellationTokenSource noExtraChangeTimeout = new(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => changeSignal.WaitForChangeAsync(noExtraChangeTimeout.Token));
     }
 
     [Fact]
@@ -148,7 +171,8 @@ public sealed class UkraineAlarmWebhookEndpointTests
 
     private static WebApplicationFactory<Program> CreateFactory(
         UkraineAlarmRefreshSignal signal,
-        ILoggerProvider? loggerProvider = null) =>
+        ILoggerProvider? loggerProvider = null,
+        AlertSourceChangeSignal? changeSignal = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
             builder.ConfigureTestServices(services =>
             {
@@ -158,6 +182,10 @@ public sealed class UkraineAlarmWebhookEndpointTests
                 }
 
                 services.AddSingleton<IUkraineAlarmRefreshSignal>(signal);
+                if (changeSignal is not null)
+                {
+                    services.AddSingleton<IAlertSourceChangeSignal>(changeSignal);
+                }
                 services.AddSingleton<IStartupFilter>(new TestRemoteAddressStartupFilter());
             }));
 

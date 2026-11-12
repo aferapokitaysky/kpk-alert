@@ -16,6 +16,7 @@ public static class AlertSourcesServiceCollectionExtensions
             configuration["AlertSources:AlertsInUa:Token"];
         services.AddSingleton<IOptions<AlertsInUaOptions>>(Options.Create(new AlertsInUaOptions(token)));
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.TryAddSingleton<IAlertSourceChangeSignal, AlertSourceChangeSignal>();
         services.AddSingleton<AlertStatusAggregator>();
         services.AddSingleton<AutomaticAlertDispatchPolicy>();
         AutomaticAlertDispatchOptions automaticDispatchOptions = configuration

@@ -148,6 +148,8 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
 
         Assert.Equal(AutomaticAlertDispatchResult.Replaced,
             await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(1)), Now.AddMinutes(1)));
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(1)), Now.AddMinutes(1)));
         Guid firstReplaceId;
         using (WatcherDbContext firstReplaceDb = _fixture.CreateDbContext())
         {
@@ -164,6 +166,8 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         await SetSingleDeliveryStateAsync(firstReplaceId, CommandDeliveryState.Playing);
 
         Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red", Now.AddMinutes(2)), Now.AddMinutes(2)));
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
             await ProcessAsync(CorroboratedColoredActiveStatus("red", Now.AddMinutes(2)), Now.AddMinutes(2)));
         Guid secondReplaceId;
         using (WatcherDbContext secondReplaceDb = _fixture.CreateDbContext())
@@ -184,6 +188,8 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
 
         Assert.Equal(AutomaticAlertDispatchResult.Stopped,
             await ProcessAsync(InactiveStatus(), Now.AddMinutes(3)));
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
+            await ProcessAsync(InactiveStatus(), Now.AddMinutes(3)));
         using WatcherDbContext verifyDb = _fixture.CreateDbContext();
         AlertCommand startCommand = await verifyDb.AlertCommands.SingleAsync(item => item.Action == "start");
         AlertCommand stopCommand = await verifyDb.AlertCommands.SingleAsync(item => item.Action == "stop");
@@ -193,6 +199,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             .Where(item => item.CommandId == stopCommand.Id).ToArrayAsync();
         Assert.Equal(deviceIds.Order(), stopDeliveries.Select(item => item.DeviceId).Order());
         Assert.All(stopDeliveries, item => Assert.Equal(CommandDeliveryState.Pending, item.State));
+        Assert.Equal(4, await verifyDb.AlertCommands.CountAsync());
     }
 
     [PostgresFact]

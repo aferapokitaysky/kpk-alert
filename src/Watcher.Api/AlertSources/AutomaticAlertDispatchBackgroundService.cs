@@ -5,7 +5,7 @@ namespace Watcher.Api.AlertSources;
 public sealed class AutomaticAlertDispatchBackgroundService(
     IServiceScopeFactory scopeFactory,
     AlertSourcesStatusService statusService,
-    IUkraineAlarmRefreshSignal refreshSignal,
+    IAlertSourceChangeSignal changeSignal,
     AutomaticAlertDispatchOptions options,
     TimeProvider timeProvider,
     ILogger<AutomaticAlertDispatchBackgroundService> logger) : BackgroundService
@@ -41,7 +41,7 @@ public sealed class AutomaticAlertDispatchBackgroundService(
             using var waitCancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var intervalElapsed = Task.Delay(options.PollInterval, timeProvider, waitCancellation.Token);
-            Task signalReceived = refreshSignal.WaitForSignalAsync(waitCancellation.Token);
+            Task signalReceived = changeSignal.WaitForChangeAsync(waitCancellation.Token);
             await Task.WhenAny(intervalElapsed, signalReceived);
             waitCancellation.Cancel();
             await ObserveWaitAsync(intervalElapsed, waitCancellation.Token);
