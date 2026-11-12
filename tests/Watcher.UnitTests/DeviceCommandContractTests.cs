@@ -34,6 +34,66 @@ public sealed class DeviceCommandContractTests
     }
 
     [Fact]
+    public void Replace_requires_v2_schema_episode_anchor_and_validated_audio()
+    {
+        CommandDispatch valid = ValidStart() with
+        {
+            SchemaVersion = DeviceCommandValidator.ReplaceSchemaVersion,
+            Action = DeviceCommandAction.Replace,
+            TargetCommandId = Guid.NewGuid()
+        };
+
+        Assert.Null(DeviceCommandValidator.Validate(valid));
+        Assert.Equal("invalid_action_payload", DeviceCommandValidator.Validate(valid with
+        {
+            SchemaVersion = DeviceCommandValidator.CurrentSchemaVersion
+        }));
+        Assert.Equal("invalid_action_payload", DeviceCommandValidator.Validate(valid with
+        {
+            TargetCommandId = Guid.Empty
+        }));
+        Assert.Equal("invalid_action_payload", DeviceCommandValidator.Validate(valid with
+        {
+            ManifestHash = null
+        }));
+    }
+
+    [Fact]
+    public void Replace_dispatch_uses_explicit_v2_wire_action()
+    {
+        CommandDispatch dispatch = ValidStart() with
+        {
+            SchemaVersion = DeviceCommandValidator.ReplaceSchemaVersion,
+            Action = DeviceCommandAction.Replace,
+            TargetCommandId = Guid.NewGuid()
+        };
+
+        var json = JsonSerializer.Serialize(dispatch);
+
+        Assert.Contains("\"schemaVersion\":2", json, StringComparison.Ordinal);
+        Assert.Contains("\"action\":\"replace\"", json, StringComparison.Ordinal);
+        Assert.Equal(dispatch, JsonSerializer.Deserialize<CommandDispatch>(json));
+    }
+
+    [Fact]
+    public void Replacement_receipts_accept_v2_without_changing_v1_receipt_compatibility()
+    {
+        CommandReceipt receipt = new(DeviceCommandValidator.ReplaceSchemaVersion,
+            Guid.NewGuid(), Guid.NewGuid(), 1, DeviceCommandState.Playing,
+            new DateTimeOffset(2026, 11, 5, 9, 0, 1, TimeSpan.Zero), null);
+
+        Assert.Null(DeviceCommandValidator.Validate(receipt));
+        Assert.Null(DeviceCommandValidator.Validate(receipt with
+        {
+            SchemaVersion = DeviceCommandValidator.CurrentSchemaVersion
+        }));
+        Assert.Equal("invalid_identity", DeviceCommandValidator.Validate(receipt with
+        {
+            SchemaVersion = 3
+        }));
+    }
+
+    [Fact]
     public void Dispatch_rejects_non_utc_expired_or_unsequenced_commands()
     {
         CommandDispatch valid = ValidStart();

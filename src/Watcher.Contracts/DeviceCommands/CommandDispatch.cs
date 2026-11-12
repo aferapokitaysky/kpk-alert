@@ -8,7 +8,9 @@ public enum DeviceCommandAction
     [JsonStringEnumMemberName("start")]
     Start,
     [JsonStringEnumMemberName("stop")]
-    Stop
+    Stop,
+    [JsonStringEnumMemberName("replace")]
+    Replace
 }
 
 public sealed record CommandDispatch(
