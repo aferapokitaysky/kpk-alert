@@ -124,6 +124,19 @@ public sealed class WasapiAudioPlayerTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadVerifiedAudioAsync_RejectsEmptyAudioFile()
+    {
+        var audioFile = Path.Combine(_root, "empty.wav");
+        await File.WriteAllBytesAsync(audioFile, []);
+        await using FileStream stream = new(audioFile, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+        AudioPlaybackException exception = await Assert.ThrowsAsync<AudioPlaybackException>(
+            () => WasapiAudioPlayer.ReadVerifiedAudioAsync(stream, new string('0', 64), CancellationToken.None));
+
+        Assert.Equal("audio_format_unsupported", exception.DiagnosticCode);
+    }
+
+    [Fact]
     public async Task StopAsync_ReturnsFalseWhenTargetIsNotPlaying()
     {
         await using WasapiAudioPlayer player = CreatePlayer();
