@@ -94,6 +94,7 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.ToTable("alert_commands", table => table.HasCheckConstraint(
                 "CK_alert_commands_device_payload",
                 "(\"Action\" = 'start' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR " +
+                "(\"Action\" = 'replace' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR " +
                 "(\"Action\" = 'stop' AND \"PresetCode\" IS NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" = 0)"));
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.IdempotencyKey).IsUnique();
@@ -186,10 +187,12 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
 
         modelBuilder.Entity<DeviceSession>(entity =>
         {
-            entity.ToTable("device_sessions");
+            entity.ToTable("device_sessions", table => table.HasCheckConstraint(
+                "CK_device_sessions_command_schema_version", "\"CommandSchemaVersion\" IN (1, 2)"));
             entity.HasKey(x => x.Id);
             entity.HasOne<Device>().WithMany().HasForeignKey(x => x.DeviceId);
             entity.HasIndex(x => new { x.DeviceId, x.LastSeenAtUtc });
+            entity.Property(x => x.CommandSchemaVersion).HasDefaultValue(1).IsRequired();
         });
 
         modelBuilder.Entity<OutboxMessage>(entity =>
@@ -296,6 +299,14 @@ public sealed class WatcherDbContext(DbContextOptions<WatcherDbContext> options)
             entity.Property(item => item.ScopeId).HasMaxLength(80);
             entity.Property(item => item.LastDecisionCode).HasMaxLength(80).IsRequired();
             entity.Property(item => item.LastHoldAuditFingerprint).HasMaxLength(64);
+            entity.Property(item => item.LastObservedSource).HasMaxLength(40);
+            entity.Property(item => item.LastObservedScope).HasMaxLength(20);
+            entity.Property(item => item.LastObservedScopeId).HasMaxLength(80);
+            entity.Property(item => item.LastObservedLevel).HasMaxLength(20);
+            entity.Property(item => item.LastObservedAlertLevel).HasMaxLength(40);
+            entity.Property(item => item.LastAttemptedAlertLevel).HasMaxLength(40);
+            entity.Property(item => item.LastAttemptedAlertLevelScope).HasMaxLength(20);
+            entity.Property(item => item.LastAttemptedAlertLevelScopeId).HasMaxLength(80);
         });
     }
 }

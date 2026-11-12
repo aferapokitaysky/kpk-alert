@@ -68,7 +68,7 @@ namespace Watcher.Infrastructure.Persistence.Migrations
 
                     b.ToTable("alert_commands", null, t =>
                         {
-                            t.HasCheckConstraint("CK_alert_commands_device_payload", "(\"Action\" = 'start' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR (\"Action\" = 'stop' AND \"PresetCode\" IS NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" = 0)");
+                            t.HasCheckConstraint("CK_alert_commands_device_payload", "(\"Action\" = 'start' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR (\"Action\" = 'replace' AND \"PresetCode\" IS NOT NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" BETWEEN 1 AND 900) OR (\"Action\" = 'stop' AND \"PresetCode\" IS NULL AND \"TargetCommandId\" IS NOT NULL AND \"MaximumPlaybackDurationSeconds\" = 0)");
                         });
                 });
 
@@ -162,8 +162,23 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)");
 
+                    b.Property<bool>("HasObservationBaseline")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("HasOpenEpisode")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("LastAttemptedAlertLevel")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("LastAttemptedAlertLevelScope")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("LastAttemptedAlertLevelScopeId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<string>("LastDecisionCode")
                         .IsRequired()
@@ -173,6 +188,29 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                     b.Property<string>("LastHoldAuditFingerprint")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("LastObservedAlertLevel")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("LastObservedLevel")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("LastObservedScope")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("LastObservedScopeId")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("LastObservedSource")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<bool>("NeedsObservationResync")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Scope")
                         .HasMaxLength(16)
@@ -379,6 +417,11 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("CommandSchemaVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
                     b.Property<DateTimeOffset>("ConnectedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -395,7 +438,10 @@ namespace Watcher.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("DeviceId", "LastSeenAtUtc");
 
-                    b.ToTable("device_sessions", (string)null);
+                    b.ToTable("device_sessions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_device_sessions_command_schema_version", "\"CommandSchemaVersion\" IN (1, 2)");
+                        });
                 });
 
             modelBuilder.Entity("Watcher.Domain.Entities.ExternalIntegrationState", b =>
@@ -626,8 +672,6 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("Id");
-
-                    b.HasAlternateKey("Code");
 
                     b.ToTable("sound_presets", (string)null);
                 });

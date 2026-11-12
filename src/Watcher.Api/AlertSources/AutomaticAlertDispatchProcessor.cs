@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Watcher.Api.Commands;
+using Watcher.Contracts.DeviceCommands;
 using Watcher.Domain.Entities;
 using Watcher.Infrastructure.Persistence;
 
@@ -14,6 +15,7 @@ public enum AutomaticAlertDispatchResult
     Held,
     NoChange,
     Started,
+    Replaced,
     Stopped
 }
 
@@ -41,16 +43,89 @@ public sealed class AutomaticAlertDispatchProcessor(
             .FromSqlInterpolated($"SELECT * FROM automatic_alert_dispatch_states WHERE \"Id\" = {AutomaticAlertDispatchState.KremenchukId} FOR UPDATE")
             .SingleAsync(cancellationToken);
         OpenAlertEpisode? openEpisode = CreateOpenEpisode(state);
-        AutomaticAlertDispatchDecision decision = policy.Evaluate(status, openEpisode);
+        AlertObservationBaseline? baseline = CreateBaseline(state);
         DateTimeOffset now = clock.GetUtcNow();
+        var observationGap = state.HasObservationBaseline &&
+            (state.NeedsObservationResync ||
+             now - state.UpdatedAtUtc > TimeSpan.FromTicks(options.PollInterval.Ticks * 2));
+        AutomaticAlertDispatchDecision evaluatedDecision = policy.Evaluate(status, openEpisode, baseline);
         var previousDecisionCode = state.LastDecisionCode;
+        AlertSourceObservationResponse? currentObservation = policy.SelectBaselineObservation(status);
+        AutomaticAlertDispatchDecision decision = observationGap
+            ? openEpisode is null
+                ? policy.Evaluate(status, null, null)
+                : new(AutomaticAlertDispatchAction.Hold, "observation_gap_requires_confirmation", null)
+            : evaluatedDecision;
+
+        if (observationGap && openEpisode is not null &&
+            evaluatedDecision.Action != AutomaticAlertDispatchAction.Hold && currentObservation is not null)
+        {
+            UpdateBaseline(state, currentObservation);
+            if (evaluatedDecision.Action == AutomaticAlertDispatchAction.Replace)
+            {
+                UpdateAttemptedAlertLevel(state, evaluatedDecision.Observation);
+            }
+            state.NeedsObservationResync = false;
+        }
+        else if (observationGap && openEpisode is not null)
+        {
+            state.NeedsObservationResync = true;
+        }
+
+        if (decision.Action == AutomaticAlertDispatchAction.InitializeBaseline)
+        {
+            if (decision.Observation is not null)
+            {
+                UpdateBaseline(state, decision.Observation);
+            }
+
+            state.NeedsObservationResync = false;
+            state.LastDecisionCode = decision.ReasonCode;
+            state.UpdatedAtUtc = now;
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return AutomaticAlertDispatchResult.NoChange;
+        }
+
+        if (decision.Action is not (AutomaticAlertDispatchAction.Hold or
+                AutomaticAlertDispatchAction.Start or AutomaticAlertDispatchAction.Replace) &&
+            currentObservation is not null)
+        {
+            UpdateBaseline(state, currentObservation);
+        }
 
         if (decision.Action == AutomaticAlertDispatchAction.Start && !state.HasOpenEpisode)
         {
-            AutomaticAlertDispatchResult result = await StartEpisodeAsync(state, decision, now, cancellationToken);
+            var presetCode = options.GetPresetCode(decision.Observation?.AlertLevel);
+            AutomaticAlertDispatchResult result = presetCode is null
+                ? HoldForMissingLevelPreset(state, "level_preset_unavailable", decision.Observation, now)
+                : await StartEpisodeAsync(state, decision, presetCode, now, cancellationToken);
             if (result == AutomaticAlertDispatchResult.Held)
             {
                 AddHoldAudit(state, previousDecisionCode, state.LastDecisionCode, status, now);
+            }
+            else if (result == AutomaticAlertDispatchResult.Started && decision.Observation is not null)
+            {
+                UpdateBaseline(state, decision.Observation);
+            }
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+
+        if (decision.Action == AutomaticAlertDispatchAction.Replace && state.HasOpenEpisode)
+        {
+            var presetCode = options.GetPresetCode(decision.Observation?.AlertLevel);
+            AutomaticAlertDispatchResult result = presetCode is null
+                ? HoldForMissingLevelPreset(state, "level_preset_unavailable", decision.Observation, now)
+                : await ReplaceEpisodeAsync(state, decision, presetCode, now, cancellationToken);
+            if (result == AutomaticAlertDispatchResult.Held)
+            {
+                AddHoldAudit(state, previousDecisionCode, state.LastDecisionCode, status, now);
+            }
+            else if (result == AutomaticAlertDispatchResult.Replaced && currentObservation is not null)
+            {
+                UpdateBaseline(state, currentObservation);
             }
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -200,12 +275,13 @@ public sealed class AutomaticAlertDispatchProcessor(
     private async Task<AutomaticAlertDispatchResult> StartEpisodeAsync(
         AutomaticAlertDispatchState state,
         AutomaticAlertDispatchDecision decision,
+        string presetCode,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         AlertSourceObservationResponse? observation = decision.Observation;
         SoundPreset? preset = await db.SoundPresets.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.Code == options.PresetCode && item.IsPublished, cancellationToken);
+            .SingleOrDefaultAsync(item => item.Code == presetCode && item.IsPublished, cancellationToken);
         if (preset is null || !SoundPreset.HasValidManifestHash(preset.ManifestHash))
         {
             state.LastDecisionCode = preset is null ? "preset_unavailable" : "preset_manifest_invalid";
@@ -233,7 +309,7 @@ public sealed class AutomaticAlertDispatchProcessor(
             MaximumPlaybackDurationSeconds = AlertCommand.DefaultMaximumPlaybackDurationSeconds,
             InitiatedByUserId = null,
             CreatedAtUtc = now,
-            ExpiresAtUtc = now.AddMinutes(AlertCommand.DefaultValidityMinutes)
+            ExpiresAtUtc = now.AddSeconds(options.StartCommandValiditySeconds)
         };
         foreach (Location location in locations)
         {
@@ -267,9 +343,134 @@ public sealed class AutomaticAlertDispatchProcessor(
         state.ScopeId = observation?.ScopeId;
         state.StartCommandId = command.Id;
         state.StartedAtUtc = now;
+        UpdateAttemptedAlertLevel(state, observation);
         state.LastDecisionCode = decision.ReasonCode;
         state.UpdatedAtUtc = now;
         return AutomaticAlertDispatchResult.Started;
+    }
+
+    private async Task<AutomaticAlertDispatchResult> ReplaceEpisodeAsync(
+        AutomaticAlertDispatchState state,
+        AutomaticAlertDispatchDecision decision,
+        string presetCode,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (state.StartCommandId is not { } episodeAnchorId)
+        {
+            state.LastDecisionCode = "open_episode_anchor_missing";
+            state.UpdatedAtUtc = now;
+            return AutomaticAlertDispatchResult.Held;
+        }
+
+        var anchorIsMaterialized = await db.OutboxMessages.AsNoTracking()
+            .AnyAsync(item => item.CommandId == episodeAnchorId && item.ProcessedAtUtc != null,
+                cancellationToken);
+        if (!anchorIsMaterialized)
+        {
+            state.LastDecisionCode = "awaiting_start_delivery";
+            state.UpdatedAtUtc = now;
+            return AutomaticAlertDispatchResult.Held;
+        }
+
+        CommandDelivery[] activeEpisodeDeliveries = await LoadActiveEpisodeDeliveriesAsync(
+            episodeAnchorId, cancellationToken);
+        if (activeEpisodeDeliveries.Length == 0)
+        {
+            state.LastDecisionCode = "no_active_episode_deliveries";
+            state.UpdatedAtUtc = now;
+            return AutomaticAlertDispatchResult.Held;
+        }
+
+        Guid[] activeEpisodeDeviceIds = activeEpisodeDeliveries
+            .Select(item => item.DeviceId)
+            .Distinct()
+            .ToArray();
+        var protocolUpgradeRequired = false;
+        foreach (Guid deviceId in activeEpisodeDeviceIds)
+        {
+            if (await GetLatestCommandSchemaVersionAsync(deviceId, cancellationToken) <
+                DeviceCommandValidator.ReplaceSchemaVersion)
+            {
+                protocolUpgradeRequired = true;
+                break;
+            }
+        }
+        if (protocolUpgradeRequired)
+        {
+            state.LastDecisionCode = "command_protocol_upgrade_required";
+            state.UpdatedAtUtc = now;
+            return AutomaticAlertDispatchResult.Held;
+        }
+
+        SoundPreset? preset = await db.SoundPresets.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Code == presetCode && item.IsPublished, cancellationToken);
+        if (preset is null || !SoundPreset.HasValidManifestHash(preset.ManifestHash))
+        {
+            state.LastDecisionCode = preset is null ? "preset_unavailable" : "preset_manifest_invalid";
+            state.UpdatedAtUtc = now;
+            return AutomaticAlertDispatchResult.Held;
+        }
+
+        AlertCommand episodeAnchor = await db.AlertCommands
+            .Include(item => item.Targets)
+            .SingleAsync(item => item.Id == episodeAnchorId && item.Action == "start", cancellationToken);
+        var command = new AlertCommand
+        {
+            Id = Guid.NewGuid(),
+            IdempotencyKey = Guid.NewGuid(),
+            Action = "replace",
+            PresetCode = preset.Code,
+            TargetCommandId = episodeAnchorId,
+            MaximumPlaybackDurationSeconds = AlertCommand.DefaultMaximumPlaybackDurationSeconds,
+            InitiatedByUserId = null,
+            CreatedAtUtc = now,
+            ExpiresAtUtc = now.AddSeconds(options.StartCommandValiditySeconds)
+        };
+        foreach (CommandTarget anchorTarget in episodeAnchor.Targets.OrderBy(item => item.LocationId))
+        {
+            command.Targets.Add(new CommandTarget
+            {
+                Id = Guid.NewGuid(),
+                LocationId = anchorTarget.LocationId,
+                Sequence = await sequenceAllocator.AllocateAsync(anchorTarget.LocationId, cancellationToken),
+                State = "Created"
+            });
+        }
+
+        AlertSourceObservationResponse? observation = decision.Observation;
+        var payload = new
+        {
+            command.Id,
+            command.Action,
+            command.TargetCommandId,
+            command.PresetCode,
+            command.ExpiresAtUtc,
+            LocationIds = command.Targets.Select(target => target.LocationId),
+            decision.ReasonCode,
+            Source = observation?.Source,
+            AlertLevel = observation?.AlertLevel,
+            Scope = observation?.Scope,
+            ScopeId = observation?.ScopeId,
+            observation?.CheckedAtUtc,
+            observation?.DataUpdatedAtUtc
+        };
+        AddCommandRecords(command, payload, now);
+        UpdateAttemptedAlertLevel(state, observation);
+        state.LastDecisionCode = decision.ReasonCode;
+        state.UpdatedAtUtc = now;
+        return AutomaticAlertDispatchResult.Replaced;
+    }
+
+    private static AutomaticAlertDispatchResult HoldForMissingLevelPreset(
+        AutomaticAlertDispatchState state,
+        string reasonCode,
+        AlertSourceObservationResponse? observation,
+        DateTimeOffset now)
+    {
+        state.LastDecisionCode = reasonCode;
+        state.UpdatedAtUtc = now;
+        return AutomaticAlertDispatchResult.Held;
     }
 
     private async Task<AutomaticAlertDispatchResult> StopEpisodeAsync(
@@ -291,30 +492,19 @@ public sealed class AutomaticAlertDispatchProcessor(
             return AutomaticAlertDispatchResult.Held;
         }
 
-        CommandDelivery[] activeStartDeliveries = await db.CommandDeliveries
-            .FromSqlInterpolated($"""
-                SELECT delivery.*
-                FROM command_deliveries AS delivery
-                JOIN devices AS device ON device."Id" = delivery."DeviceId"
-                JOIN command_targets AS target
-                  ON target."CommandId" = delivery."CommandId"
-                 AND target."LocationId" = device."LocationId"
-                WHERE delivery."CommandId" = {startCommand.Id}
-                  AND delivery."State" IN ('Pending', 'InFlight', 'Accepted', 'Playing')
-                FOR UPDATE OF delivery
-                """)
-            .ToArrayAsync(cancellationToken);
-        Guid[] activeDeviceIds = activeStartDeliveries.Select(item => item.DeviceId).ToArray();
+        CommandDelivery[] activeEpisodeDeliveries = await LoadActiveEpisodeDeliveriesAsync(
+            startCommand.Id, cancellationToken);
+        Guid[] activeDeviceIds = activeEpisodeDeliveries.Select(item => item.DeviceId).Distinct().ToArray();
         Dictionary<Guid, Guid> routableDeviceLocations = await (
                 from device in db.Devices.AsNoTracking()
                 join location in db.Locations.AsNoTracking() on device.LocationId equals location.Id
                 where activeDeviceIds.Contains(device.Id) && device.RevokedAtUtc == null && location.IsActive
                 select new { device.Id, device.LocationId })
             .ToDictionaryAsync(item => item.Id, item => item.LocationId, cancellationToken);
-        CommandDelivery[] routableStartDeliveries = activeStartDeliveries
+        CommandDelivery[] routableEpisodeDeliveries = activeEpisodeDeliveries
             .Where(item => routableDeviceLocations.ContainsKey(item.DeviceId))
             .ToArray();
-        if (routableStartDeliveries.Length == 0)
+        if (routableEpisodeDeliveries.Length == 0)
         {
             CloseEpisode(state, decision.ReasonCode, now);
             db.AuditEvents.Add(new AuditEvent
@@ -333,7 +523,7 @@ public sealed class AutomaticAlertDispatchProcessor(
             return AutomaticAlertDispatchResult.Stopped;
         }
 
-        Guid[] locationIds = routableStartDeliveries
+        Guid[] locationIds = routableEpisodeDeliveries
             .Select(item => routableDeviceLocations[item.DeviceId])
             .Distinct()
             .Order()
@@ -360,16 +550,19 @@ public sealed class AutomaticAlertDispatchProcessor(
             });
         }
 
-        db.CommandDeliveries.AddRange(routableStartDeliveries.Select(delivery => new CommandDelivery
-        {
-            Id = Guid.NewGuid(),
-            CommandId = stopCommand.Id,
-            DeviceId = delivery.DeviceId,
-            State = CommandDeliveryState.Pending,
-            CreatedAtUtc = now,
-            ExpiresAtUtc = stopCommand.ExpiresAtUtc,
-            NextAttemptAtUtc = now
-        }));
+        db.CommandDeliveries.AddRange(routableEpisodeDeliveries
+            .Select(item => item.DeviceId)
+            .Distinct()
+            .Select(deviceId => new CommandDelivery
+            {
+                Id = Guid.NewGuid(),
+                CommandId = stopCommand.Id,
+                DeviceId = deviceId,
+                State = CommandDeliveryState.Pending,
+                CreatedAtUtc = now,
+                ExpiresAtUtc = stopCommand.ExpiresAtUtc,
+                NextAttemptAtUtc = now
+            }));
 
         AlertSourceObservationResponse? observation = decision.Observation;
         var payload = new
@@ -407,7 +600,12 @@ public sealed class AutomaticAlertDispatchProcessor(
         db.AuditEvents.Add(new AuditEvent
         {
             Id = Guid.NewGuid(),
-            EventType = command.Action == "stop" ? "alert_command.stop_requested" : "alert_command.created",
+            EventType = command.Action switch
+            {
+                "stop" => "alert_command.stop_requested",
+                "replace" => "alert_command.replace_requested",
+                _ => "alert_command.created"
+            },
             ActorType = "system",
             Payload = serializedPayload,
             OccurredAtUtc = now
@@ -426,6 +624,9 @@ public sealed class AutomaticAlertDispatchProcessor(
         state.StartedAtUtc = null;
         state.LastDecisionCode = decisionCode;
         state.UpdatedAtUtc = now;
+        state.LastAttemptedAlertLevel = null;
+        state.LastAttemptedAlertLevelScope = null;
+        state.LastAttemptedAlertLevelScopeId = null;
     }
 
     private static OpenAlertEpisode? CreateOpenEpisode(AutomaticAlertDispatchState state)
@@ -439,4 +640,88 @@ public sealed class AutomaticAlertDispatchProcessor(
 
         return new OpenAlertEpisode(scope, state.ScopeId);
     }
+
+    private static AlertObservationBaseline? CreateBaseline(AutomaticAlertDispatchState state)
+    {
+        if (!state.HasObservationBaseline || state.LastObservedSource is null ||
+            state.LastObservedScope is null || state.LastObservedScopeId is null ||
+            state.LastObservedLevel is null)
+        {
+            return null;
+        }
+
+        return new AlertObservationBaseline(
+            state.LastObservedSource,
+            state.LastObservedScope,
+            state.LastObservedScopeId,
+            state.LastObservedLevel,
+            state.LastObservedAlertLevel,
+            state.LastAttemptedAlertLevel,
+            state.LastAttemptedAlertLevelScope,
+            state.LastAttemptedAlertLevelScopeId);
+    }
+
+    private static void UpdateBaseline(
+        AutomaticAlertDispatchState state,
+        AlertSourceObservationResponse observation)
+    {
+        state.HasObservationBaseline = true;
+        state.LastObservedSource = observation.Source;
+        state.LastObservedScope = observation.Scope;
+        state.LastObservedScopeId = observation.ScopeId;
+        state.LastObservedLevel = observation.Level;
+        if (!string.Equals(observation.Level, "active", StringComparison.Ordinal) ||
+            observation.AlertLevel is not null)
+        {
+            state.LastObservedAlertLevel = observation.AlertLevel;
+        }
+    }
+
+    private static void UpdateAttemptedAlertLevel(
+        AutomaticAlertDispatchState state,
+        AlertSourceObservationResponse? observation)
+    {
+        if (observation is null)
+        {
+            state.LastAttemptedAlertLevel = null;
+            state.LastAttemptedAlertLevelScope = null;
+            state.LastAttemptedAlertLevelScopeId = null;
+            return;
+        }
+
+        state.LastAttemptedAlertLevel = observation.AlertLevel is "red" or "yellow"
+            ? observation.AlertLevel
+            : null;
+        state.LastAttemptedAlertLevelScope = observation.Scope;
+        state.LastAttemptedAlertLevelScopeId = observation.ScopeId;
+    }
+
+    private async Task<CommandDelivery[]> LoadActiveEpisodeDeliveriesAsync(
+        Guid episodeAnchorId,
+        CancellationToken cancellationToken) => await db.CommandDeliveries
+        .FromSqlInterpolated($"""
+            SELECT delivery.*
+            FROM command_deliveries AS delivery
+            JOIN alert_commands AS command ON command."Id" = delivery."CommandId"
+            JOIN devices AS device ON device."Id" = delivery."DeviceId"
+            JOIN locations AS location ON location."Id" = device."LocationId"
+            JOIN command_targets AS target
+              ON target."CommandId" = command."Id"
+             AND target."LocationId" = device."LocationId"
+            WHERE (command."Id" = {episodeAnchorId} OR
+                   (command."Action" = 'replace' AND command."TargetCommandId" = {episodeAnchorId}))
+              AND delivery."State" IN ('Pending', 'InFlight', 'Accepted', 'Playing')
+              AND device."RevokedAtUtc" IS NULL
+              AND location."IsActive" = true
+            FOR UPDATE OF delivery
+            """)
+        .ToArrayAsync(cancellationToken);
+
+    private async Task<int> GetLatestCommandSchemaVersionAsync(
+        Guid deviceId,
+        CancellationToken cancellationToken) => await db.DeviceSessions.AsNoTracking()
+        .Where(item => item.DeviceId == deviceId)
+        .OrderByDescending(item => item.ConnectedAtUtc)
+        .Select(item => item.CommandSchemaVersion)
+        .FirstOrDefaultAsync(cancellationToken);
 }

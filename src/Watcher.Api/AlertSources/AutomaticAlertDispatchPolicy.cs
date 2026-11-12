@@ -2,13 +2,25 @@ namespace Watcher.Api.AlertSources;
 
 public enum AutomaticAlertDispatchAction
 {
+    InitializeBaseline,
     Start,
+    Replace,
     Stop,
     Hold,
     NoChange
 }
 
 public sealed record OpenAlertEpisode(AlertScope Scope, string ScopeId);
+
+public sealed record AlertObservationBaseline(
+    string Source,
+    string Scope,
+    string ScopeId,
+    string Level,
+    string? AlertLevel,
+    string? LastAttemptedAlertLevel,
+    string? LastAttemptedAlertLevelScope,
+    string? LastAttemptedAlertLevelScopeId);
 
 public sealed record AutomaticAlertDispatchDecision(
     AutomaticAlertDispatchAction Action,
@@ -28,10 +40,12 @@ public sealed class AutomaticAlertDispatchPolicy
     private const string Conflict = "conflict";
     private const string Red = "red";
     private const string Yellow = "yellow";
+    private static readonly TimeSpan MaximumCorroborationSkew = TimeSpan.FromMinutes(2);
 
     public AutomaticAlertDispatchDecision Evaluate(
         AlertSourcesStatusResponse status,
-        OpenAlertEpisode? openEpisode)
+        OpenAlertEpisode? openEpisode,
+        AlertObservationBaseline? baseline = null)
     {
         ArgumentNullException.ThrowIfNull(status);
 
@@ -53,36 +67,74 @@ public sealed class AutomaticAlertDispatchPolicy
             return Hold("no_fresh_observation");
         }
 
+        if (observations.Any(item => IsAggregateAmbiguous(targets, item.Observation)))
+        {
+            return Hold("observation_not_actionable");
+        }
+
         if (openEpisode is null)
         {
-            PolicyObservation? startCandidate = observations
-                .Where(IsStartEvidence)
-                .OrderBy(item => item.Precision)
-                .FirstOrDefault();
-            if (startCandidate is not null)
-            {
-                return new(
-                    AutomaticAlertDispatchAction.Start,
-                    selectedSource switch
-                    {
-                        PrimarySource => "primary_alert_active",
-                        FallbackSource => "fallback_alert_active",
-                        _ => "tertiary_alert_active"
-                    },
-                    startCandidate.Observation);
-            }
-
-            if (observations.Any(IsAmbiguous))
+            PolicyObservation? current = SelectCurrentObservation(targets, observations);
+            if (current is null)
             {
                 return Hold("observation_not_actionable");
             }
 
-            if (observations.Any(item => IsState(item.Observation, Inactive)))
+            if (baseline is not null &&
+                string.Equals(baseline.Level, Inactive, StringComparison.Ordinal) &&
+                IsState(current.Observation, Active) &&
+                string.Equals(baseline.Source, selectedSource, StringComparison.Ordinal) &&
+                string.Equals(baseline.Scope, current.Observation.Scope, StringComparison.Ordinal) &&
+                string.Equals(baseline.ScopeId, current.Observation.ScopeId, StringComparison.Ordinal) &&
+                IsStartEvidence(current))
             {
-                return new(AutomaticAlertDispatchAction.NoChange, "no_open_alert", null);
+                return new(
+                    AutomaticAlertDispatchAction.Start,
+                    "confirmed_inactive_to_active",
+                    current.Observation);
             }
 
-            return Hold("observation_not_actionable");
+            if (baseline is null || !MatchesBaseline(baseline, current.Observation))
+            {
+                return new(
+                    AutomaticAlertDispatchAction.InitializeBaseline,
+                    "observation_baseline_initialized",
+                    current.Observation);
+            }
+
+            if (IsState(current.Observation, Inactive))
+            {
+                return new(AutomaticAlertDispatchAction.NoChange, "no_open_alert", current.Observation);
+            }
+
+            if (IsState(current.Observation, Active) &&
+                IsStartEvidence(current))
+            {
+                var wasInactive = string.Equals(baseline.Level, Inactive, StringComparison.Ordinal);
+                var levelChanged = string.Equals(baseline.Level, Active, StringComparison.Ordinal) &&
+                    IsKnownColoredLevel(baseline.AlertLevel) &&
+                    IsKnownColoredLevel(current.Observation.AlertLevel) &&
+                    string.Equals(current.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
+                    string.Equals(baseline.Scope, current.Observation.Scope, StringComparison.Ordinal) &&
+                    string.Equals(baseline.ScopeId, current.Observation.ScopeId, StringComparison.Ordinal) &&
+                    !string.Equals(baseline.AlertLevel, current.Observation.AlertLevel, StringComparison.Ordinal);
+                if (!wasInactive && !levelChanged)
+                {
+                    return new(AutomaticAlertDispatchAction.NoChange, "alert_baseline_active", current.Observation);
+                }
+
+                return new(
+                    AutomaticAlertDispatchAction.Start,
+                    levelChanged ? "alert_level_transition_active" : selectedSource switch
+                    {
+                        PrimarySource => "primary_alert_transition_active",
+                        FallbackSource => "fallback_alert_transition_active",
+                        _ => "tertiary_alert_transition_active"
+                    },
+                    current.Observation);
+            }
+
+            return new(AutomaticAlertDispatchAction.NoChange, "alert_baseline_active", current.Observation);
         }
 
         PolicyObservation[] currentEpisodeObservations = observations
@@ -92,6 +144,22 @@ public sealed class AutomaticAlertDispatchPolicy
         if (currentEpisodeObservations.Length == 0)
         {
             return Hold("no_fresh_observation");
+        }
+
+        PolicyObservation? changedLevel = currentEpisodeObservations
+            .Where(IsMaintainingActiveEpisode)
+            .Select(item => SelectConfirmedColorObservation(targets, item.Observation))
+            .Where(item => item is not null)
+            .Select(item => item!)
+            .Where(item => baseline is not null && IsAlertLevelChangePending(baseline, item.Observation))
+            .OrderBy(item => item.Precision)
+            .FirstOrDefault();
+        if (changedLevel is not null)
+        {
+            return new(
+                AutomaticAlertDispatchAction.Replace,
+                "alert_level_changed",
+                changedLevel.Observation);
         }
 
         var episodePrecision = GetPrecision(openEpisode.Scope);
@@ -160,6 +228,140 @@ public sealed class AutomaticAlertDispatchPolicy
 
         return Hold("awaiting_geographic_clear");
     }
+
+    public AlertSourceObservationResponse? SelectBaselineObservation(AlertSourcesStatusResponse status)
+    {
+        ArgumentNullException.ThrowIfNull(status);
+        var selectedSource = SelectSource(status.Targets);
+        if (selectedSource is null)
+        {
+            return null;
+        }
+
+        List<PolicyObservation> observations = GetPolicyObservations(status.Targets, selectedSource);
+        PolicyObservation? candidate = SelectBaselineObservation(observations);
+        return candidate is not null && !IsAggregateAmbiguous(status.Targets.ToArray(), candidate.Observation)
+            ? candidate.Observation
+            : null;
+    }
+
+    private static PolicyObservation? SelectCurrentObservation(
+        IReadOnlyCollection<AlertTargetStatus> targets,
+        IEnumerable<PolicyObservation> observations)
+    {
+        PolicyObservation? current = SelectBaselineObservation(observations);
+        if (current is null || !IsState(current.Observation, Active))
+        {
+            return current;
+        }
+
+        PolicyObservation? confirmedColor = SelectConfirmedColorObservation(targets, current.Observation);
+        if (confirmedColor is not null)
+        {
+            return confirmedColor;
+        }
+
+        return string.Equals(current.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
+               current.Observation.AlertLevel is not null
+            ? current with { Observation = current.Observation with { AlertLevel = null } }
+            : current;
+    }
+
+    private static PolicyObservation? SelectConfirmedColorObservation(
+        IEnumerable<AlertTargetStatus> targets,
+        AlertSourceObservationResponse activeObservation)
+    {
+        if (!IsState(activeObservation, Active) || !IsAllowedGeography(activeObservation, TertiarySource))
+        {
+            return null;
+        }
+
+        AlertTargetStatus? target = targets.FirstOrDefault(item =>
+            string.Equals(item.Scope, activeObservation.Scope, StringComparison.Ordinal) &&
+            string.Equals(item.ScopeId, activeObservation.ScopeId, StringComparison.Ordinal));
+        if (target is null || IsAggregateAmbiguous([target], activeObservation) ||
+            !IsState(target.AuthoritativeObservation ?? activeObservation, Active))
+        {
+            return null;
+        }
+
+        AlertSourceObservationResponse? color = target.Observations.FirstOrDefault(item =>
+            string.Equals(item.Source, TertiarySource, StringComparison.Ordinal) &&
+            string.Equals(item.Scope, activeObservation.Scope, StringComparison.Ordinal) &&
+            string.Equals(item.ScopeId, activeObservation.ScopeId, StringComparison.Ordinal) &&
+            IsFresh(item) && IsState(item, Active) && IsKnownColoredLevel(item.AlertLevel) &&
+            HaveAlignedSourceTimestamps(item, activeObservation));
+        if (color is null)
+        {
+            return null;
+        }
+
+        var corroborated = target.Observations.Any(item =>
+            (string.Equals(item.Source, PrimarySource, StringComparison.Ordinal) ||
+             string.Equals(item.Source, FallbackSource, StringComparison.Ordinal)) &&
+            string.Equals(item.Scope, color.Scope, StringComparison.Ordinal) &&
+            string.Equals(item.ScopeId, color.ScopeId, StringComparison.Ordinal) &&
+            IsFresh(item) && IsState(item, Active) &&
+            HaveAlignedSourceTimestamps(item, color));
+        if (!corroborated)
+        {
+            return null;
+        }
+
+        if (!TryGetPrecision(color.Scope, color.ScopeId, out var precision))
+        {
+            return null;
+        }
+
+        return new(color, precision);
+    }
+
+    private static bool HaveAlignedSourceTimestamps(
+        AlertSourceObservationResponse first,
+        AlertSourceObservationResponse second) =>
+        first.DataUpdatedAtUtc is { } firstUpdatedAt &&
+        second.DataUpdatedAtUtc is { } secondUpdatedAt &&
+        (firstUpdatedAt - secondUpdatedAt).Duration() <= MaximumCorroborationSkew;
+
+    private static PolicyObservation? SelectBaselineObservation(IEnumerable<PolicyObservation> observations) =>
+        observations
+            .Where(item => IsState(item.Observation, Active) || IsState(item.Observation, Inactive))
+            .Where(item => !IsAmbiguous(item))
+            .OrderBy(item => item.Precision)
+            .FirstOrDefault();
+
+    private static bool MatchesBaseline(
+        AlertObservationBaseline baseline,
+        AlertSourceObservationResponse observation) =>
+        string.Equals(baseline.Source, observation.Source, StringComparison.Ordinal) &&
+        string.Equals(baseline.Scope, observation.Scope, StringComparison.Ordinal) &&
+        string.Equals(baseline.ScopeId, observation.ScopeId, StringComparison.Ordinal);
+
+    private static bool IsKnownColoredLevel(string? level) =>
+        string.Equals(level, Red, StringComparison.Ordinal) ||
+        string.Equals(level, Yellow, StringComparison.Ordinal);
+
+    private static bool IsAggregateAmbiguous(
+        IEnumerable<AlertTargetStatus> targets,
+        AlertSourceObservationResponse observation)
+    {
+        AlertTargetStatus? target = targets.FirstOrDefault(item =>
+            string.Equals(item.Scope, observation.Scope, StringComparison.Ordinal) &&
+            string.Equals(item.ScopeId, observation.ScopeId, StringComparison.Ordinal));
+        return target is null ||
+               !string.Equals(target.Freshness, Fresh, StringComparison.Ordinal) ||
+               target.Level is Partial or Conflict or Unknown;
+    }
+
+    private static bool IsAlertLevelChangePending(
+        AlertObservationBaseline baseline,
+        AlertSourceObservationResponse observation) =>
+        string.Equals(observation.Source, TertiarySource, StringComparison.Ordinal) &&
+        string.Equals(observation.Level, Active, StringComparison.Ordinal) &&
+        IsKnownColoredLevel(observation.AlertLevel) &&
+        string.Equals(baseline.LastAttemptedAlertLevelScope, observation.Scope, StringComparison.Ordinal) &&
+        string.Equals(baseline.LastAttemptedAlertLevelScopeId, observation.ScopeId, StringComparison.Ordinal) &&
+        !string.Equals(baseline.LastAttemptedAlertLevel, observation.AlertLevel, StringComparison.Ordinal);
 
     private static List<PolicyObservation> GetPolicyObservations(
         IEnumerable<AlertTargetStatus> targets,
@@ -232,7 +434,8 @@ public sealed class AutomaticAlertDispatchPolicy
 
         return IsActiveWithoutColor(item.Observation) ||
                (string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
-                IsTertiaryGeography(item.Observation) && IsLevel(item.Observation, Red));
+                IsTertiaryGeography(item.Observation) &&
+                (item.Observation.AlertLevel is null || IsKnownColoredLevel(item.Observation.AlertLevel)));
     }
 
     private static bool IsMaintainingActiveEpisode(PolicyObservation item)
@@ -249,18 +452,19 @@ public sealed class AutomaticAlertDispatchPolicy
 
         return IsActiveWithoutColor(item.Observation) ||
                (string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
-                IsTertiaryGeography(item.Observation) && IsLevel(item.Observation, Red));
+                IsTertiaryGeography(item.Observation) &&
+                (item.Observation.AlertLevel is null || IsKnownColoredLevel(item.Observation.AlertLevel)));
     }
 
     private static bool IsAmbiguous(PolicyObservation item) =>
         IsState(item.Observation, Partial) ||
         IsState(item.Observation, Conflict) ||
         IsState(item.Observation, Unknown) ||
-        IsLevel(item.Observation, Yellow) ||
         HasUnexpectedAlertLevel(item) ||
         (IsState(item.Observation, Active) &&
          string.Equals(item.Observation.Source, TertiarySource, StringComparison.Ordinal) &&
-         !IsLevel(item.Observation, Red));
+         item.Observation.AlertLevel is not null &&
+         !IsKnownColoredLevel(item.Observation.AlertLevel));
 
     private static bool IsActiveWithoutColor(AlertSourceObservationResponse observation) =>
         (string.Equals(observation.Source, PrimarySource, StringComparison.Ordinal) ||

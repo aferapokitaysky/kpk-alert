@@ -1,17 +1,32 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using Watcher.Contracts.DeviceCommands;
 
 namespace Watcher.Api.Delivery;
 
 public sealed class DeviceCommandSessionRegistry
 {
+    public const string ReplaceCommandSubprotocol = "kgta-alert.device.v2";
     private readonly ConcurrentDictionary<Guid, DeviceCommandWebSocketSession> _sessions = new();
     private readonly DeviceCommandSessionRegistrationGate _registrationGate = new();
 
     public IReadOnlyCollection<Guid> ConnectedDeviceIds => _sessions.Keys.ToArray();
 
-    public IReadOnlyCollection<(Guid DeviceId, Guid PresenceSessionId)> ConnectedSessions =>
-        _sessions.Values.Select(session => (session.DeviceId, session.PresenceSessionId)).ToArray();
+    public IReadOnlyCollection<(Guid DeviceId, Guid PresenceSessionId, int CommandSchemaVersion)> ConnectedSessions =>
+        _sessions.Values.Select(session =>
+            (session.DeviceId, session.PresenceSessionId, session.CommandSchemaVersion)).ToArray();
+
+    public bool TryGetCommandSchemaVersion(Guid deviceId, out int commandSchemaVersion)
+    {
+        if (_sessions.TryGetValue(deviceId, out DeviceCommandWebSocketSession? session))
+        {
+            commandSchemaVersion = session.CommandSchemaVersion;
+            return true;
+        }
+
+        commandSchemaVersion = DeviceCommandValidator.CurrentSchemaVersion;
+        return false;
+    }
 
     public async Task<DeviceCommandWebSocketSession> RegisterAsync(
         Guid deviceId,
@@ -24,7 +39,8 @@ public sealed class DeviceCommandSessionRegistry
         Guid presenceSessionId,
         WebSocket socket,
         CancellationToken cancellationToken) =>
-        await RegisterCoreAsync(deviceId, presenceSessionId, socket, null, cancellationToken)
+        await RegisterCoreAsync(deviceId, presenceSessionId, socket,
+            DeviceCommandValidator.CurrentSchemaVersion, null, cancellationToken)
             ?? throw new InvalidOperationException("Не вдалося зареєструвати WebSocket-сеанс пристрою.");
 
     public Task<DeviceCommandWebSocketSession?> TryRegisterIfCurrentAsync(
@@ -32,10 +48,21 @@ public sealed class DeviceCommandSessionRegistry
         Guid presenceSessionId,
         WebSocket socket,
         Func<CancellationToken, Task<bool>> isCurrentSessionAsync,
+        CancellationToken cancellationToken) =>
+        TryRegisterIfCurrentAsync(deviceId, presenceSessionId, socket,
+            DeviceCommandValidator.CurrentSchemaVersion, isCurrentSessionAsync, cancellationToken);
+
+    public Task<DeviceCommandWebSocketSession?> TryRegisterIfCurrentAsync(
+        Guid deviceId,
+        Guid presenceSessionId,
+        WebSocket socket,
+        int commandSchemaVersion,
+        Func<CancellationToken, Task<bool>> isCurrentSessionAsync,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(isCurrentSessionAsync);
-        return RegisterCoreAsync(deviceId, presenceSessionId, socket, isCurrentSessionAsync,
+        return RegisterCoreAsync(deviceId, presenceSessionId, socket, commandSchemaVersion,
+            isCurrentSessionAsync,
             cancellationToken);
     }
 
@@ -43,6 +70,7 @@ public sealed class DeviceCommandSessionRegistry
         Guid deviceId,
         Guid presenceSessionId,
         WebSocket socket,
+        int commandSchemaVersion,
         Func<CancellationToken, Task<bool>>? isCurrentSessionAsync,
         CancellationToken cancellationToken)
     {
@@ -52,8 +80,14 @@ public sealed class DeviceCommandSessionRegistry
         }
 
         ArgumentNullException.ThrowIfNull(socket);
+        if (commandSchemaVersion is not (DeviceCommandValidator.CurrentSchemaVersion or
+            DeviceCommandValidator.ReplaceSchemaVersion))
+        {
+            throw new ArgumentOutOfRangeException(nameof(commandSchemaVersion));
+        }
 
-        DeviceCommandWebSocketSession session = new(deviceId, presenceSessionId, socket);
+        DeviceCommandWebSocketSession session = new(deviceId, presenceSessionId, socket,
+            commandSchemaVersion);
         DeviceCommandWebSocketSession? previous;
         using (await _registrationGate.EnterAsync(deviceId, cancellationToken))
         {
@@ -164,12 +198,17 @@ public enum DeviceCommandSendOutcome
     Indeterminate
 }
 
-public sealed class DeviceCommandWebSocketSession(Guid deviceId, Guid presenceSessionId, WebSocket socket)
+public sealed class DeviceCommandWebSocketSession(
+    Guid deviceId,
+    Guid presenceSessionId,
+    WebSocket socket,
+    int commandSchemaVersion)
 {
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     public Guid DeviceId { get; } = deviceId;
     public Guid PresenceSessionId { get; } = presenceSessionId;
+    public int CommandSchemaVersion { get; } = commandSchemaVersion;
 
     public void Abort() => socket.Abort();
 

@@ -42,7 +42,7 @@ public sealed class DeviceCommandDispatchBatchProcessor(
             }
         }
 
-        (Guid DeviceId, Guid PresenceSessionId)[] localSessions = sessions.ConnectedSessions
+        (Guid DeviceId, Guid PresenceSessionId, int CommandSchemaVersion)[] localSessions = sessions.ConnectedSessions
             .Where(session => session.PresenceSessionId != Guid.Empty)
             .ToArray();
         Guid[] presenceSessionIds = localSessions.Select(session => session.PresenceSessionId).ToArray();
@@ -195,6 +195,8 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                       from earlierDelivery in db.CommandDeliveries.AsNoTracking()
                       join earlierTarget in db.CommandTargets.AsNoTracking()
                           on earlierDelivery.CommandId equals earlierTarget.CommandId
+                      join earlierCommand in db.AlertCommands.AsNoTracking()
+                          on earlierDelivery.CommandId equals earlierCommand.Id
                       where earlierDelivery.DeviceId == delivery.DeviceId &&
                             earlierTarget.LocationId == target.LocationId &&
                             earlierTarget.Sequence < target.Sequence &&
@@ -203,7 +205,16 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                             earlierDelivery.State != CommandDeliveryState.Rejected &&
                             earlierDelivery.State != CommandDeliveryState.Failed &&
                             earlierDelivery.State != CommandDeliveryState.Expired &&
-                            !(command.Action == "stop" && command.TargetCommandId == earlierDelivery.CommandId)
+                            !((command.Action == "stop" &&
+                               (command.TargetCommandId == earlierDelivery.CommandId ||
+                                (earlierCommand.Action == "replace" &&
+                                 earlierCommand.TargetCommandId == command.TargetCommandId))) ||
+                              (command.Action == "replace" &&
+                               (earlierDelivery.CommandId == command.TargetCommandId ||
+                                (earlierCommand.Action == "replace" &&
+                                 earlierCommand.TargetCommandId == command.TargetCommandId)) &&
+                               (earlierDelivery.State == CommandDeliveryState.Accepted ||
+                                earlierDelivery.State == CommandDeliveryState.Playing)))
                       select earlierDelivery.Id
                   ).Any()
             orderby target.Sequence, delivery.NextAttemptAtUtc, delivery.DeviceId
@@ -257,6 +268,16 @@ public sealed class DeviceCommandDispatchBatchProcessor(
         if (command is null || target is null)
         {
             MarkFailed(delivery, now, "command_target_missing");
+            await db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return null;
+        }
+
+        if (command.Action == "replace" &&
+            sessions.TryGetCommandSchemaVersion(delivery.DeviceId, out var commandSchemaVersion) &&
+            commandSchemaVersion < DeviceCommandValidator.ReplaceSchemaVersion)
+        {
+            MarkFailed(delivery, now, "unsupported_command_schema");
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return null;
@@ -344,6 +365,50 @@ public sealed class DeviceCommandDispatchBatchProcessor(
                 command.ExpiresAtUtc,
                 command.MaximumPlaybackDurationSeconds,
                 null);
+        }
+
+        if (string.Equals(command.Action, "replace", StringComparison.Ordinal))
+        {
+            if (command.PresetCode is null || command.TargetCommandId is not { } episodeAnchorId)
+            {
+                return null;
+            }
+
+            var anchorDeliveryExists = await db.CommandDeliveries.AsNoTracking()
+                .AnyAsync(item => item.CommandId == episodeAnchorId && item.DeviceId == delivery.DeviceId,
+                    cancellationToken);
+            var anchorCommandExists = await db.AlertCommands.AsNoTracking()
+                .AnyAsync(item => item.Id == episodeAnchorId && item.Action == "start", cancellationToken);
+            SoundPreset? replacementPreset = await db.SoundPresets.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Code == command.PresetCode && item.IsPublished,
+                    cancellationToken);
+            if (!anchorDeliveryExists || !anchorCommandExists || replacementPreset is null ||
+                !SoundPreset.HasValidManifestHash(replacementPreset.ManifestHash))
+            {
+                return null;
+            }
+
+            LocationAudioAsset? replacementAsset = await db.LocationAudioAssets.AsNoTracking()
+                .SingleOrDefaultAsync(asset => asset.LocationId == target.LocationId &&
+                                                asset.PresetCode == replacementPreset.Code,
+                    cancellationToken);
+            var replacementManifestHash = replacementAsset is null
+                ? replacementPreset.ManifestHash
+                : DeviceAudioManifestFactory.Create(target.LocationId, replacementAsset).Sha256;
+
+            return new CommandDispatch(
+                DeviceCommandValidator.ReplaceSchemaVersion,
+                command.Id,
+                delivery.DeviceId,
+                target.LocationId,
+                target.Sequence,
+                DeviceCommandAction.Replace,
+                replacementPreset.Code,
+                replacementManifestHash,
+                now,
+                command.ExpiresAtUtc,
+                command.MaximumPlaybackDurationSeconds,
+                episodeAnchorId);
         }
 
         if (!string.Equals(command.Action, "stop", StringComparison.Ordinal) ||

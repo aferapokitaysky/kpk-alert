@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Watcher.Api.Delivery;
 using Watcher.Api.Security;
+using Watcher.Contracts.DeviceCommands;
 
 namespace Watcher.Api.Controllers;
 
@@ -38,9 +39,13 @@ public sealed class DeviceCommandStreamController(
         }
 
         Guid sessionId;
+        var commandSchemaVersion = HttpContext.WebSockets.WebSocketRequestedProtocols
+            .Contains(DeviceCommandSessionRegistry.ReplaceCommandSubprotocol, StringComparer.Ordinal)
+            ? DeviceCommandValidator.ReplaceSchemaVersion
+            : DeviceCommandValidator.CurrentSchemaVersion;
         try
         {
-            sessionId = await presence.OpenSessionAsync(deviceId, cancellationToken);
+            sessionId = await presence.OpenSessionAsync(deviceId, commandSchemaVersion, cancellationToken);
         }
         catch (DeviceSessionUnavailableException)
         {
@@ -53,11 +58,15 @@ public sealed class DeviceCommandStreamController(
         Task? heartbeatTask = null;
         try
         {
-            socket = await HttpContext.WebSockets.AcceptWebSocketAsync();
+            socket = await HttpContext.WebSockets.AcceptWebSocketAsync(
+                commandSchemaVersion == DeviceCommandValidator.ReplaceSchemaVersion
+                    ? DeviceCommandSessionRegistry.ReplaceCommandSubprotocol
+                    : null);
             commandSession = await sessions.TryRegisterIfCurrentAsync(
                 deviceId,
                 sessionId,
                 socket,
+                commandSchemaVersion,
                 token => presence.IsSessionActiveAsync(sessionId, token),
                 cancellationToken);
             if (commandSession is null)

@@ -44,6 +44,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     {
         SeedData seed = await ResetEnvironmentAsync();
         await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
 
         AutomaticAlertDispatchResult first = await ProcessAsync(ActiveStatus());
         AutomaticAlertDispatchResult repeat = await ProcessAsync(ActiveStatus());
@@ -81,9 +82,11 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     {
         await ResetEnvironmentAsync();
         await AddAirRaidPresetAsync();
+        await AddLevelPresetsAsync();
+        await ProcessAsync(InactiveStatus());
 
         AutomaticAlertDispatchResult result = await ProcessAsync(
-            Status("active", alertLevel: "red", source: AlertSourceCatalog.AlertsInUaCode));
+            CorroboratedColoredActiveStatus("red"));
 
         Assert.Equal(AutomaticAlertDispatchResult.Started, result);
         using WatcherDbContext db = _fixture.CreateDbContext();
@@ -92,7 +95,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         Assert.Equal(AlertSourceCatalog.AlertsInUaCode,
             payload.RootElement.GetProperty("source").GetString());
         Assert.Equal("red", payload.RootElement.GetProperty("alertLevel").GetString());
-        Assert.Equal("air_raid", payload.RootElement.GetProperty("presetCode").GetString());
+        Assert.Equal("red_alert", payload.RootElement.GetProperty("presetCode").GetString());
     }
 
     [PostgresFact]
@@ -100,6 +103,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     {
         await ResetEnvironmentAsync();
         await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
         await ProcessAsync(ActiveStatus());
         Guid[] deviceIds = await MaterializeStartDeliveriesAsync();
 
@@ -131,10 +135,72 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     }
 
     [PostgresFact]
+    public async Task Colored_episode_replaces_both_directions_and_stop_routes_to_current_children()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await AddLevelPresetsAsync();
+        await ProcessAsync(InactiveStatus());
+        Assert.Equal(AutomaticAlertDispatchResult.Started,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red")));
+        Guid[] deviceIds = await MaterializeStartDeliveriesAsync();
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "start", CommandDeliveryState.Playing);
+
+        Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(1)), Now.AddMinutes(1)));
+        Guid firstReplaceId;
+        using (WatcherDbContext firstReplaceDb = _fixture.CreateDbContext())
+        {
+            AlertCommand start = await firstReplaceDb.AlertCommands.SingleAsync(item => item.Action == "start");
+            AlertCommand replace = await firstReplaceDb.AlertCommands.SingleAsync(item => item.Action == "replace");
+            firstReplaceId = replace.Id;
+            Assert.Equal("red_alert", start.PresetCode);
+            Assert.Equal("yellow_alert", replace.PresetCode);
+            Assert.Equal(start.Id, replace.TargetCommandId);
+            Assert.All(replace.Targets, item => Assert.Equal(2, item.Sequence));
+        }
+        await MaterializeCommandAsync(firstReplaceId);
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "start", CommandDeliveryState.Stopped);
+        await SetSingleDeliveryStateAsync(firstReplaceId, CommandDeliveryState.Playing);
+
+        Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red", Now.AddMinutes(2)), Now.AddMinutes(2)));
+        Guid secondReplaceId;
+        using (WatcherDbContext secondReplaceDb = _fixture.CreateDbContext())
+        {
+            AlertCommand start = await secondReplaceDb.AlertCommands.SingleAsync(item => item.Action == "start");
+            AlertCommand[] replacements = await secondReplaceDb.AlertCommands
+                .Where(item => item.Action == "replace").OrderBy(item => item.CreatedAtUtc).ToArrayAsync();
+            AlertCommand replace = replacements[1];
+            secondReplaceId = replace.Id;
+            Assert.Equal("red_alert", replace.PresetCode);
+            Assert.Equal(start.Id, replace.TargetCommandId);
+            Assert.All(replace.Targets, item => Assert.Equal(3, item.Sequence));
+        }
+        await MaterializeCommandAsync(secondReplaceId);
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "replace", CommandDeliveryState.Stopped,
+            excludeCommandId: secondReplaceId);
+        await SetSingleDeliveryStateAsync(secondReplaceId, CommandDeliveryState.Playing);
+
+        Assert.Equal(AutomaticAlertDispatchResult.Stopped,
+            await ProcessAsync(InactiveStatus(), Now.AddMinutes(3)));
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AlertCommand startCommand = await verifyDb.AlertCommands.SingleAsync(item => item.Action == "start");
+        AlertCommand stopCommand = await verifyDb.AlertCommands.SingleAsync(item => item.Action == "stop");
+        Assert.Equal(startCommand.Id, stopCommand.TargetCommandId);
+        Assert.All(stopCommand.Targets, item => Assert.Equal(4, item.Sequence));
+        CommandDelivery[] stopDeliveries = await verifyDb.CommandDeliveries
+            .Where(item => item.CommandId == stopCommand.Id).ToArrayAsync();
+        Assert.Equal(deviceIds.Order(), stopDeliveries.Select(item => item.DeviceId).Order());
+        Assert.All(stopDeliveries, item => Assert.Equal(CommandDeliveryState.Pending, item.State));
+    }
+
+    [PostgresFact]
     public async Task Inactive_status_before_start_materialization_keeps_episode_open_until_stop_can_be_routed()
     {
         await ResetEnvironmentAsync();
         await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
         await ProcessAsync(ActiveStatus());
 
         AutomaticAlertDispatchResult earlyStop = await ProcessAsync(InactiveStatus());
@@ -160,6 +226,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     public async Task Missing_preset_keeps_episode_closed_and_records_hold_reason()
     {
         await ResetEnvironmentAsync();
+        await ProcessAsync(InactiveStatus());
 
         AutomaticAlertDispatchResult result = await ProcessAsync(ActiveStatus());
         AutomaticAlertDispatchResult repeated = await ProcessAsync(ActiveStatus());
@@ -178,6 +245,41 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         Assert.Equal("preset_unavailable", payload.RootElement.GetProperty("decisionCode").GetString());
         Assert.Equal(AlertSourceCatalog.UkraineAlarmCode,
             payload.RootElement.GetProperty("observations")[0].GetProperty("source").GetString());
+
+        await AddAirRaidPresetAsync();
+        Assert.Equal(AutomaticAlertDispatchResult.Started, await ProcessAsync(ActiveStatus()));
+        using WatcherDbContext retryDb = _fixture.CreateDbContext();
+        Assert.True((await retryDb.AutomaticAlertDispatchStates.SingleAsync()).HasOpenEpisode);
+        Assert.Single(retryDb.AlertCommands);
+    }
+
+    [PostgresFact]
+    public async Task Active_snapshot_on_cold_start_only_initializes_baseline()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange, await ProcessAsync(ActiveStatus()));
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange, await ProcessAsync(ActiveStatus()));
+
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Empty(db.AlertCommands);
+        Assert.False((await db.AutomaticAlertDispatchStates.SingleAsync()).HasOpenEpisode);
+    }
+
+    [PostgresFact]
+    public async Task Long_poll_gap_resyncs_active_snapshot_without_stale_replay()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
+
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
+            await ProcessAsync(ActiveStatus(), Now.AddMinutes(3)));
+
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        Assert.Empty(db.AlertCommands);
+        Assert.Equal("active", (await db.AutomaticAlertDispatchStates.SingleAsync()).LastObservedLevel);
     }
 
     [PostgresFact]
@@ -226,6 +328,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
     {
         await ResetEnvironmentAsync();
         await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
 
         Task<AutomaticAlertDispatchResult> first = ProcessAsync(ActiveStatus());
         Task<AutomaticAlertDispatchResult> second = ProcessAsync(ActiveStatus());
@@ -246,7 +349,16 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         AutomaticAlertDispatchProcessor processor = new(
             db,
             new AutomaticAlertDispatchPolicy(),
-            new AutomaticAlertDispatchOptions { Enabled = true, PresetCode = "air_raid" },
+            new AutomaticAlertDispatchOptions
+            {
+                Enabled = true,
+                PresetCode = "air_raid",
+                AlertLevelPresets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["red"] = "red_alert",
+                    ["yellow"] = "yellow_alert"
+                }
+            },
             new FixedTimeProvider(now ?? Now),
             new PostgresLocationCommandSequenceAllocator(db));
         return await processor.ProcessAsync(status, CancellationToken.None);
@@ -278,6 +390,65 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         return deviceIds;
     }
 
+    private async Task MaterializeCommandAsync(Guid commandId)
+    {
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        OutboxMessage outbox = await db.OutboxMessages.SingleAsync(item => item.CommandId == commandId);
+        CommandDeliveryMaterializer materializer = new(db, new FixedTimeProvider(Now));
+        OutboxMaterializationResult result = await materializer.MaterializeAsync(outbox.Id, CancellationToken.None);
+        Assert.Equal(OutboxMaterializationOutcome.Materialized, result.Outcome);
+    }
+
+    private async Task SetDeliveryStatesAndProtocolAsync(
+        IReadOnlyCollection<Guid> deviceIds,
+        string action,
+        CommandDeliveryState state,
+        Guid? excludeCommandId = null)
+    {
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        CommandDelivery[] deliveries = await db.CommandDeliveries
+            .Where(item => deviceIds.Contains(item.DeviceId) && item.CommandId != excludeCommandId)
+            .Join(db.AlertCommands.Where(item => item.Action == action),
+                delivery => delivery.CommandId,
+                command => command.Id,
+                (delivery, _) => delivery)
+            .ToArrayAsync();
+        foreach (CommandDelivery delivery in deliveries)
+        {
+            delivery.State = state;
+        }
+
+        foreach (Guid deviceId in deviceIds)
+        {
+            if (!await db.DeviceSessions.AnyAsync(item => item.DeviceId == deviceId))
+            {
+                db.DeviceSessions.Add(new DeviceSession
+                {
+                    Id = Guid.NewGuid(),
+                    DeviceId = deviceId,
+                    CommandSchemaVersion = 2,
+                    ConnectedAtUtc = Now,
+                    LastSeenAtUtc = Now
+                });
+            }
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SetSingleDeliveryStateAsync(Guid commandId, CommandDeliveryState state)
+    {
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        CommandDelivery[] deliveries = await db.CommandDeliveries
+            .Where(item => item.CommandId == commandId).ToArrayAsync();
+        Assert.NotEmpty(deliveries);
+        foreach (CommandDelivery delivery in deliveries)
+        {
+            delivery.State = state;
+        }
+        await db.SaveChangesAsync();
+    }
+
     private async Task<SeedData> ResetEnvironmentAsync(bool includeGlobalAdministrator = false)
     {
         SeedData seed = await _fixture.ResetAndSeedAsync(includeGlobalAdministrator);
@@ -289,6 +460,16 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         state.StartCommandId = null;
         state.StartedAtUtc = null;
         state.LastDecisionCode = "not_evaluated";
+        state.HasObservationBaseline = false;
+        state.LastObservedSource = null;
+        state.LastObservedScope = null;
+        state.LastObservedScopeId = null;
+        state.LastObservedLevel = null;
+        state.LastObservedAlertLevel = null;
+        state.NeedsObservationResync = false;
+        state.LastAttemptedAlertLevel = null;
+        state.LastAttemptedAlertLevelScope = null;
+        state.LastAttemptedAlertLevelScopeId = null;
         state.UpdatedAtUtc = Now;
         await db.SaveChangesAsync();
         return seed;
@@ -309,7 +490,55 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         await db.SaveChangesAsync();
     }
 
+    private async Task AddLevelPresetsAsync()
+    {
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        db.SoundPresets.AddRange(
+            new SoundPreset
+            {
+                Id = Guid.NewGuid(),
+                Code = "red_alert",
+                Name = "Червоний рівень",
+                Priority = 2,
+                ManifestHash = new string('c', 64),
+                IsPublished = true
+            },
+            new SoundPreset
+            {
+                Id = Guid.NewGuid(),
+                Code = "yellow_alert",
+                Name = "Жовтий рівень",
+                Priority = 3,
+                ManifestHash = new string('d', 64),
+                IsPublished = true
+            });
+        await db.SaveChangesAsync();
+    }
+
     private static AlertSourcesStatusResponse ActiveStatus() => Status("active");
+
+    private static AlertSourcesStatusResponse CorroboratedColoredActiveStatus(
+        string alertLevel,
+        DateTimeOffset? observedAtUtc = null)
+    {
+        DateTimeOffset observedAt = observedAtUtc ?? Now;
+        AlertSourceObservationResponse primary = CreateObservation(
+            AlertSourceCatalog.UkraineAlarmCode, "active", null, observedAt);
+        AlertSourceObservationResponse color = CreateObservation(
+            AlertSourceCatalog.AlertsInUaCode, "active", alertLevel, observedAt);
+        AlertTargetStatus target = new(
+            primary.Scope,
+            primary.ScopeId,
+            primary.ScopeName,
+            "active",
+            alertLevel,
+            "fresh",
+            observedAt,
+            observedAt,
+            primary,
+            [primary, color]);
+        return new AlertSourcesStatusResponse(Now, [target]);
+    }
 
     private static AlertSourcesStatusResponse InactiveStatus() => Status("inactive");
 
@@ -321,6 +550,28 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         string source = AlertSourceCatalog.UkraineAlarmCode)
     {
         DateTimeOffset observedAt = observedAtUtc ?? Now;
+        AlertSourceObservationResponse observation = CreateObservation(source, level, alertLevel, observedAt, freshness);
+        AlertTargetStatus target = new(
+            observation.Scope,
+            observation.ScopeId,
+            observation.ScopeName,
+            level,
+            alertLevel,
+            freshness,
+            observedAt,
+            observedAt,
+            observation,
+            [observation]);
+        return new AlertSourcesStatusResponse(Now, [target]);
+    }
+
+    private static AlertSourceObservationResponse CreateObservation(
+        string source,
+        string level,
+        string? alertLevel,
+        DateTimeOffset observedAt,
+        string freshness = "fresh")
+    {
         var sourceName = source switch
         {
             AlertSourceCatalog.AlertsInUaCode => AlertSourceCatalog.AlertsInUaName,
@@ -333,7 +584,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             AlertSourceCatalog.NeptunCode => AlertSourceCatalog.NeptunAttributionUrl,
             _ => AlertSourceCatalog.UkraineAlarmAttributionUrl
         };
-        AlertSourceObservationResponse observation = new(
+        return new AlertSourceObservationResponse(
             source,
             sourceName,
             "hromada",
@@ -348,18 +599,6 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             attributionUrl,
             null,
             null);
-        AlertTargetStatus target = new(
-            observation.Scope,
-            observation.ScopeId,
-            observation.ScopeName,
-            level,
-            alertLevel,
-            freshness,
-            observedAt,
-            observedAt,
-            observation,
-            [observation]);
-        return new AlertSourcesStatusResponse(Now, [target]);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset instantUtc) : TimeProvider

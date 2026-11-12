@@ -15,6 +15,7 @@ public sealed class DeviceSession
 {
     public Guid Id { get; set; }
     public Guid DeviceId { get; set; }
+    public int CommandSchemaVersion { get; set; } = 1;
     public DateTimeOffset ConnectedAtUtc { get; set; }
     public DateTimeOffset? DisconnectedAtUtc { get; set; }
     public DateTimeOffset LastSeenAtUtc { get; set; }
