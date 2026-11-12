@@ -61,10 +61,6 @@ public sealed class AutomaticAlertDispatchProcessor(
             evaluatedDecision.Action != AutomaticAlertDispatchAction.Hold && currentObservation is not null)
         {
             UpdateBaseline(state, currentObservation);
-            if (evaluatedDecision.Action == AutomaticAlertDispatchAction.Replace)
-            {
-                UpdateAttemptedAlertLevel(state, evaluatedDecision.Observation);
-            }
             state.NeedsObservationResync = false;
         }
         else if (observationGap && openEpisode is not null)
