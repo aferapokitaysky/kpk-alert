@@ -4,6 +4,8 @@ param(
     [string]$PublishDirectory,
     [Parameter(Mandatory = $true)]
     [string]$DesktopPublishDirectory,
+    [Parameter(Mandatory = $true)]
+    [string]$AudioWorkerPublishDirectory,
     [string]$ConfigurationFile = "$PSScriptRoot\edge-agent.json",
     [string[]]$OperatorMembers = @(),
     [string]$InteractiveUser,
@@ -101,6 +103,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $PublishDirectory 'Watcher.EdgeAgent
 if (-not (Test-Path -LiteralPath (Join-Path $DesktopPublishDirectory 'Watcher.EdgeAgent.Desktop.exe'))) {
     throw 'У каталозі панелі немає Watcher.EdgeAgent.Desktop.exe.'
 }
+if (-not (Test-Path -LiteralPath (Join-Path $AudioWorkerPublishDirectory 'Watcher.EdgeAgent.AudioWorker.exe'))) {
+    throw 'У каталозі пакета немає Watcher.EdgeAgent.AudioWorker.exe.'
+}
 if (-not (Test-Path -LiteralPath $ConfigurationFile)) {
     throw 'Не знайдено конфігурацію вузла. Створіть edge-agent.json за прикладом перед установленням.'
 }
@@ -115,6 +120,14 @@ try {
 if (-not $configuration.EdgeAgent.BaseAddress -or -not $configuration.EdgeAgent.DatabasePath -or
     -not $configuration.EdgeAgent.AudioRootDirectory -or -not $configuration.EdgeAgent.ClientCertificateThumbprint) {
     throw 'Конфігурація має містити BaseAddress, DatabasePath, AudioRootDirectory і ClientCertificateThumbprint.'
+}
+$audioSessionMode = if ($null -eq $configuration.EdgeAgent.AudioSessionMode) { 'MachineSession' } else { [string]$configuration.EdgeAgent.AudioSessionMode }
+if ($audioSessionMode -notin @('MachineSession', 'OperatorSession')) {
+    throw 'AudioSessionMode має дорівнювати MachineSession або OperatorSession.'
+}
+if ($audioSessionMode -eq 'OperatorSession' -and
+    [string]$configuration.EdgeAgent.InteractiveUserSid -ne $interactiveUserSid) {
+    throw 'Для OperatorSession у edge-agent.json потрібно вказати InteractiveUserSid, що відповідає -InteractiveUser.'
 }
 $normalizedThumbprint = ($configuration.EdgeAgent.ClientCertificateThumbprint -replace '[^0-9a-fA-F]', '').ToUpperInvariant()
 $certificate = Get-ChildItem -Path 'Cert:\LocalMachine\My' | Where-Object {
@@ -164,6 +177,7 @@ $installerRecoveryMarkerCreated = $true
 $packageDeployment = New-EdgeAgentPackageStage `
     -ServicePublishDirectory $PublishDirectory `
     -DesktopPublishDirectory $DesktopPublishDirectory `
+    -AudioWorkerPublishDirectory $AudioWorkerPublishDirectory `
     -InstallDirectory $installDirectory
 $installDirectoryAclSnapshot = @()
 $aclSnapshot = @()
@@ -409,6 +423,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Не вдалося налаштувати п�
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до бази даних.' }
 & icacls.exe (Join-Path $dataDirectory 'audio') /grant "$($serviceAccount):(OI)(CI)RX" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до аудіопакетів.' }
+& icacls.exe (Join-Path $dataDirectory 'audio') /grant "*$($interactiveUserSid):(OI)(CI)RX" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати аудіопроцесу право читання аудіопакетів.' }
 & icacls.exe (Join-Path $dataDirectory 'audio-settings') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Не вдалося надати службі доступ до налаштувань аудіовиходу.' }
 & icacls.exe (Join-Path $dataDirectory 'logs') /grant "$($serviceAccount):(OI)(CI)M" | Out-Null
@@ -688,9 +704,22 @@ try {
         Write-Warning "Службу налаштовано на автоматичний запуск після завантаження Windows, але зараз не запущено й не перевірено. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте запуск командою Start-Service -Name '$serviceName' і стан автозапуску через Get-Service -Name '$serviceName'."
     }
     $finalService = Get-Service -Name $serviceName
-    Set-EdgeAgentDesktopStartupEntry `
+    $audioWorkerArguments = '--audio-root "{0}" --user-sid "{1}"' -f `
+        [string]$configuration.EdgeAgent.AudioRootDirectory, $interactiveUserSid
+    Set-EdgeAgentStartupEntriesAtomically `
         -InteractiveUserSid $interactiveUserSid `
-        -ExecutablePath (Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe')
+        -Entries @(
+            [pscustomobject]@{
+                StartupValueName = 'KGTA.Alert.OperatorPanel'
+                ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
+                StartupArguments = ''
+            },
+            [pscustomobject]@{
+                StartupValueName = 'KGTA.Alert.AudioWorker'
+                ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.AudioWorker.exe'
+                StartupArguments = $audioWorkerArguments
+            }
+        )
 } catch {
     $finalizationFailure = $_
     $rollbackFailures = [System.Collections.Generic.List[string]]::new()

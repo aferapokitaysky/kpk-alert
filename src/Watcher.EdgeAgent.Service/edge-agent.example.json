@@ -8,6 +8,8 @@
     "AudioRootDirectory": "C:/ProgramData/KGTA/Alert/audio",
     "ClientCertificateThumbprint": "REPLACE_WITH_DEVICE_CERTIFICATE_THUMBPRINT",
     "AudioEndpointId": null,
+    "AudioSessionMode": "MachineSession",
+    "InteractiveUserSid": null,
     "MaximumClockSkewSeconds": 120,
     "MaximumWebSocketMessageBytes": 32768,
     "MaximumReceiptQueue": 10000,

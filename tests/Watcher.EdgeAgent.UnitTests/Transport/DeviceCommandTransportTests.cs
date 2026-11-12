@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using Watcher.Contracts.DeviceCommands;
 using Watcher.EdgeAgent.Core;
@@ -98,6 +99,15 @@ public sealed class DeviceCommandTransportTests
             () => transport.RunAsync(CancellationToken.None));
 
         Assert.Equal("device_certificate_unavailable", exception.DiagnosticCode);
+    }
+
+    [Theory]
+    [InlineData("kgta-alert.device.v2", true)]
+    [InlineData(null, false)]
+    [InlineData("kgta-alert.device.v1", false)]
+    public void SupportsReplaceProtocol_RequiresNegotiatedV2(string? subprotocol, bool expected)
+    {
+        Assert.Equal(expected, DeviceCommandTransport.SupportsReplaceProtocol(subprotocol));
     }
 
     [Fact]

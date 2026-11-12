@@ -184,6 +184,82 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Replace_UsesStableEpisodeAnchorAcrossTransitionsAndFinalStop()
+    {
+        CommandDispatch start = CreateCommand(1);
+        await _processor.ProcessAsync(start, new DeviceIdentity(DeviceId, LocationId), default);
+
+        CommandDispatch firstReplace = CreateReplaceCommand(2, start.CommandId);
+        CommandProcessingOutcome firstOutcome = await _processor.ProcessAsync(
+            firstReplace, new DeviceIdentity(DeviceId, LocationId), default);
+        CommandDispatch secondReplace = CreateReplaceCommand(3, start.CommandId);
+        CommandProcessingOutcome secondOutcome = await _processor.ProcessAsync(
+            secondReplace, new DeviceIdentity(DeviceId, LocationId), default);
+
+        Assert.Equal(DeviceCommandState.Playing, firstOutcome.State);
+        Assert.Equal(DeviceCommandState.Playing, secondOutcome.State);
+        Assert.Equal(secondReplace.CommandId, _player.ActiveCommandId);
+        Assert.Equal(start.CommandId, _player.ActiveEpisodeAnchorId);
+        Assert.Equal(3, _player.StartCount);
+        Assert.Equal(2, _player.StopCount);
+
+        CommandProcessingOutcome stop = await _processor.ProcessAsync(
+            CreateStopCommand(4, start.CommandId), new DeviceIdentity(DeviceId, LocationId), default);
+
+        Assert.Equal(DeviceCommandState.Stopped, stop.State);
+        Assert.Null(_player.ActiveCommandId);
+        Assert.Null(_player.ActiveEpisodeAnchorId);
+        Assert.Equal(3, _player.StopCount);
+    }
+
+    [Fact]
+    public async Task Replace_CanStartOnFreshDeviceThatMissedEarlierEpisodeCommands()
+    {
+        CommandDispatch replacement = CreateReplaceCommand(2, Guid.NewGuid());
+
+        CommandProcessingOutcome outcome = await _processor.ProcessAsync(
+            replacement, new DeviceIdentity(DeviceId, LocationId), default);
+
+        Assert.Equal(DeviceCommandState.Playing, outcome.State);
+        Assert.Equal(replacement.CommandId, _player.ActiveCommandId);
+        Assert.Equal(replacement.TargetCommandId, _player.ActiveEpisodeAnchorId);
+    }
+
+    [Fact]
+    public async Task ReplaceWithSameCommandId_IsDeduplicatedWithoutStoppingOrStartingAgain()
+    {
+        CommandDispatch start = CreateCommand(1);
+        await _processor.ProcessAsync(start, new DeviceIdentity(DeviceId, LocationId), default);
+        CommandDispatch replace = CreateReplaceCommand(2, start.CommandId);
+        await _processor.ProcessAsync(replace, new DeviceIdentity(DeviceId, LocationId), default);
+
+        CommandProcessingOutcome duplicate = await _processor.ProcessAsync(
+            replace, new DeviceIdentity(DeviceId, LocationId), default);
+
+        Assert.True(duplicate.Duplicate);
+        Assert.Equal(replace.CommandId, _player.ActiveCommandId);
+        Assert.Equal(start.CommandId, _player.ActiveEpisodeAnchorId);
+        Assert.Equal(2, _player.StartCount);
+        Assert.Equal(1, _player.StopCount);
+    }
+
+    [Fact]
+    public async Task ReplaceForDifferentEpisode_IsRejectedAndKeepsCurrentPlayback()
+    {
+        CommandDispatch start = CreateCommand(1);
+        await _processor.ProcessAsync(start, new DeviceIdentity(DeviceId, LocationId), default);
+
+        CommandProcessingOutcome outcome = await _processor.ProcessAsync(
+            CreateReplaceCommand(2, Guid.NewGuid()), new DeviceIdentity(DeviceId, LocationId), default);
+
+        Assert.Equal("replace_target_mismatch", outcome.DiagnosticCode);
+        Assert.Equal(start.CommandId, _player.ActiveCommandId);
+        Assert.Equal(start.CommandId, _player.ActiveEpisodeAnchorId);
+        Assert.Equal(1, _player.StartCount);
+        Assert.Equal(0, _player.StopCount);
+    }
+
+    [Fact]
     public async Task StartDuringMaintenance_IsDeferredWithoutAcceptingOrStartingIt()
     {
         EdgeAgentMaintenanceCoordinator maintenance = new();
@@ -451,6 +527,20 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
         0,
         targetCommandId);
 
+    private CommandDispatch CreateReplaceCommand(long sequence, Guid episodeAnchorCommandId) => new(
+        DeviceCommandValidator.ReplaceSchemaVersion,
+        Guid.NewGuid(),
+        DeviceId,
+        LocationId,
+        sequence,
+        DeviceCommandAction.Replace,
+        "air_raid",
+        new string('a', 64),
+        _clock.UtcNow,
+        _clock.UtcNow.AddMinutes(5),
+        900,
+        episodeAnchorCommandId);
+
     private sealed class FakeAssetResolver : IAudioAssetResolver
     {
         public LocalAudioAsset? Asset { get; set; } = new("air_raid", new string('a', 64), "test.wav", "hash");
@@ -462,6 +552,7 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
     private sealed class FakeAudioPlayer : IAudioPlayer
     {
         public Guid? ActiveCommandId { get; private set; }
+        public Guid? ActiveEpisodeAnchorId { get; private set; }
         public PlaybackRequest? LastRequest { get; private set; }
         public int StartCount { get; private set; }
         public int StopCount { get; private set; }
@@ -469,15 +560,39 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
         public int AbortStartCount { get; private set; }
         public Action<Guid>? OnStart { get; set; }
 
-        public void ClearActivePlayback() => ActiveCommandId = null;
+        public void ClearActivePlayback()
+        {
+            ActiveCommandId = null;
+            ActiveEpisodeAnchorId = null;
+        }
 
         public Task StartAsync(PlaybackRequest request, CancellationToken cancellationToken)
         {
             StartCount++;
             ActiveCommandId = request.CommandId;
+            ActiveEpisodeAnchorId = request.CommandId;
             LastRequest = request;
             OnStart?.Invoke(request.CommandId);
             return Task.CompletedTask;
+        }
+
+        public async Task ReplaceAsync(Guid episodeAnchorCommandId, PlaybackRequest request,
+            CancellationToken cancellationToken)
+        {
+            if (ActiveCommandId is not null)
+            {
+                if (ActiveEpisodeAnchorId != episodeAnchorCommandId ||
+                    !await StopAsync(episodeAnchorCommandId, cancellationToken))
+                {
+                    throw new AudioPlaybackException("replace_target_mismatch", new InvalidOperationException());
+                }
+            }
+
+            StartCount++;
+            ActiveCommandId = request.CommandId;
+            ActiveEpisodeAnchorId = episodeAnchorCommandId;
+            LastRequest = request;
+            OnStart?.Invoke(request.CommandId);
         }
 
         public Task<bool> StopAsync(Guid targetCommandId, CancellationToken cancellationToken)
@@ -489,10 +604,10 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
                 throw new IOException("Temporary audio stop failure.");
             }
 
-            var stopped = ActiveCommandId == targetCommandId;
+            var stopped = ActiveEpisodeAnchorId == targetCommandId;
             if (stopped)
             {
-                ActiveCommandId = null;
+                ClearActivePlayback();
             }
 
             return Task.FromResult(stopped);
@@ -503,7 +618,7 @@ public sealed class DeviceCommandProcessorTests : IAsyncLifetime
             AbortStartCount++;
             if (ActiveCommandId == commandId)
             {
-                ActiveCommandId = null;
+                ClearActivePlayback();
             }
 
             return Task.CompletedTask;

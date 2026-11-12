@@ -150,12 +150,13 @@ internal sealed class EdgeAgentHostedService(
         try
         {
             await startupCoordinator.InitializeAsync(stoppingToken);
+            await audioPlayer.RecoverAfterServiceRestartAsync(stoppingToken);
             using X509Certificate2 certificate = DeviceCertificateStore.FindClientCertificate(options.ClientCertificateThumbprint!);
             DevicePrivateKeyAccessValidator.Validate(certificate);
             using HttpClient httpClient = MtlsHttpClientFactory.Create(options, certificate);
             var receipts = new CommandReceiptSender(options, store, httpClient, clock);
             await WaitForAudioEndpointAsync(
-                audioEndpointSelection, audioEndpointAvailability, status, stoppingToken);
+                audioEndpointSelection, audioEndpointAvailability, status, options.AudioSessionMode, stoppingToken);
             using var workers = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             Task[] workerTasks =
             [
@@ -194,8 +195,23 @@ internal sealed class EdgeAgentHostedService(
         IAudioEndpointSelection audioEndpointSelection,
         IAudioEndpointAvailabilityMonitor audioEndpointAvailability,
         EdgeAgentStatusProvider status,
+        EdgeAgentAudioSessionMode audioSessionMode,
         CancellationToken cancellationToken)
     {
+        if (audioSessionMode == EdgeAgentAudioSessionMode.OperatorSession)
+        {
+            var endpointId = audioEndpointSelection.CurrentEndpointId;
+            var available = audioEndpointAvailability.IsAvailable(endpointId);
+            status.Update(current => current with
+            {
+                ConnectionState = EdgeAgentConnectionState.Connecting,
+                AudioState = available ? "ready" : "unavailable",
+                AudioEndpointId = endpointId,
+                DiagnosticCode = available ? null : "audio_worker_unavailable"
+            });
+            return;
+        }
+
         while (!cancellationToken.IsCancellationRequested)
         {
             var endpointId = audioEndpointSelection.CurrentEndpointId;
@@ -235,6 +251,14 @@ internal sealed class EdgeAgentHostedService(
             await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
         }
     }
+
+    internal static Task WaitForAudioEndpointAsync(
+        IAudioEndpointSelection audioEndpointSelection,
+        IAudioEndpointAvailabilityMonitor audioEndpointAvailability,
+        EdgeAgentStatusProvider status,
+        CancellationToken cancellationToken) =>
+        WaitForAudioEndpointAsync(audioEndpointSelection, audioEndpointAvailability, status,
+            EdgeAgentAudioSessionMode.MachineSession, cancellationToken);
 
     private async Task RefreshStatusAsync(CancellationToken cancellationToken)
     {

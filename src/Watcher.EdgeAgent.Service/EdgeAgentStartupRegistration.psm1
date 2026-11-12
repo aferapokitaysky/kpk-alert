@@ -1,6 +1,7 @@
 ﻿Set-StrictMode -Version Latest
 
 $script:EdgeAgentStartupValueName = 'KGTA.Alert.OperatorPanel'
+$script:EdgeAgentStartupValueNames = @('KGTA.Alert.OperatorPanel', 'KGTA.Alert.AudioWorker')
 $script:EdgeAgentRunSubKeySuffix = 'Software\Microsoft\Windows\CurrentVersion\Run'
 
 function Assert-EdgeAgentInteractiveUserSid {
@@ -147,7 +148,10 @@ function Set-EdgeAgentDesktopStartupEntry {
         [Parameter(Mandatory = $true)]
         [string]$ExecutablePath,
         [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users,
-        [string]$RunSubKeyPath
+        [string]$RunSubKeyPath,
+        [ValidateSet('KGTA.Alert.OperatorPanel', 'KGTA.Alert.AudioWorker')]
+        [string]$StartupValueName = $script:EdgeAgentStartupValueName,
+        [string]$StartupArguments
     )
 
     $canonicalExecutablePath = [IO.Path]::GetFullPath($ExecutablePath)
@@ -181,34 +185,40 @@ function Set-EdgeAgentDesktopStartupEntry {
             throw 'Не вдалося відкрити розділ автозапуску інтерактивного користувача.'
         }
 
-        $valueExists = $runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName
+        $valueExists = $runKey.GetValueNames() -contains $StartupValueName
         $previousValue = if ($valueExists) {
-            $runKey.GetValue($script:EdgeAgentStartupValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $runKey.GetValue($StartupValueName, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
         } else {
             $null
         }
         $previousValueKind = if ($valueExists) {
-            $runKey.GetValueKind($script:EdgeAgentStartupValueName)
+            $runKey.GetValueKind($StartupValueName)
         } else {
             $null
         }
         $startupCommand = '"{0}"' -f $canonicalExecutablePath
+        if (-not [string]::IsNullOrWhiteSpace($StartupArguments)) {
+            if ($StartupArguments.Contains("`r") -or $StartupArguments.Contains("`n")) {
+                throw 'Параметри автозапуску не можуть містити символи нового рядка.'
+            }
+            $startupCommand = '{0} {1}' -f $startupCommand, $StartupArguments
+        }
 
         try {
             $runKey.SetValue(
-                $script:EdgeAgentStartupValueName,
+                $StartupValueName,
                 $startupCommand,
                 [Microsoft.Win32.RegistryValueKind]::String
             )
         } catch {
             if ($valueExists) {
                 $runKey.SetValue(
-                    $script:EdgeAgentStartupValueName,
+                    $StartupValueName,
                     $previousValue,
                     $previousValueKind
                 )
             } else {
-                $runKey.DeleteValue($script:EdgeAgentStartupValueName, $false)
+                $runKey.DeleteValue($StartupValueName, $false)
             }
 
             throw
@@ -222,13 +232,100 @@ function Set-EdgeAgentDesktopStartupEntry {
     }
 }
 
+function Set-EdgeAgentStartupEntriesAtomically {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$InteractiveUserSid,
+        [Parameter(Mandatory = $true)][object[]]$Entries,
+        [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users,
+        [string]$RunSubKeyPath
+    )
+
+    $InteractiveUserSid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $InteractiveUserSid
+    if ($Entries.Count -ne 2 -or
+        @($Entries | ForEach-Object { [string]$_.StartupValueName } | Sort-Object -Unique).Count -ne 2 -or
+        @($Entries | Where-Object { $_.StartupValueName -notin $script:EdgeAgentStartupValueNames }).Count -gt 0) {
+        throw 'План автозапуску має містити рівно два унікальні записи KGTA Alert.'
+    }
+
+    $preparedEntries = foreach ($entry in $Entries) {
+        $executablePath = [IO.Path]::GetFullPath([string]$entry.ExecutablePath)
+        if (-not [IO.Path]::IsPathRooted($executablePath) -or
+            -not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
+            throw 'Не знайдено виконуваний файл для запису автозапуску.'
+        }
+        $arguments = [string]$entry.StartupArguments
+        if ($arguments.Contains("`r") -or $arguments.Contains("`n")) {
+            throw 'Параметри автозапуску не можуть містити символи нового рядка.'
+        }
+        $command = '"{0}"' -f $executablePath
+        if (-not [string]::IsNullOrWhiteSpace($arguments)) { $command = '{0} {1}' -f $command, $arguments }
+        [pscustomobject]@{ Name = [string]$entry.StartupValueName; Command = $command }
+    }
+
+    $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath -InteractiveUserSid $InteractiveUserSid -RunSubKeyPath $RunSubKeyPath
+    $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey($RegistryHive, [Microsoft.Win32.RegistryView]::Default)
+    $runKey = $null
+    $profileKey = $null
+    try {
+        if ($RegistryHive -eq [Microsoft.Win32.RegistryHive]::Users) {
+            $profileKey = $baseKey.OpenSubKey($InteractiveUserSid, $false)
+            if (-not $profileKey) { throw "Профіль користувача $InteractiveUserSid не завантажено." }
+            $profileKey.Dispose()
+            $profileKey = $null
+        }
+        $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
+        if (-not $runKey) { $runKey = $baseKey.CreateSubKey($subKeyPath, $true) }
+        if (-not $runKey) { throw 'Не вдалося відкрити розділ автозапуску інтерактивного користувача.' }
+
+        $previous = @{}
+        foreach ($entry in $preparedEntries) {
+            $exists = $runKey.GetValueNames() -contains $entry.Name
+            $previous[$entry.Name] = if ($exists) {
+                [pscustomobject]@{
+                    Exists = $true
+                    Value = $runKey.GetValue($entry.Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    Kind = $runKey.GetValueKind($entry.Name)
+                }
+            } else { [pscustomobject]@{ Exists = $false; Value = $null; Kind = $null } }
+        }
+
+        try {
+            foreach ($entry in $preparedEntries) {
+                $runKey.SetValue($entry.Name, $entry.Command, [Microsoft.Win32.RegistryValueKind]::String)
+            }
+        } catch {
+            $writeFailure = $_
+            $rollbackFailures = [System.Collections.Generic.List[string]]::new()
+            foreach ($entry in $preparedEntries) {
+                try {
+                    $snapshot = $previous[$entry.Name]
+                    if ($snapshot.Exists) { $runKey.SetValue($entry.Name, $snapshot.Value, $snapshot.Kind) }
+                    else { $runKey.DeleteValue($entry.Name, $false) }
+                } catch { $rollbackFailures.Add("$($entry.Name): $_") }
+            }
+            if ($rollbackFailures.Count -gt 0) {
+                throw "Не вдалося оновити автозапуск; частину попередніх значень не відновлено: $($rollbackFailures -join '; '). Початкова помилка: $writeFailure"
+            }
+            throw $writeFailure
+        }
+        return $preparedEntries
+    } finally {
+        if ($profileKey) { $profileKey.Dispose() }
+        if ($runKey) { $runKey.Dispose() }
+        $baseKey.Dispose()
+    }
+}
+
 function Remove-EdgeAgentDesktopStartupEntry {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$InteractiveUserSid,
         [Microsoft.Win32.RegistryHive]$RegistryHive = [Microsoft.Win32.RegistryHive]::Users,
-        [string]$RunSubKeyPath
+        [string]$RunSubKeyPath,
+        [ValidateSet('KGTA.Alert.OperatorPanel', 'KGTA.Alert.AudioWorker')]
+        [string]$StartupValueName = $script:EdgeAgentStartupValueName
     )
 
     $subKeyPath = Get-EdgeAgentStartupRegistrySubKeyPath `
@@ -251,7 +348,7 @@ function Remove-EdgeAgentDesktopStartupEntry {
         $runKey = $baseKey.OpenSubKey($subKeyPath, $true)
         if (-not $runKey) { return }
 
-        $runKey.DeleteValue($script:EdgeAgentStartupValueName, $false)
+        $runKey.DeleteValue($StartupValueName, $false)
     } finally {
         if ($profileKey) { $profileKey.Dispose() }
         if ($runKey) { $runKey.Dispose() }
@@ -286,19 +383,22 @@ function Remove-EdgeAgentDesktopStartupEntriesForProfiles {
             if (-not $runKey) { continue }
 
             try {
-                if (-not ($runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName)) { continue }
+                foreach ($valueName in $script:EdgeAgentStartupValueNames) {
+                    if (-not ($runKey.GetValueNames() -contains $valueName)) { continue }
 
-                $removedEntries += [pscustomobject]@{
-                    Sid = [string]$profile.Sid
-                    RunSubKeyPath = $subKeyPath
-                    Value = $runKey.GetValue(
-                        $script:EdgeAgentStartupValueName,
-                        $null,
-                        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-                    )
-                    Kind = $runKey.GetValueKind($script:EdgeAgentStartupValueName)
+                    $removedEntries += [pscustomobject]@{
+                        Sid = [string]$profile.Sid
+                        RunSubKeyPath = $subKeyPath
+                        ValueName = $valueName
+                        Value = $runKey.GetValue(
+                            $valueName,
+                            $null,
+                            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                        )
+                        Kind = $runKey.GetValueKind($valueName)
+                    }
+                    $runKey.DeleteValue($valueName, $false)
                 }
-                $runKey.DeleteValue($script:EdgeAgentStartupValueName, $false)
             } finally {
                 $runKey.Dispose()
             }
@@ -457,6 +557,11 @@ function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
         foreach ($entry in $Entries) {
             $sid = '<невідомий SID>'
             $runKey = $null
+            $valueName = if ($entry.ValueName -and $script:EdgeAgentStartupValueNames -contains [string]$entry.ValueName) {
+                [string]$entry.ValueName
+            } else {
+                $script:EdgeAgentStartupValueName
+            }
             try {
                 if ($entry.Sid) { $sid = [string]$entry.Sid }
                 if (-not $entry.Sid -or -not $entry.RunSubKeyPath) {
@@ -470,20 +575,20 @@ function Restore-EdgeAgentDesktopStartupEntriesForProfiles {
                 if (-not $runKey) { $runKey = $baseKey.CreateSubKey($subKeyPath, $true) }
                 if (-not $runKey) { throw "Не вдалося відкрити Run-розділ профілю $sid для відновлення." }
 
-                if ($runKey.GetValueNames() -contains $script:EdgeAgentStartupValueName) {
+                if ($runKey.GetValueNames() -contains $valueName) {
                     $currentValue = $runKey.GetValue(
-                        $script:EdgeAgentStartupValueName,
+                        $valueName,
                         $null,
                         [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
                     )
                     if ($currentValue -eq $entry.Value -and
-                        $runKey.GetValueKind($script:EdgeAgentStartupValueName) -eq $entry.Kind) {
+                        $runKey.GetValueKind($valueName) -eq $entry.Kind) {
                         continue
                     }
                     throw 'Значення автозапуску змінилося під час видалення; його не перезаписано.'
                 }
 
-                $runKey.SetValue($script:EdgeAgentStartupValueName, $entry.Value, $entry.Kind)
+                $runKey.SetValue($valueName, $entry.Value, $entry.Kind)
             } catch {
                 $restoreFailures += "SID ${sid}: $($_.Exception.Message)"
             } finally {
@@ -551,6 +656,7 @@ Export-ModuleMember -Function @(
     'Get-EdgeAgentServiceStartupType',
     'Get-EdgeAgentInstalledDesktopExecutablePath',
     'Set-EdgeAgentDesktopStartupEntry',
+    'Set-EdgeAgentStartupEntriesAtomically',
     'Remove-EdgeAgentDesktopStartupEntry',
     'Remove-EdgeAgentDesktopStartupEntriesForProfiles',
     'New-EdgeAgentStartupCleanupPlan',

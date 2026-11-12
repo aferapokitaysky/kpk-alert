@@ -1,5 +1,11 @@
 namespace Watcher.EdgeAgent.Core;
 
+public enum EdgeAgentAudioSessionMode
+{
+    MachineSession,
+    OperatorSession
+}
+
 public sealed class EdgeAgentOptions
 {
     public const int StartCommandReceiptCapacity = 3;
@@ -12,6 +18,8 @@ public sealed class EdgeAgentOptions
     public required string AudioRootDirectory { get; init; }
     public string? ClientCertificateThumbprint { get; init; }
     public string? AudioEndpointId { get; init; }
+    public EdgeAgentAudioSessionMode AudioSessionMode { get; init; } = EdgeAgentAudioSessionMode.MachineSession;
+    public string? InteractiveUserSid { get; init; }
     public int MaximumClockSkewSeconds { get; init; } = 120;
     public int MaximumWebSocketMessageBytes { get; init; } = 32 * 1024;
     public int MaximumReceiptQueue { get; init; } = 10_000;
@@ -37,12 +45,22 @@ public sealed class EdgeAgentOptions
         }
 
         if (string.IsNullOrWhiteSpace(DatabasePath) || string.IsNullOrWhiteSpace(AudioRootDirectory) ||
+            !Enum.IsDefined(AudioSessionMode) ||
             MaximumClockSkewSeconds is < 0 or > 600 ||
             MaximumWebSocketMessageBytes is < 1024 or > 32 * 1024 ||
             MaximumReceiptQueue is < StartCommandReceiptCapacity or > 100_000 ||
             ReconnectInitialDelaySeconds is < 1 or > 30 ||
             ReconnectMaximumDelaySeconds < ReconnectInitialDelaySeconds ||
             ReconnectMaximumDelaySeconds > 300 || ReceiptRetryMaximumDelaySeconds is < 1 or > 3600)
+        {
+            return "invalid_configuration";
+        }
+
+        if (AudioSessionMode == EdgeAgentAudioSessionMode.OperatorSession &&
+            (InteractiveUserSid is null ||
+             !System.Text.RegularExpressions.Regex.IsMatch(InteractiveUserSid,
+                 @"^S-1-(?:5-21-(?:\d+-){3}\d+|12-1-(?:\d+-){3}\d+)$",
+                 System.Text.RegularExpressions.RegexOptions.CultureInvariant)))
         {
             return "invalid_configuration";
         }

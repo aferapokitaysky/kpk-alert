@@ -165,10 +165,15 @@ function New-EdgeAgentPackageStage {
     param(
         [Parameter(Mandatory = $true)][string]$ServicePublishDirectory,
         [Parameter(Mandatory = $true)][string]$DesktopPublishDirectory,
+        [string]$AudioWorkerPublishDirectory,
         [Parameter(Mandatory = $true)][string]$InstallDirectory
     )
 
-    foreach ($directory in @($ServicePublishDirectory, $DesktopPublishDirectory)) {
+    $publishDirectories = @($ServicePublishDirectory, $DesktopPublishDirectory)
+    if (-not [string]::IsNullOrWhiteSpace($AudioWorkerPublishDirectory)) {
+        $publishDirectories += $AudioWorkerPublishDirectory
+    }
+    foreach ($directory in $publishDirectories) {
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
             throw "Каталог пакета не знайдено: $directory"
         }
@@ -185,6 +190,9 @@ function New-EdgeAgentPackageStage {
         New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
         Copy-Item -Path (Join-Path $ServicePublishDirectory '*') -Destination $stage -Recurse -Force -ErrorAction Stop
         Copy-Item -Path (Join-Path $DesktopPublishDirectory '*') -Destination $stage -Recurse -Force -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace($AudioWorkerPublishDirectory)) {
+            Copy-Item -Path (Join-Path $AudioWorkerPublishDirectory '*') -Destination $stage -Recurse -Force -ErrorAction Stop
+        }
         return [pscustomobject]@{
             InstallDirectory = $target
             StageDirectory = $stage

@@ -36,7 +36,23 @@ internal static class Program
         builder.Services.AddSingleton<LocalAudioAssetResolver>(_ => new LocalAudioAssetResolver(options.AudioRootDirectory));
         builder.Services.AddSingleton<IAudioAssetResolver>(services => services.GetRequiredService<LocalAudioAssetResolver>());
         builder.Services.AddSingleton<EdgeAgentStatusProvider>();
-        builder.Services.AddSingleton<IAudioEndpointControl, WasapiAudioEndpointControl>();
+        builder.Services.AddSingleton<IAudioPlaybackEventHandler, EdgeAgentPlaybackEventHandler>();
+        if (options.AudioSessionMode == EdgeAgentAudioSessionMode.OperatorSession)
+        {
+            builder.Services.AddSingleton<AudioWorkerClient>();
+            builder.Services.AddSingleton<IAudioEndpointControl>(services => services.GetRequiredService<AudioWorkerClient>());
+            builder.Services.AddSingleton<IAudioPlayer>(services => services.GetRequiredService<AudioWorkerClient>());
+            builder.Services.AddSingleton<IAudioEndpointAvailabilityMonitor>(services =>
+                services.GetRequiredService<AudioWorkerClient>());
+            builder.Services.AddSingleton<IHostedService>(services => services.GetRequiredService<AudioWorkerClient>());
+        }
+        else
+        {
+            builder.Services.AddSingleton<IAudioEndpointControl, WasapiAudioEndpointControl>();
+            builder.Services.AddSingleton<WasapiAudioPlayer>();
+            builder.Services.AddSingleton<IAudioPlayer>(services => services.GetRequiredService<WasapiAudioPlayer>());
+            builder.Services.AddSingleton<IAudioEndpointAvailabilityMonitor, WasapiAudioEndpointAvailabilityMonitor>();
+        }
         builder.Services.AddSingleton<EdgeAgentAudioOutputManager>(services => new EdgeAgentAudioOutputManager(
             options.AudioEndpointId,
             GetAudioOutputSettingsPath(configurationPath),
@@ -46,10 +62,6 @@ internal static class Program
         builder.Services.AddSingleton<IAudioEndpointSelection>(services =>
             services.GetRequiredService<EdgeAgentAudioOutputManager>());
         builder.Services.AddSingleton<EdgeAgentStartupCoordinator>();
-        builder.Services.AddSingleton<IAudioPlaybackEventHandler, EdgeAgentPlaybackEventHandler>();
-        builder.Services.AddSingleton<WasapiAudioPlayer>();
-        builder.Services.AddSingleton<IAudioPlayer>(services => services.GetRequiredService<WasapiAudioPlayer>());
-        builder.Services.AddSingleton<IAudioEndpointAvailabilityMonitor, WasapiAudioEndpointAvailabilityMonitor>();
         builder.Services.AddSingleton<DeviceCommandProcessor>(services => new DeviceCommandProcessor(
             services.GetRequiredService<IEdgeAgentStore>(),
             services.GetRequiredService<IAudioAssetResolver>(),
@@ -102,6 +114,8 @@ internal static class Program
             AudioRootDirectory = section["AudioRootDirectory"] ?? throw new InvalidOperationException("Не задано AudioRootDirectory."),
             ClientCertificateThumbprint = section["ClientCertificateThumbprint"],
             AudioEndpointId = section["AudioEndpointId"],
+            AudioSessionMode = ReadAudioSessionMode(section),
+            InteractiveUserSid = section["InteractiveUserSid"],
             MaximumClockSkewSeconds = section.GetValue("MaximumClockSkewSeconds", 120),
             MaximumWebSocketMessageBytes = section.GetValue("MaximumWebSocketMessageBytes", 32 * 1024),
             MaximumReceiptQueue = section.GetValue("MaximumReceiptQueue", 10_000),
@@ -109,6 +123,18 @@ internal static class Program
             ReconnectMaximumDelaySeconds = section.GetValue("ReconnectMaximumDelaySeconds", 30),
             ReceiptRetryMaximumDelaySeconds = section.GetValue("ReceiptRetryMaximumDelaySeconds", 60)
         };
+    }
+
+    private static EdgeAgentAudioSessionMode ReadAudioSessionMode(IConfigurationSection section)
+    {
+        var value = section["AudioSessionMode"];
+        if (value is null) return EdgeAgentAudioSessionMode.MachineSession;
+        if (Enum.TryParse(value, ignoreCase: false, out EdgeAgentAudioSessionMode mode) && Enum.IsDefined(mode))
+        {
+            return mode;
+        }
+
+        throw new InvalidOperationException("Параметр AudioSessionMode має непідтримуване значення.");
     }
 
     internal static string GetAudioOutputSettingsPath(string configurationPath)

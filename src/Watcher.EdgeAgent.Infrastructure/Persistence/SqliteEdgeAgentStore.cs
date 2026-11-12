@@ -458,7 +458,7 @@ public sealed class SqliteEdgeAgentStore(string databasePath, int maximumReceipt
             }
 
             var pending = await GetPendingReceiptCountAsync(connection, transaction, cancellationToken);
-            var receiptCapacityRequired = command.Action == DeviceCommandAction.Start ? 3 : 1;
+            var receiptCapacityRequired = command.Action is DeviceCommandAction.Start or DeviceCommandAction.Replace ? 3 : 1;
             if (pending + receiptCapacityRequired > maximumReceiptQueue)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -484,7 +484,7 @@ public sealed class SqliteEdgeAgentStore(string databasePath, int maximumReceipt
             insert.Parameters.AddWithValue("$sequenceValue", command.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
             await insert.ExecuteNonQueryAsync(cancellationToken);
             // Stop не підтверджуємо до аудіоефекту: інакше сервер припинить повторну доставку після збою.
-            if (command.Action == DeviceCommandAction.Start)
+            if (command.Action is DeviceCommandAction.Start or DeviceCommandAction.Replace)
             {
                 await InsertReceiptAsync(connection, transaction, command.CommandId, command.Sequence,
                     DeviceCommandState.Accepted, nowUtc, null, cancellationToken);

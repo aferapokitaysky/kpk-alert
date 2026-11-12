@@ -15,6 +15,7 @@ public sealed class DeviceCommandTransport(
     Func<DeviceIdentity, ValueTask>? identityObserved = null,
     Func<EdgeAgentConnectionState, ValueTask>? stateChanged = null)
 {
+    internal const string V2Subprotocol = "kgta-alert.device.v2";
     private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(30);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -114,6 +115,7 @@ public sealed class DeviceCommandTransport(
         CancellationToken cancellationToken)
     {
         using ClientWebSocket socket = new();
+        ConfigureWebSocketCapabilities(socket.Options);
         socket.Options.ClientCertificates = new System.Security.Cryptography.X509Certificates.X509CertificateCollection { certificate };
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         Uri streamUri = BuildWebSocketUri(options.BaseAddress, options.WebSocketPath);
@@ -121,6 +123,11 @@ public sealed class DeviceCommandTransport(
         {
             connectTimeout.CancelAfter(ConnectionTimeout);
             await socket.ConnectAsync(streamUri, connectTimeout.Token);
+            if (socket.SubProtocol is not null &&
+                !string.Equals(socket.SubProtocol, V2Subprotocol, StringComparison.Ordinal))
+            {
+                throw new EdgeAgentTransportException("command_protocol_unsupported");
+            }
         }
         await ReportStateAsync(EdgeAgentConnectionState.Streaming);
 
@@ -146,6 +153,13 @@ public sealed class DeviceCommandTransport(
                 throw new EdgeAgentTransportException("command_payload_invalid");
             }
 
+            if (command.Action == DeviceCommandAction.Replace &&
+                !SupportsReplaceProtocol(socket.SubProtocol))
+            {
+                await CloseAsync(socket, WebSocketCloseStatus.PolicyViolation, cancellationToken);
+                throw new EdgeAgentTransportException("command_protocol_unsupported");
+            }
+
             CommandProcessingOutcome outcome = await processor.ProcessAsync(command, identity, cancellationToken);
             await ReportProcessingOutcomeAsync(outcome);
             if (outcome.CloseConnection)
@@ -159,6 +173,12 @@ public sealed class DeviceCommandTransport(
             }
         }
     }
+
+    internal static void ConfigureWebSocketCapabilities(ClientWebSocketOptions options) =>
+        options.AddSubProtocol(V2Subprotocol);
+
+    internal static bool SupportsReplaceProtocol(string? negotiatedSubprotocol) =>
+        string.Equals(negotiatedSubprotocol, V2Subprotocol, StringComparison.Ordinal);
 
     internal ValueTask ReportProcessingOutcomeAsync(CommandProcessingOutcome outcome) =>
         outcome.DiagnosticCode == "receipt_queue_full"

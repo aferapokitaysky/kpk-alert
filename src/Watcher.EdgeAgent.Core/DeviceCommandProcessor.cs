@@ -29,15 +29,16 @@ public sealed class DeviceCommandProcessor(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
-        if (command.Action == DeviceCommandAction.Start && _installerMaintenanceGate.IsHeldByInstaller())
+        var startsPlayback = command.Action is DeviceCommandAction.Start or DeviceCommandAction.Replace;
+        if (startsPlayback && _installerMaintenanceGate.IsHeldByInstaller())
         {
             return new CommandProcessingOutcome(false, false, false, "maintenance_in_progress", null);
         }
 
-        EdgeAgentMaintenanceCoordinator.StartLease? startLease = command.Action == DeviceCommandAction.Start
+        EdgeAgentMaintenanceCoordinator.StartLease? startLease = startsPlayback
             ? _maintenanceCoordinator.TryBeginStart()
             : null;
-        if (command.Action == DeviceCommandAction.Start && startLease is null)
+        if (startsPlayback && startLease is null)
         {
             return new CommandProcessingOutcome(false, false, false, "maintenance_in_progress", null);
         }
@@ -87,7 +88,7 @@ public sealed class DeviceCommandProcessor(
 
             if (command.Action == DeviceCommandAction.Stop && existing.State == DeviceCommandState.Accepted)
             {
-                return await TryStopAsync(command, duplicate: true, cancellationToken);
+                return await TryStopAsync(command, existing.PayloadHash, duplicate: true, cancellationToken);
             }
 
             await store.RequeueLatestReceiptAsync(command.CommandId, cancellationToken);
@@ -137,6 +138,26 @@ public sealed class DeviceCommandProcessor(
                 return await RejectAsync(command, payloadHash, "manifest_mismatch", cancellationToken);
             }
         }
+        else if (command.Action == DeviceCommandAction.Replace &&
+                 audioPlayer.ActiveCommandId is not null &&
+                 audioPlayer.ActiveEpisodeAnchorId != command.TargetCommandId)
+        {
+            return await RejectAsync(command, payloadHash, "replace_target_mismatch", cancellationToken);
+        }
+        else if (command.Action == DeviceCommandAction.Replace)
+        {
+            asset = await assets.ResolveAsync(identity.LocationId, command.PresetCode!, command.ManifestHash!, cancellationToken);
+            if (asset is null)
+            {
+                return await RejectAsync(command, payloadHash, "preset_missing", cancellationToken);
+            }
+
+            if (!string.Equals(asset.PresetCode, command.PresetCode, StringComparison.Ordinal) ||
+                !string.Equals(asset.ManifestHash, command.ManifestHash, StringComparison.OrdinalIgnoreCase))
+            {
+                return await RejectAsync(command, payloadHash, "manifest_mismatch", cancellationToken);
+            }
+        }
 
         if (await store.GetPendingReceiptCountAsync(cancellationToken) >= maximumReceiptQueue)
         {
@@ -170,10 +191,23 @@ public sealed class DeviceCommandProcessor(
 
         if (command.Action == DeviceCommandAction.Stop)
         {
-            return await TryStopAsync(command, duplicate: false, cancellationToken);
+            return await TryStopAsync(command, payloadHash, duplicate: false, cancellationToken);
         }
 
-        DateTimeOffset deadlineUtc = command.IssuedAtUtc.AddSeconds(command.MaxPlaybackDurationSeconds);
+        return await TryStartPlaybackAsync(command, payloadHash, asset!, startLease, cancellationToken);
+    }
+
+    private async Task<CommandProcessingOutcome> TryStartPlaybackAsync(
+        CommandDispatch command,
+        string payloadHash,
+        LocalAudioAsset asset,
+        EdgeAgentMaintenanceCoordinator.StartLease? startLease,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset playbackDeadline = command.IssuedAtUtc.AddSeconds(command.MaxPlaybackDurationSeconds);
+        DateTimeOffset deadlineUtc = command.ExpiresAtUtc < playbackDeadline
+            ? command.ExpiresAtUtc
+            : playbackDeadline;
         if (clock.UtcNow >= deadlineUtc)
         {
             await store.TransitionCommandAsync(command.CommandId, DeviceCommandState.Expired,
@@ -186,10 +220,18 @@ public sealed class DeviceCommandProcessor(
             startLease!.MarkPlaybackStarted(command.CommandId);
             try
             {
-                await audioPlayer.StartAsync(
-                    new PlaybackRequest(command.CommandId, command.PresetCode!, asset!.FilePath, deadlineUtc,
-                        audioEndpointIdProvider is null ? audioEndpointId : audioEndpointIdProvider()),
-                    cancellationToken);
+                PlaybackRequest playbackRequest = new(command.CommandId, command.PresetCode!, asset.FilePath,
+                    asset.Sha256, deadlineUtc,
+                    audioEndpointIdProvider is null ? audioEndpointId : audioEndpointIdProvider());
+                if (command.Action == DeviceCommandAction.Replace)
+                {
+                    await audioPlayer.ReplaceCommandAsync(command.TargetCommandId!.Value, playbackRequest,
+                        command.Sequence, payloadHash, cancellationToken);
+                }
+                else
+                {
+                    await audioPlayer.StartCommandAsync(playbackRequest, command.Sequence, payloadHash, cancellationToken);
+                }
             }
             catch
             {
@@ -227,13 +269,15 @@ public sealed class DeviceCommandProcessor(
 
     private async Task<CommandProcessingOutcome> TryStopAsync(
         CommandDispatch command,
+        string payloadHash,
         bool duplicate,
         CancellationToken cancellationToken)
     {
         try
         {
             Guid targetCommandId = command.TargetCommandId!.Value;
-            var stopped = await audioPlayer.StopAsync(targetCommandId, cancellationToken);
+            var stopped = await audioPlayer.StopCommandAsync(targetCommandId, command.CommandId,
+                command.Sequence, payloadHash, cancellationToken);
             if (stopped)
             {
                 return await PersistStopOutcomeAsync(command, DeviceCommandState.Stopped, null,

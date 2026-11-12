@@ -3,6 +3,7 @@
     <Project Path="src/Watcher.EdgeAgent.Contracts/Watcher.EdgeAgent.Contracts.csproj" />
     <Project Path="src/Watcher.EdgeAgent.Core/Watcher.EdgeAgent.Core.csproj" />
     <Project Path="src/Watcher.EdgeAgent.Infrastructure/Watcher.EdgeAgent.Infrastructure.csproj" />
+    <Project Path="src/Watcher.EdgeAgent.AudioWorker/Watcher.EdgeAgent.AudioWorker.csproj" />
     <Project Path="src/Watcher.EdgeAgent.Service/Watcher.EdgeAgent.Service.csproj" />
     <Project Path="src/Watcher.EdgeAgent.Desktop/Watcher.EdgeAgent.Desktop.csproj" />
     <Project Path="src/Watcher.Api/Watcher.Api.csproj" />

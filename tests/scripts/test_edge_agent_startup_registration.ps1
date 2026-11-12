@@ -1045,7 +1045,7 @@ try {
         $installerText -notmatch 'FileAttributes\]::ReparsePoint') {
         throw 'Резервну копію має створювати служба до Stop-Service, а встановник має атомарно перемістити лише перевірений файл без виконання staging EXE.'
     }
-    $startupRegistration = $installerText.IndexOf('Set-EdgeAgentDesktopStartupEntry', [StringComparison]::Ordinal)
+    $startupRegistration = $installerText.IndexOf('Set-EdgeAgentStartupEntriesAtomically', [StringComparison]::Ordinal)
     $lateRollback = $installerText.LastIndexOf('Restore-EdgeAgentPackage -Deployment $packageDeployment', [StringComparison]::Ordinal)
     $deploymentCleanup = $installerText.IndexOf('Complete-EdgeAgentPackageDeployment -Deployment $packageDeployment', [StringComparison]::Ordinal)
     if ($startupRegistration -lt 0 -or $lateRollback -lt $startupRegistration -or $deploymentCleanup -lt $lateRollback) {
@@ -1142,21 +1142,25 @@ try {
 
     $serviceSource = Join-Path $testDeploymentRoot 'source-service'
     $desktopSource = Join-Path $testDeploymentRoot 'source-desktop'
+    $audioWorkerSource = Join-Path $testDeploymentRoot 'source-audio-worker'
     $installTarget = Join-Path $testDeploymentRoot 'Program Files\KGTA\EdgeAgent'
     $dataTarget = Join-Path $testDeploymentRoot 'ProgramData\KGTA\Alert\data\receipt.db'
-    New-Item -ItemType Directory -Path $serviceSource, $desktopSource, $installTarget, (Split-Path -Parent $dataTarget) -Force | Out-Null
+    New-Item -ItemType Directory -Path $serviceSource, $desktopSource, $audioWorkerSource, $installTarget, (Split-Path -Parent $dataTarget) -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $serviceSource 'service.exe') -Value 'old-service'
     Set-Content -LiteralPath (Join-Path $desktopSource 'panel.exe') -Value 'old-panel'
+    Set-Content -LiteralPath (Join-Path $audioWorkerSource 'Watcher.EdgeAgent.AudioWorker.exe') -Value 'old-audio-worker'
     Set-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Value 'previous-service'
     Set-Content -LiteralPath (Join-Path $installTarget 'panel.exe') -Value 'previous-panel'
     Set-Content -LiteralPath $dataTarget -Value 'preserved-receipt'
     Set-Content -LiteralPath (Join-Path $serviceSource 'service.exe') -Value 'new-service'
     Set-Content -LiteralPath (Join-Path $desktopSource 'panel.exe') -Value 'new-panel'
+    Set-Content -LiteralPath (Join-Path $audioWorkerSource 'Watcher.EdgeAgent.AudioWorker.exe') -Value 'new-audio-worker'
 
-    $deployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $installTarget
+    $deployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -AudioWorkerPublishDirectory $audioWorkerSource -InstallDirectory $installTarget
     Assert-Equal -Expected 'previous-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Підготовка пакета не має змінювати активні бінарні файли.'
     Install-EdgeAgentPackageStage -Deployment $deployment
     Assert-Equal -Expected 'new-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Після перемикання має бути встановлено новий пакет.'
+    Assert-Equal -Expected 'new-audio-worker' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'Watcher.EdgeAgent.AudioWorker.exe') -Raw).Trim() -Message 'Worker має встановлюватися атомарно разом зі службою та панеллю.'
     Assert-Equal -Expected 'preserved-receipt' -Actual (Get-Content -LiteralPath $dataTarget -Raw).Trim() -Message 'Оновлення не має змінювати квитанції в ProgramData.'
     Restore-EdgeAgentPackage -Deployment $deployment
     Assert-Equal -Expected 'previous-service' -Actual (Get-Content -LiteralPath (Join-Path $installTarget 'service.exe') -Raw).Trim() -Message 'Після невдалого health check має відновитися попередній пакет.'
@@ -1167,7 +1171,7 @@ try {
     $lateFailureTarget = Join-Path $testDeploymentRoot 'Late Failure\EdgeAgent'
     New-Item -ItemType Directory -Path $lateFailureTarget -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $lateFailureTarget 'service.exe') -Value 'previous-service'
-    $lateFailureDeployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $lateFailureTarget
+    $lateFailureDeployment = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -AudioWorkerPublishDirectory $audioWorkerSource -InstallDirectory $lateFailureTarget
     Install-EdgeAgentPackageStage -Deployment $lateFailureDeployment
     Assert-Equal -Expected $true -Actual (Test-Path -LiteralPath $lateFailureDeployment.BackupDirectory -PathType Container) -Message 'До завершення фіналізації попередній пакет має залишатися доступним для rollback.'
     try {
@@ -1180,7 +1184,7 @@ try {
     Complete-EdgeAgentPackageDeployment -Deployment $lateFailureDeployment
 
     $newInstallTarget = Join-Path $testDeploymentRoot 'New Install\EdgeAgent'
-    $newInstall = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -InstallDirectory $newInstallTarget
+    $newInstall = New-EdgeAgentPackageStage -ServicePublishDirectory $serviceSource -DesktopPublishDirectory $desktopSource -AudioWorkerPublishDirectory $audioWorkerSource -InstallDirectory $newInstallTarget
     Install-EdgeAgentPackageStage -Deployment $newInstall
     Restore-EdgeAgentPackage -Deployment $newInstall
     Assert-Equal -Expected $false -Actual (Test-Path -LiteralPath $newInstallTarget) -Message 'Невдала перша інсталяція має прибрати неповний пакет.'
@@ -1231,7 +1235,9 @@ try {
         $secondProfileRunKey = $baseKey.CreateSubKey($secondProfileRunSubKey, $true)
         if (-not $firstProfileRunKey -or -not $secondProfileRunKey) { throw 'Не вдалося створити ізольовані підрозділи автозапуску профілів.' }
         $expectedDesktopCommand = '"{0}"' -f [IO.Path]::GetFullPath($testExecutablePath)
+        $expectedAudioWorkerCommand = '"{0}" --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f [IO.Path]::GetFullPath($testExecutablePath)
         $firstProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', $expectedDesktopCommand, [Microsoft.Win32.RegistryValueKind]::String)
+        $firstProfileRunKey.SetValue('KGTA.Alert.AudioWorker', $expectedAudioWorkerCommand, [Microsoft.Win32.RegistryValueKind]::String)
         $firstProfileRunKey.SetValue('ExistingStartup', 'C:\Existing\Other.exe', [Microsoft.Win32.RegistryValueKind]::String)
         $secondProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', '"C:\Other\Panel.exe"', [Microsoft.Win32.RegistryValueKind]::String)
         $secondProfileRunKey.SetValue('ExistingStartup', 'C:\Existing\Other.exe', [Microsoft.Win32.RegistryValueKind]::String)
@@ -1260,7 +1266,7 @@ try {
     $removedStartupEntries = @(Remove-EdgeAgentDesktopStartupEntriesForProfiles `
         -Profiles $profileCleanupPlan.Profiles `
         -RegistryHive ([Microsoft.Win32.RegistryHive]::CurrentUser))
-    Assert-Equal -Expected 2 -Actual $removedStartupEntries.Count -Message 'Очищення має повернути snapshot кожного видаленого app-owned значення для rollback.'
+    Assert-Equal -Expected 3 -Actual $removedStartupEntries.Count -Message 'Очищення має snapshot-ити Run-записи панелі й worker для rollback.'
     Assert-Throws {
         Remove-EdgeAgentDesktopStartupEntriesForProfiles -Profiles @() -RegistryHive ([Microsoft.Win32.RegistryHive]::LocalMachine)
     } 'Масове очищення не має приймати HKLM.'
@@ -1270,6 +1276,7 @@ try {
         $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
         $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $false)
         Assert-Equal -Expected $false -Actual ($firstProfileRunKey.GetValueNames() -contains 'KGTA.Alert.OperatorPanel') -Message 'Очищення має прибирати запис KGTA Alert у кожному профілі.'
+        Assert-Equal -Expected $false -Actual ($firstProfileRunKey.GetValueNames() -contains 'KGTA.Alert.AudioWorker') -Message 'Очищення має прибирати автозапуск worker.'
         Assert-Equal -Expected 'C:\Existing\Other.exe' -Actual $firstProfileRunKey.GetValue('ExistingStartup') -Message 'Очищення має зберігати сторонні значення Run.'
         Assert-Equal -Expected $false -Actual ($secondProfileRunKey.GetValueNames() -contains 'KGTA.Alert.OperatorPanel') -Message 'Очищення має видалити застаріле app-owned значення навіть якщо шлях змінено.'
         Assert-Equal -Expected $expectedDesktopCommand -Actual $secondProfileRunKey.GetValue('OtherPanelStartup') -Message 'Очищення має залишити інші значення навіть якщо вони посилаються на той самий exe.'
@@ -1288,6 +1295,7 @@ try {
         $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
         $secondProfileRunKey = $baseKey.OpenSubKey($secondProfileRunSubKey, $false)
         Assert-Equal -Expected $expectedDesktopCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Rollback має відновити Run-запис першого профілю.'
+        Assert-Equal -Expected $expectedAudioWorkerCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.AudioWorker') -Message 'Rollback має відновити автозапуск worker.'
         Assert-Equal -Expected '"C:\Other\Panel.exe"' -Actual $secondProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Rollback має відновити Run-запис другого профілю без зміни його значення.'
     } finally {
         if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
@@ -1346,6 +1354,7 @@ try {
     try {
         $firstProfileRunKey = $baseKey.OpenSubKey($firstProfileRunSubKey, $false)
         Assert-Equal -Expected $expectedDesktopCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Помилка очищення має відновити вже видалений запис першого профілю.'
+        Assert-Equal -Expected $expectedAudioWorkerCommand -Actual $firstProfileRunKey.GetValue('KGTA.Alert.AudioWorker') -Message 'Помилка очищення має відновити автозапуск worker.'
     } finally {
         if ($firstProfileRunKey) { $firstProfileRunKey.Dispose(); $firstProfileRunKey = $null }
         $baseKey.Dispose()
@@ -1486,6 +1495,38 @@ try {
     } finally {
         if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
     }
+    $startupCommands = Set-EdgeAgentStartupEntriesAtomically `
+        -InteractiveUserSid $actualUserSid `
+        -RegistryHive ([Microsoft.Win32.RegistryHive]::Users) `
+        -RunSubKeyPath $actualUserRunSubKey `
+        -Entries @(
+            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.OperatorPanel'; ExecutablePath = $testExecutablePath; StartupArguments = '' },
+            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.AudioWorker'; ExecutablePath = $testExecutablePath; StartupArguments = '--audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' }
+        )
+    $workerCommand = $startupCommands | Where-Object Name -eq 'KGTA.Alert.AudioWorker' | Select-Object -ExpandProperty Command
+    $expectedWorkerCommand = '"{0}" --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f $testExecutablePath
+    Assert-Equal -Expected $expectedWorkerCommand -Actual $workerCommand -Message 'Worker Run-запис має містити шлях програми й явні аргументи аудіокаталогу та SID.'
+    $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
+    try {
+        Assert-Equal -Expected $expectedCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Транзакція має зареєструвати панель.'
+        Assert-Equal -Expected $workerCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.AudioWorker') -Message 'Worker має реєструватися лише в Run-розділі вибраного профілю.'
+    } finally {
+        if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+    }
+    Assert-Throws -Action {
+        Set-EdgeAgentStartupEntriesAtomically -InteractiveUserSid $actualUserSid -RegistryHive ([Microsoft.Win32.RegistryHive]::Users) -RunSubKeyPath $actualUserRunSubKey -Entries @(
+            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.OperatorPanel'; ExecutablePath = $testExecutablePath; StartupArguments = '--replacement' },
+            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.AudioWorker'; ExecutablePath = (Join-Path $testRootDirectory 'missing-worker.exe'); StartupArguments = '' }
+        )
+    } -Message 'Некоректний запис Worker має зупинити всю транзакцію автозапуску.'
+    $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
+    try {
+        Assert-Equal -Expected $expectedCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.OperatorPanel') -Message 'Помилка перевірки Worker має зберегти старий запис панелі.'
+        Assert-Equal -Expected $workerCommand -Actual $actualUserRunKey.GetValue('KGTA.Alert.AudioWorker') -Message 'Помилка перевірки Worker має зберегти старий запис Worker.'
+    } finally {
+        if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+    }
+    Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey -StartupValueName 'KGTA.Alert.AudioWorker'
     Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey
 
     Write-Host 'Перевірки автозапуску Windows-вузла пройшли.'
@@ -1501,6 +1542,7 @@ try {
         try {
             if ($actualUserRunKey) {
                 $actualUserRunKey.DeleteValue('KGTA.Alert.OperatorPanel', $false)
+                $actualUserRunKey.DeleteValue('KGTA.Alert.AudioWorker', $false)
             }
         } finally {
             if ($actualUserRunKey) { $actualUserRunKey.Dispose() }

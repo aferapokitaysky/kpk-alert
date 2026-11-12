@@ -10,6 +10,7 @@ public sealed record PlaybackRequest(
     Guid CommandId,
     string PresetCode,
     string FilePath,
+    string Sha256,
     DateTimeOffset DeadlineUtc,
     string? AudioEndpointId);
 
@@ -99,10 +100,33 @@ public interface IAudioAssetResolver
 public interface IAudioPlayer
 {
     Guid? ActiveCommandId { get; }
+    Task RecoverAfterServiceRestartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    Guid? ActiveEpisodeAnchorId => ActiveCommandId;
     Task StartAsync(PlaybackRequest request, CancellationToken cancellationToken);
+    Task StartCommandAsync(PlaybackRequest request, long sequence, string payloadHash,
+        CancellationToken cancellationToken) => StartAsync(request, cancellationToken);
+    async Task ReplaceAsync(Guid episodeAnchorCommandId, PlaybackRequest request, CancellationToken cancellationToken)
+    {
+        if (ActiveCommandId is not null)
+        {
+            if (ActiveEpisodeAnchorId != episodeAnchorCommandId ||
+                !await StopAsync(episodeAnchorCommandId, cancellationToken))
+            {
+                throw new AudioPlaybackException("replace_target_mismatch", new InvalidOperationException());
+            }
+        }
+
+        await StartAsync(request, cancellationToken);
+    }
+    Task ReplaceCommandAsync(Guid episodeAnchorCommandId, PlaybackRequest request, long sequence, string payloadHash,
+        CancellationToken cancellationToken) => ReplaceAsync(episodeAnchorCommandId, request, cancellationToken);
     Task ConfirmStartedAsync(Guid commandId, CancellationToken cancellationToken) => Task.CompletedTask;
     Task AbortStartAsync(Guid commandId, CancellationToken cancellationToken) => Task.CompletedTask;
     Task<bool> StopAsync(Guid targetCommandId, CancellationToken cancellationToken);
+    Task FailAsync(Guid targetCommandId, string diagnosticCode, CancellationToken cancellationToken) =>
+        StopAsync(targetCommandId, cancellationToken);
+    Task<bool> StopCommandAsync(Guid targetCommandId, Guid commandId, long sequence, string payloadHash,
+        CancellationToken cancellationToken) => StopAsync(targetCommandId, cancellationToken);
 }
 
 public interface IAudioEndpointAvailabilityMonitor

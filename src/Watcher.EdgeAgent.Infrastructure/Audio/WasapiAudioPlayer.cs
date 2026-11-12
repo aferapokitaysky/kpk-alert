@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
@@ -10,6 +11,7 @@ namespace Watcher.EdgeAgent.Infrastructure.Audio;
 
 public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
 {
+    private const long MaximumVerifiedAudioBytes = 100 * 1024 * 1024;
     private readonly string _audioRoot;
     private readonly IAudioPlaybackEventHandler _eventHandler;
     private readonly ILogger<WasapiAudioPlayer> _logger;
@@ -27,8 +29,53 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
     }
 
     public Guid? ActiveCommandId => _active?.Request.CommandId;
+    public Guid? ActiveEpisodeAnchorId => _active?.EpisodeAnchorCommandId;
 
-    public async Task StartAsync(PlaybackRequest request, CancellationToken cancellationToken)
+    public Task StartAsync(PlaybackRequest request, CancellationToken cancellationToken) =>
+        StartCoreAsync(request, request.CommandId, cancellationToken, null);
+
+    public async Task ReplaceAsync(
+        Guid episodeAnchorCommandId,
+        PlaybackRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (episodeAnchorCommandId == Guid.Empty || episodeAnchorCommandId == request.CommandId)
+        {
+            throw new AudioPlaybackException("replace_target_mismatch", new InvalidOperationException());
+        }
+
+        var verifiedAudio = await LoadVerifiedAudioAsync(request, cancellationToken);
+        ValidateEndpoint(request.AudioEndpointId);
+        if (request.DeadlineUtc <= DateTimeOffset.UtcNow)
+        {
+            throw new AudioPlaybackException("command_expired", new TimeoutException());
+        }
+
+        if (ActiveCommandId is null)
+        {
+            await StartCoreAsync(request, episodeAnchorCommandId, cancellationToken, verifiedAudio);
+            return;
+        }
+
+        if (ActiveEpisodeAnchorId != episodeAnchorCommandId)
+        {
+            throw new AudioPlaybackException("replace_target_mismatch", new InvalidOperationException());
+        }
+
+        if (!await StopAsync(episodeAnchorCommandId, cancellationToken))
+        {
+            throw new AudioPlaybackException("audio_output_unavailable", new InvalidOperationException());
+        }
+
+        await StartCoreAsync(request, episodeAnchorCommandId, cancellationToken, verifiedAudio);
+    }
+
+    private async Task StartCoreAsync(
+        PlaybackRequest request,
+        Guid episodeAnchorCommandId,
+        CancellationToken cancellationToken,
+        byte[]? preparedAudio)
     {
         ArgumentNullException.ThrowIfNull(request);
         await _gate.WaitAsync(cancellationToken);
@@ -50,14 +97,7 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
                 throw new AudioPlaybackException("audio_output_unavailable", new InvalidOperationException());
             }
 
-            var filePath = ValidateAudioPath(request.FilePath);
-            using (FileStream validationStream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                if (!PcmWaveFileValidator.IsSupported(validationStream, out _))
-                {
-                    throw new AudioPlaybackException("audio_format_unsupported", new InvalidDataException());
-                }
-            }
+            var verifiedAudio = preparedAudio ?? await LoadVerifiedAudioAsync(request, cancellationToken);
 
             PlaybackSession? session = null;
             MMDeviceEnumerator? enumerator = null;
@@ -76,9 +116,9 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
                     throw new AudioPlaybackException("audio_output_unavailable", exception);
                 }
 
-                reader = new WaveFileReader(filePath);
+                reader = new WaveFileReader(new MemoryStream(verifiedAudio, writable: false));
                 output = new WasapiOut(device, AudioClientShareMode.Shared, useEventSync: true, latency: 100);
-                session = new PlaybackSession(request, enumerator, device, reader, output);
+                session = new PlaybackSession(episodeAnchorCommandId, request, enumerator, device, reader, output);
                 output.PlaybackStopped += session.OnPlaybackStopped;
                 output.Init(reader);
                 _active = session;
@@ -125,6 +165,88 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
         }
     }
 
+    private async Task<byte[]> LoadVerifiedAudioAsync(PlaybackRequest request, CancellationToken cancellationToken)
+    {
+        var filePath = ValidateAudioPath(request.FilePath);
+        try
+        {
+            using FileStream validationStream = new(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return await ReadVerifiedAudioAsync(validationStream, request.Sha256, cancellationToken);
+        }
+        catch (AudioPlaybackException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new AudioPlaybackException("preset_missing", exception);
+        }
+    }
+
+    private static void ValidateEndpoint(string? endpointId)
+    {
+        if (string.IsNullOrWhiteSpace(endpointId) || endpointId.Length > 512)
+        {
+            throw new AudioPlaybackException("audio_output_unavailable", new InvalidOperationException());
+        }
+
+        try
+        {
+            using MMDeviceEnumerator enumerator = new();
+            using MMDevice device = enumerator.GetDevice(endpointId);
+            if (device.State != DeviceState.Active)
+            {
+                throw new AudioPlaybackException("audio_output_unavailable", new InvalidOperationException());
+            }
+        }
+        catch (AudioPlaybackException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new AudioPlaybackException("audio_output_unavailable", exception);
+        }
+    }
+
+    internal static async Task<byte[]> ReadVerifiedAudioAsync(
+        FileStream audioFile,
+        string? expectedSha256,
+        CancellationToken cancellationToken)
+    {
+        if (audioFile.Length is <= 0 or > MaximumVerifiedAudioBytes)
+        {
+            throw new AudioPlaybackException("audio_format_unsupported", new InvalidDataException());
+        }
+
+        var verifiedAudio = new byte[checked((int)audioFile.Length)];
+        await audioFile.ReadExactlyAsync(verifiedAudio, cancellationToken);
+        using MemoryStream contentStream = new(verifiedAudio, writable: false);
+        if (!PcmWaveFileValidator.IsSupported(contentStream, out _))
+        {
+            throw new AudioPlaybackException("audio_format_unsupported", new InvalidDataException());
+        }
+
+        byte[] expectedHash;
+        try
+        {
+            expectedHash = Convert.FromHexString(expectedSha256 ?? string.Empty);
+        }
+        catch (FormatException exception)
+        {
+            throw new AudioPlaybackException("manifest_mismatch", exception);
+        }
+
+        var actualHash = SHA256.HashData(verifiedAudio);
+        if (expectedHash.Length != actualHash.Length ||
+            !CryptographicOperations.FixedTimeEquals(actualHash, expectedHash))
+        {
+            throw new AudioPlaybackException("manifest_mismatch", new InvalidDataException());
+        }
+
+        return verifiedAudio;
+    }
+
     public async Task<bool> StopAsync(Guid targetCommandId, CancellationToken cancellationToken)
     {
         PlaybackSession? session;
@@ -132,7 +254,7 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
         try
         {
             session = _active;
-            if (session is null || session.Request.CommandId != targetCommandId)
+            if (session is null || session.EpisodeAnchorCommandId != targetCommandId)
             {
                 return false;
             }
@@ -147,6 +269,27 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
 
         await session.Finished.Task.WaitAsync(cancellationToken);
         return true;
+    }
+
+    public async Task FailAsync(Guid targetCommandId, string diagnosticCode, CancellationToken cancellationToken)
+    {
+        PlaybackSession? session;
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            session = _active;
+            if (session is null || session.EpisodeAnchorCommandId != targetCommandId)
+            {
+                return;
+            }
+
+            session.TrySetFinishState(DeviceCommandState.Failed, diagnosticCode);
+            session.StatePersisted.TrySetResult();
+            session.StopRequested.TrySetResult();
+        }
+        finally { _gate.Release(); }
+
+        await session.Finished.Task.WaitAsync(cancellationToken);
     }
 
     public async Task AbortStartAsync(Guid commandId, CancellationToken cancellationToken)
@@ -369,6 +512,7 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
     }
 
     private sealed class PlaybackSession(
+        Guid episodeAnchorCommandId,
         PlaybackRequest request,
         MMDeviceEnumerator enumerator,
         MMDevice device,
@@ -379,6 +523,7 @@ public sealed class WasapiAudioPlayer : IAudioPlayer, IAsyncDisposable
         private string? _finishDiagnosticCode;
 
         public PlaybackRequest Request { get; } = request;
+        public Guid EpisodeAnchorCommandId { get; } = episodeAnchorCommandId;
         public MMDeviceEnumerator Enumerator { get; } = enumerator;
         public MMDevice Device { get; } = device;
         public WaveFileReader Reader { get; } = reader;

@@ -21,5 +21,6 @@
     <Using Include="Xunit" />
     <ProjectReference Include="..\..\src\Watcher.EdgeAgent.Service\Watcher.EdgeAgent.Service.csproj" />
     <ProjectReference Include="..\..\src\Watcher.EdgeAgent.Infrastructure\Watcher.EdgeAgent.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Watcher.EdgeAgent.AudioWorker\Watcher.EdgeAgent.AudioWorker.csproj" />
   </ItemGroup>
 </Project>
