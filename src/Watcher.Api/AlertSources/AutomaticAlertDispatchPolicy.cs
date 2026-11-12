@@ -20,7 +20,8 @@ public sealed record AlertObservationBaseline(
     string? AlertLevel,
     string? LastAttemptedAlertLevel,
     string? LastAttemptedAlertLevelScope,
-    string? LastAttemptedAlertLevelScopeId);
+    string? LastAttemptedAlertLevelScopeId,
+    DateTimeOffset? LastAttemptedAlertLevelDataUpdatedAtUtc = null);
 
 public sealed record AutomaticAlertDispatchDecision(
     AutomaticAlertDispatchAction Action,
@@ -361,6 +362,9 @@ public sealed class AutomaticAlertDispatchPolicy
         IsKnownColoredLevel(observation.AlertLevel) &&
         string.Equals(baseline.LastAttemptedAlertLevelScope, observation.Scope, StringComparison.Ordinal) &&
         string.Equals(baseline.LastAttemptedAlertLevelScopeId, observation.ScopeId, StringComparison.Ordinal) &&
+        observation.DataUpdatedAtUtc is { } observedAtUtc &&
+        (baseline.LastAttemptedAlertLevelDataUpdatedAtUtc is not { } lastAppliedAtUtc ||
+         observedAtUtc > lastAppliedAtUtc) &&
         !string.Equals(baseline.LastAttemptedAlertLevel, observation.AlertLevel, StringComparison.Ordinal);
 
     private static List<PolicyObservation> GetPolicyObservations(

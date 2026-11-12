@@ -16,6 +16,7 @@ public sealed class AutomaticAlertDispatchState
     public string? LastAttemptedAlertLevel { get; set; }
     public string? LastAttemptedAlertLevelScope { get; set; }
     public string? LastAttemptedAlertLevelScopeId { get; set; }
+    public DateTimeOffset? LastAttemptedAlertLevelDataUpdatedAtUtc { get; set; }
     public string? Scope { get; set; }
     public string? ScopeId { get; set; }
     public Guid? StartCommandId { get; set; }

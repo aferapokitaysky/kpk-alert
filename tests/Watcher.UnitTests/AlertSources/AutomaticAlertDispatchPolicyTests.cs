@@ -533,6 +533,22 @@ public sealed class AutomaticAlertDispatchPolicyTests
         Assert.Equal(currentLevel, decision.Observation?.AlertLevel);
     }
 
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    public void Older_or_same_timestamp_colored_event_does_not_replace_the_applied_level(int minuteOffset)
+    {
+        AlertTargetStatus target = CorroboratedColorTarget("yellow", CheckedAtUtc.AddMinutes(minuteOffset));
+        AlertObservationBaseline baseline = new(AlertSourceCatalog.UkraineAlarmCode, "hromada",
+            AlertSourceCatalog.KremenchukHromadaId, "active", null, "red",
+            "hromada", AlertSourceCatalog.KremenchukHromadaId, CheckedAtUtc);
+
+        AutomaticAlertDispatchDecision decision = _policy.Evaluate(Status(target),
+            new OpenAlertEpisode(AlertScope.Hromada, AlertSourceCatalog.KremenchukHromadaId), baseline);
+
+        Assert.Equal(AutomaticAlertDispatchAction.NoChange, decision.Action);
+    }
+
     [Fact]
     public void Source_switch_from_inactive_to_active_only_rebases_without_starting()
     {

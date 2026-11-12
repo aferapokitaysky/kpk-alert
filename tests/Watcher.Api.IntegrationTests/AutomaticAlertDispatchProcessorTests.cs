@@ -118,6 +118,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
             .ToArrayAsync();
         Assert.False(state.HasOpenEpisode);
         Assert.Null(state.StartCommandId);
+        Assert.Null(state.LastAttemptedAlertLevelDataUpdatedAtUtc);
         Assert.Equal(2, commands.Length);
         Assert.Equal("start", commands[0].Action);
         Assert.Equal("stop", commands[1].Action);
@@ -132,6 +133,27 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         Assert.Equal(deviceIds.Order(), stopDeliveries.Select(item => item.DeviceId).Order());
         Assert.All(stopDeliveries, item => Assert.Equal(CommandDeliveryState.Pending, item.State));
         Assert.Equal(3, await db.AuditEvents.CountAsync());
+    }
+
+    [PostgresFact]
+    public async Task New_activation_after_confirmed_clear_starts_a_new_episode()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await ProcessAsync(InactiveStatus());
+        Assert.Equal(AutomaticAlertDispatchResult.Started, await ProcessAsync(ActiveStatus()));
+        await MaterializeStartDeliveriesAsync();
+        Assert.Equal(AutomaticAlertDispatchResult.Stopped,
+            await ProcessAsync(InactiveStatus(), Now.AddSeconds(1)));
+
+        Assert.Equal(AutomaticAlertDispatchResult.Started,
+            await ProcessAsync(ActiveStatus(), Now.AddSeconds(2)));
+
+        using WatcherDbContext db = _fixture.CreateDbContext();
+        AutomaticAlertDispatchState state = await db.AutomaticAlertDispatchStates.SingleAsync();
+        Assert.True(state.HasOpenEpisode);
+        Assert.Equal(2, await db.AlertCommands.CountAsync(item => item.Action == "start"));
+        Assert.Single(await db.AlertCommands.Where(item => item.Action == "stop").ToArrayAsync());
     }
 
     [PostgresFact]
@@ -287,6 +309,61 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         using WatcherDbContext db = _fixture.CreateDbContext();
         Assert.Empty(db.AlertCommands);
         Assert.Equal("active", (await db.AutomaticAlertDispatchStates.SingleAsync()).LastObservedLevel);
+    }
+
+    [PostgresFact]
+    public async Task Level_change_during_poll_gap_is_replaced_after_confirmation()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await AddLevelPresetsAsync();
+        await ProcessAsync(InactiveStatus());
+        Assert.Equal(AutomaticAlertDispatchResult.Started,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red")));
+        Guid[] deviceIds = await MaterializeStartDeliveriesAsync();
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "start", CommandDeliveryState.Playing);
+
+        using (WatcherDbContext db = _fixture.CreateDbContext())
+        {
+            AutomaticAlertDispatchState state = await db.AutomaticAlertDispatchStates.SingleAsync();
+            state.UpdatedAtUtc = Now.AddMinutes(-5);
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(AutomaticAlertDispatchResult.Held,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now), Now));
+        Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddSeconds(1)), Now.AddSeconds(1)));
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AlertCommand[] commands = await verifyDb.AlertCommands.OrderBy(item => item.CreatedAtUtc).ToArrayAsync();
+        Assert.Equal(["start", "replace"], commands.Select(item => item.Action));
+        Assert.Equal("yellow_alert", commands[1].PresetCode);
+    }
+
+    [PostgresFact]
+    public async Task Older_colored_snapshot_does_not_roll_back_the_applied_level()
+    {
+        await ResetEnvironmentAsync();
+        await AddAirRaidPresetAsync();
+        await AddLevelPresetsAsync();
+        await ProcessAsync(InactiveStatus());
+        Assert.Equal(AutomaticAlertDispatchResult.Started,
+            await ProcessAsync(CorroboratedColoredActiveStatus("red")));
+        Guid[] deviceIds = await MaterializeStartDeliveriesAsync();
+        await SetDeliveryStatesAndProtocolAsync(deviceIds, "start", CommandDeliveryState.Playing);
+
+        Assert.Equal(AutomaticAlertDispatchResult.NoChange,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(-1)),
+                Now.AddSeconds(1)));
+        Assert.Equal(AutomaticAlertDispatchResult.Replaced,
+            await ProcessAsync(CorroboratedColoredActiveStatus("yellow", Now.AddMinutes(1)),
+                Now.AddSeconds(2)));
+
+        using WatcherDbContext verifyDb = _fixture.CreateDbContext();
+        AlertCommand[] commands = await verifyDb.AlertCommands.OrderBy(item => item.CreatedAtUtc).ToArrayAsync();
+        Assert.Equal(["start", "replace"], commands.Select(item => item.Action));
+        Assert.Equal("yellow_alert", commands[1].PresetCode);
     }
 
     [PostgresFact]
@@ -477,6 +554,7 @@ public sealed class AutomaticAlertDispatchProcessorTests : IClassFixture<Postgre
         state.LastAttemptedAlertLevel = null;
         state.LastAttemptedAlertLevelScope = null;
         state.LastAttemptedAlertLevelScopeId = null;
+        state.LastAttemptedAlertLevelDataUpdatedAtUtc = null;
         state.UpdatedAtUtc = Now;
         await db.SaveChangesAsync();
         return seed;

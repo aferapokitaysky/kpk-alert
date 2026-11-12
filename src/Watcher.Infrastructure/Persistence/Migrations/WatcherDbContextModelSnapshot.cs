@@ -172,6 +172,9 @@ namespace Watcher.Infrastructure.Persistence.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)");
 
+                    b.Property<DateTimeOffset?>("LastAttemptedAlertLevelDataUpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("LastAttemptedAlertLevelScope")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
