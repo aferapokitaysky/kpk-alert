@@ -1235,7 +1235,7 @@ try {
         $secondProfileRunKey = $baseKey.CreateSubKey($secondProfileRunSubKey, $true)
         if (-not $firstProfileRunKey -or -not $secondProfileRunKey) { throw 'Не вдалося створити ізольовані підрозділи автозапуску профілів.' }
         $expectedDesktopCommand = '"{0}"' -f [IO.Path]::GetFullPath($testExecutablePath)
-        $expectedAudioWorkerCommand = '"{0}" --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f [IO.Path]::GetFullPath($testExecutablePath)
+        $expectedAudioWorkerCommand = '"{0}" --supervise --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f [IO.Path]::GetFullPath($testExecutablePath)
         $firstProfileRunKey.SetValue('KGTA.Alert.OperatorPanel', $expectedDesktopCommand, [Microsoft.Win32.RegistryValueKind]::String)
         $firstProfileRunKey.SetValue('KGTA.Alert.AudioWorker', $expectedAudioWorkerCommand, [Microsoft.Win32.RegistryValueKind]::String)
         $firstProfileRunKey.SetValue('ExistingStartup', 'C:\Existing\Other.exe', [Microsoft.Win32.RegistryValueKind]::String)
@@ -1501,10 +1501,10 @@ try {
         -RunSubKeyPath $actualUserRunSubKey `
         -Entries @(
             [pscustomobject]@{ StartupValueName = 'KGTA.Alert.OperatorPanel'; ExecutablePath = $testExecutablePath; StartupArguments = '' },
-            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.AudioWorker'; ExecutablePath = $testExecutablePath; StartupArguments = '--audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' }
+            [pscustomobject]@{ StartupValueName = 'KGTA.Alert.AudioWorker'; ExecutablePath = $testExecutablePath; StartupArguments = '--supervise --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' }
         )
     $workerCommand = $startupCommands | Where-Object Name -eq 'KGTA.Alert.AudioWorker' | Select-Object -ExpandProperty Command
-    $expectedWorkerCommand = '"{0}" --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f $testExecutablePath
+    $expectedWorkerCommand = '"{0}" --supervise --audio-root "C:\ProgramData\KGTA\Alert\audio" --user-sid "S-1-5-21-1-2-3-1001"' -f $testExecutablePath
     Assert-Equal -Expected $expectedWorkerCommand -Actual $workerCommand -Message 'Worker Run-запис має містити шлях програми й явні аргументи аудіокаталогу та SID.'
     $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
     try {

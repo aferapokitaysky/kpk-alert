@@ -68,6 +68,27 @@ public sealed class EdgeAgentConcurrencyAndOptionsTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Options_DefaultToInteractiveWorkerAndRequireConfiguredUserSid()
+    {
+        EdgeAgentOptions options = CreateOptions(interactiveUserSid: null);
+
+        Assert.Equal(EdgeAgentAudioSessionMode.UserSession, options.AudioSessionMode);
+        Assert.True(options.UsesInteractiveAudioWorker);
+        Assert.Equal("invalid_configuration", options.Validate());
+        Assert.Null(CreateOptions(audioSessionMode: EdgeAgentAudioSessionMode.UserSession,
+            interactiveUserSid: "S-1-5-21-1-2-3-1001").Validate());
+    }
+
+    [Fact]
+    public void Options_UsesDirectServiceAudioOnlyWhenExplicitlySelected()
+    {
+        EdgeAgentOptions options = CreateOptions(audioSessionMode: EdgeAgentAudioSessionMode.ServiceSession);
+
+        Assert.False(options.UsesInteractiveAudioWorker);
+        Assert.Null(options.Validate());
+    }
+
+    [Fact]
     public async Task RejectedCommandRedelivery_ReusesSameReceiptEventId()
     {
         var player = new FakeAudioPlayer();
@@ -105,7 +126,9 @@ public sealed class EdgeAgentConcurrencyAndOptionsTests : IAsyncLifetime
         int maximumClockSkewSeconds = 120,
         int maximumWebSocketMessageBytes = 32 * 1024,
         int maximumReceiptQueue = 10_000,
-        int reconnectMaximumDelaySeconds = 30) => new()
+        int reconnectMaximumDelaySeconds = 30,
+        EdgeAgentAudioSessionMode audioSessionMode = EdgeAgentAudioSessionMode.UserSession,
+        string? interactiveUserSid = "S-1-5-21-1-2-3-1001") => new()
         {
             BaseAddress = baseAddress ?? new Uri("https://watcher.example.edu.ua"),
             IdentityPath = identityPath,
@@ -114,6 +137,8 @@ public sealed class EdgeAgentConcurrencyAndOptionsTests : IAsyncLifetime
             DatabasePath = "C:\\ProgramData\\KGTA\\Alert\\edge-agent.db",
             AudioRootDirectory = "C:\\ProgramData\\KGTA\\Alert\\Audio",
             ClientCertificateThumbprint = new string('a', 40),
+            AudioSessionMode = audioSessionMode,
+            InteractiveUserSid = interactiveUserSid,
             MaximumClockSkewSeconds = maximumClockSkewSeconds,
             MaximumWebSocketMessageBytes = maximumWebSocketMessageBytes,
             MaximumReceiptQueue = maximumReceiptQueue,

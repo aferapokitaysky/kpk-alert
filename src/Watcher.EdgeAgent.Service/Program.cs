@@ -37,7 +37,7 @@ internal static class Program
         builder.Services.AddSingleton<IAudioAssetResolver>(services => services.GetRequiredService<LocalAudioAssetResolver>());
         builder.Services.AddSingleton<EdgeAgentStatusProvider>();
         builder.Services.AddSingleton<IAudioPlaybackEventHandler, EdgeAgentPlaybackEventHandler>();
-        if (options.AudioSessionMode == EdgeAgentAudioSessionMode.OperatorSession)
+        if (options.UsesInteractiveAudioWorker)
         {
             builder.Services.AddSingleton<AudioWorkerClient>();
             builder.Services.AddSingleton<IAudioEndpointControl>(services => services.GetRequiredService<AudioWorkerClient>());
@@ -128,7 +128,7 @@ internal static class Program
     private static EdgeAgentAudioSessionMode ReadAudioSessionMode(IConfigurationSection section)
     {
         var value = section["AudioSessionMode"];
-        if (value is null) return EdgeAgentAudioSessionMode.MachineSession;
+        if (value is null) return EdgeAgentAudioSessionMode.UserSession;
         if (Enum.TryParse(value, ignoreCase: false, out EdgeAgentAudioSessionMode mode) && Enum.IsDefined(mode))
         {
             return mode;

@@ -143,7 +143,9 @@ public sealed class DeviceCommandTransportTests
         WebSocketPath = "/api/v1/device/commands/stream",
         ReceiptPath = "/api/v1/device/command-receipts",
         DatabasePath = "unused.db",
-        AudioRootDirectory = "unused-audio"
+        AudioRootDirectory = "unused-audio",
+        AudioSessionMode = Watcher.EdgeAgent.Core.EdgeAgentAudioSessionMode.UserSession,
+        InteractiveUserSid = "S-1-5-21-1-2-3-1001"
     };
 
     private sealed class DelegateHandler(

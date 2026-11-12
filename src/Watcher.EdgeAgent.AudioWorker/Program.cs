@@ -24,10 +24,22 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        if (!OperatingSystem.IsWindows() || !TryReadArguments(args, out var audioRoot, out var expectedSid))
+        if (!OperatingSystem.IsWindows())
         {
             return 2;
         }
+
+        if (args.Length > 0 && args[0] == "--supervise")
+        {
+            return await RunSupervisorAsync(args[1..]);
+        }
+
+        if (args.Length > 0 && args[0] == "--worker")
+        {
+            args = args[1..];
+        }
+
+        if (!TryReadArguments(args, out var audioRoot, out var expectedSid)) return 2;
 
         try
         {
@@ -55,6 +67,85 @@ internal static class Program
             System.Diagnostics.Trace.TraceError("Audio worker зупинився: {0}.", exception.GetType().Name);
             return 4;
         }
+    }
+
+    private static async Task<int> RunSupervisorAsync(string[] args)
+    {
+        if (!TryReadArguments(args, out var audioRoot, out var expectedSid)) return 2;
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            using var supervisor = Process.GetCurrentProcess();
+            if (identity.User?.Value != expectedSid ||
+                !AudioWorkerPipeServer.IsAllowedSession(supervisor.SessionId, GetActiveConsoleSessionId()) ||
+                !Directory.Exists(audioRoot))
+            {
+                return 3;
+            }
+
+            var executablePath = Environment.ProcessPath
+                ?? throw new InvalidOperationException("Не вдалося визначити шлях supervisor-процесу.");
+            await RunSupervisionLoopAsync(async cancellationToken =>
+            {
+                ProcessStartInfo startInfo = new(executablePath)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(executablePath)!
+                };
+                startInfo.ArgumentList.Add("--worker");
+                startInfo.ArgumentList.Add("--audio-root");
+                startInfo.ArgumentList.Add(audioRoot!);
+                startInfo.ArgumentList.Add("--user-sid");
+                startInfo.ArgumentList.Add(expectedSid!);
+
+                using Process worker = Process.Start(startInfo)
+                    ?? throw new InvalidOperationException("Windows не запустила аудіопроцес.");
+                await worker.WaitForExitAsync(cancellationToken);
+                Trace.TraceWarning("Audio worker завершився з кодом {0}; запуск буде повторено.", worker.ExitCode);
+            }, Task.Delay, CancellationToken.None);
+            return 0;
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or
+                                           System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Trace.TraceError("Supervisor audio worker зупинився: {0}.", exception.GetType().Name);
+            return 4;
+        }
+    }
+
+    internal static async Task RunSupervisionLoopAsync(
+        Func<CancellationToken, Task> runWorker,
+        Func<TimeSpan, CancellationToken, Task> delay,
+        CancellationToken cancellationToken)
+    {
+        var failureCount = 0;
+        while (true)
+        {
+            DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+            try
+            {
+                await runWorker(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or
+                                               InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+                Trace.TraceError("Не вдалося запустити audio worker: {0}.", exception.GetType().Name);
+            }
+
+            if (DateTimeOffset.UtcNow - startedAt >= TimeSpan.FromMinutes(1)) failureCount = 0;
+            await delay(GetRestartDelay(failureCount++), cancellationToken);
+        }
+    }
+
+    internal static TimeSpan GetRestartDelay(int failureCount)
+    {
+        var exponent = Math.Clamp(failureCount, 0, 5);
+        return TimeSpan.FromSeconds(Math.Min(30, 1 << exponent));
     }
 
     [DllImport("kernel32.dll")]

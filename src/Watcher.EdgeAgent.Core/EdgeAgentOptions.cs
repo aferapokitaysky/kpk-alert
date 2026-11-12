@@ -2,8 +2,10 @@ namespace Watcher.EdgeAgent.Core;
 
 public enum EdgeAgentAudioSessionMode
 {
+    UserSession,
+    OperatorSession = UserSession,
     MachineSession,
-    OperatorSession
+    ServiceSession = MachineSession
 }
 
 public sealed class EdgeAgentOptions
@@ -18,8 +20,9 @@ public sealed class EdgeAgentOptions
     public required string AudioRootDirectory { get; init; }
     public string? ClientCertificateThumbprint { get; init; }
     public string? AudioEndpointId { get; init; }
-    public EdgeAgentAudioSessionMode AudioSessionMode { get; init; } = EdgeAgentAudioSessionMode.MachineSession;
+    public EdgeAgentAudioSessionMode AudioSessionMode { get; init; } = EdgeAgentAudioSessionMode.UserSession;
     public string? InteractiveUserSid { get; init; }
+    public bool UsesInteractiveAudioWorker => AudioSessionMode != EdgeAgentAudioSessionMode.MachineSession;
     public int MaximumClockSkewSeconds { get; init; } = 120;
     public int MaximumWebSocketMessageBytes { get; init; } = 32 * 1024;
     public int MaximumReceiptQueue { get; init; } = 10_000;
@@ -56,7 +59,7 @@ public sealed class EdgeAgentOptions
             return "invalid_configuration";
         }
 
-        if (AudioSessionMode == EdgeAgentAudioSessionMode.OperatorSession &&
+        if (AudioSessionMode != EdgeAgentAudioSessionMode.MachineSession &&
             (InteractiveUserSid is null ||
              !System.Text.RegularExpressions.Regex.IsMatch(InteractiveUserSid,
                  @"^S-1-(?:5-21-(?:\d+-){3}\d+|12-1-(?:\d+-){3}\d+)$",

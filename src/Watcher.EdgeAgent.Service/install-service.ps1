@@ -121,11 +121,11 @@ if (-not $configuration.EdgeAgent.BaseAddress -or -not $configuration.EdgeAgent.
     -not $configuration.EdgeAgent.AudioRootDirectory -or -not $configuration.EdgeAgent.ClientCertificateThumbprint) {
     throw 'Конфігурація має містити BaseAddress, DatabasePath, AudioRootDirectory і ClientCertificateThumbprint.'
 }
-$audioSessionMode = if ($null -eq $configuration.EdgeAgent.AudioSessionMode) { 'MachineSession' } else { [string]$configuration.EdgeAgent.AudioSessionMode }
-if ($audioSessionMode -notin @('MachineSession', 'OperatorSession')) {
-    throw 'AudioSessionMode має дорівнювати MachineSession або OperatorSession.'
+$audioSessionMode = if ($null -eq $configuration.EdgeAgent.AudioSessionMode) { 'UserSession' } else { [string]$configuration.EdgeAgent.AudioSessionMode }
+if ($audioSessionMode -notin @('UserSession', 'OperatorSession', 'MachineSession', 'ServiceSession')) {
+    throw 'AudioSessionMode має дорівнювати UserSession, OperatorSession, MachineSession або ServiceSession.'
 }
-if ($audioSessionMode -eq 'OperatorSession' -and
+if ($audioSessionMode -notin @('MachineSession', 'ServiceSession') -and
     [string]$configuration.EdgeAgent.InteractiveUserSid -ne $interactiveUserSid) {
     throw 'Для OperatorSession у edge-agent.json потрібно вказати InteractiveUserSid, що відповідає -InteractiveUser.'
 }
@@ -710,15 +710,13 @@ try {
         ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
         StartupArguments = ''
     })
-    if ($audioSessionMode -eq 'OperatorSession') {
-        $audioWorkerArguments = '--audio-root "{0}" --user-sid "{1}"' -f `
-            [string]$configuration.EdgeAgent.AudioRootDirectory, $interactiveUserSid
-        $startupEntries.Add([pscustomobject]@{
-            StartupValueName = 'KGTA.Alert.AudioWorker'
-            ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.AudioWorker.exe'
-            StartupArguments = $audioWorkerArguments
-        })
-    }
+    $audioWorkerArguments = '--supervise --audio-root "{0}" --user-sid "{1}"' -f `
+        [string]$configuration.EdgeAgent.AudioRootDirectory, $interactiveUserSid
+    $startupEntries.Add([pscustomobject]@{
+        StartupValueName = 'KGTA.Alert.AudioWorker'
+        ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.AudioWorker.exe'
+        StartupArguments = $audioWorkerArguments
+    })
     Set-EdgeAgentStartupEntriesAtomically `
         -InteractiveUserSid $interactiveUserSid `
         -Entries $startupEntries.ToArray()
