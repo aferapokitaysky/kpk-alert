@@ -1,11 +1,81 @@
 using System.Security.AccessControl;
 using System.Security.Principal;
+using Microsoft.Extensions.Logging.Abstractions;
+using Watcher.Contracts.DeviceCommands;
 using Watcher.EdgeAgent.AudioWorker;
+using Watcher.EdgeAgent.Contracts;
+using Watcher.EdgeAgent.Core;
 
 namespace Watcher.EdgeAgent.Service.IntegrationTests;
 
 public sealed class AudioWorkerSecurityTests
 {
+    [Fact]
+    public async Task WorkerRestartDuringPlayback_ReportsFailureWithoutReplayingCommand()
+    {
+        var commandId = Guid.NewGuid();
+        var startCount = 0;
+        TaskCompletionSource<(Guid CommandId, DeviceCommandState State, string? DiagnosticCode)> finished =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeClock clock = new();
+        EdgeAgentStatusProvider status = new(clock);
+        AudioWorkerClient client = new(
+            new EdgeAgentOptions
+            {
+                BaseAddress = new Uri("https://localhost"),
+                IdentityPath = "/api/v1/device/identity",
+                WebSocketPath = "/api/v1/device/commands/stream",
+                ReceiptPath = "/api/v1/device/command-receipts",
+                DatabasePath = "worker-test.db",
+                AudioRootDirectory = Path.GetTempPath()
+            },
+            new TestPlaybackEventHandler(finished),
+            status,
+            NullLogger<AudioWorkerClient>.Instance,
+            (request, _) =>
+            {
+                AudioWorkerResponse response = request.Operation switch
+                {
+                    "start" => StartResponse(request),
+                    "get_playback_event" => Response(request, activeCommandId: null, activeAnchorId: null),
+                    _ => Response(request)
+                };
+                return Task.FromResult(response);
+            });
+
+        AudioWorkerResponse StartResponse(AudioWorkerRequest request)
+        {
+            Interlocked.Increment(ref startCount);
+            return Response(request, commandId, commandId);
+        }
+
+        await client.StartAsync(CancellationToken.None);
+        try
+        {
+            await client.StartCommandAsync(
+                new PlaybackRequest(commandId, "air_raid", Path.Combine(Path.GetTempPath(), "test.wav"),
+                    new string('A', 64), DateTimeOffset.UtcNow.AddMinutes(5), "endpoint-1"),
+                sequence: 1,
+                payloadHash: new string('B', 64),
+                CancellationToken.None);
+
+            (Guid CommandId, DeviceCommandState State, string? DiagnosticCode) result =
+                await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.Delay(TimeSpan.FromMilliseconds(400));
+
+            Assert.Equal(commandId, result.CommandId);
+            Assert.Equal(DeviceCommandState.Failed, result.State);
+            Assert.Equal("audio_worker_unavailable", result.DiagnosticCode);
+            Assert.Equal(1, Volatile.Read(ref startCount));
+            Assert.Null(client.ActiveCommandId);
+            Assert.Equal("unavailable", status.Get().AudioState);
+        }
+        finally
+        {
+            await client.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task Supervisor_RestartsWorkerAfterExitWithBoundedBackoff()
     {
@@ -69,5 +139,31 @@ public sealed class AudioWorkerSecurityTests
     public void SessionValidation_UsesOnlyActiveConsoleSession(int workerSessionId, uint activeSessionId, bool expected)
     {
         Assert.Equal(expected, AudioWorkerPipeServer.IsAllowedSession(workerSessionId, activeSessionId));
+    }
+
+    private static AudioWorkerResponse Response(
+        AudioWorkerRequest request,
+        Guid? activeCommandId = null,
+        Guid? activeAnchorId = null) =>
+        new(1, request.RequestId, true, ActiveCommandId: activeCommandId,
+            ActiveEpisodeAnchorCommandId: activeAnchorId);
+
+    private sealed class TestPlaybackEventHandler(
+        TaskCompletionSource<(Guid CommandId, DeviceCommandState State, string? DiagnosticCode)> finished)
+        : IAudioPlaybackEventHandler
+    {
+        public Task OnPlaybackFinishedAsync(Guid commandId, DeviceCommandState state,
+            string? diagnosticCode, CancellationToken cancellationToken)
+        {
+            finished.TrySetResult((commandId, state, diagnosticCode));
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeClock : IEdgeAgentClock
+    {
+        public DateTimeOffset UtcNow => DateTimeOffset.UtcNow;
+        public long GetTimestamp() => System.Diagnostics.Stopwatch.GetTimestamp();
+        public TimeSpan GetElapsedTime(long startingTimestamp) => System.Diagnostics.Stopwatch.GetElapsedTime(startingTimestamp);
     }
 }

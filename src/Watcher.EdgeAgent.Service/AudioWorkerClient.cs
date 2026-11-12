@@ -36,6 +36,7 @@ internal sealed class AudioWorkerClient : IAudioEndpointControl, IAudioEndpointA
     private readonly IAudioPlaybackEventHandler _eventHandler;
     private readonly EdgeAgentStatusProvider _status;
     private readonly ILogger<AudioWorkerClient> _logger;
+    private readonly Func<AudioWorkerRequest, CancellationToken, Task<AudioWorkerResponse>>? _sendOverride;
     private readonly SemaphoreSlim _stateGate = new(1, 1);
     private readonly object _activeSync = new();
     private Guid? _activeCommandId;
@@ -47,13 +48,15 @@ internal sealed class AudioWorkerClient : IAudioEndpointControl, IAudioEndpointA
         EdgeAgentOptions options,
         IAudioPlaybackEventHandler eventHandler,
         EdgeAgentStatusProvider status,
-        ILogger<AudioWorkerClient> logger)
+        ILogger<AudioWorkerClient> logger,
+        Func<AudioWorkerRequest, CancellationToken, Task<AudioWorkerResponse>>? sendOverride = null)
     {
         _options = options;
         _audioRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.AudioRootDirectory));
         _eventHandler = eventHandler;
         _status = status;
         _logger = logger;
+        _sendOverride = sendOverride;
     }
 
     public Guid? ActiveCommandId { get { lock (_activeSync) return _activeCommandId; } }
@@ -247,42 +250,10 @@ internal sealed class AudioWorkerClient : IAudioEndpointControl, IAudioEndpointA
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            if (ActiveCommandId is null)
-            {
-                await Task.Delay(PollInterval, cancellationToken);
-                continue;
-            }
-
             try
             {
-                AudioWorkerResponse response = await Send(
-                    new AudioWorkerRequest(1, Guid.NewGuid(), "get_playback_event"), cancellationToken);
-                EnsureSuccess(response);
-                if (response.PlaybackEvent is { } playbackEvent)
-                {
-                    await _eventHandler.OnPlaybackFinishedAsync(playbackEvent.CommandId, playbackEvent.State,
-                        playbackEvent.DiagnosticCode, cancellationToken);
-                    EnsureSuccess(await Send(new AudioWorkerRequest(1, Guid.NewGuid(), "ack_playback_event",
-                        CommandId: playbackEvent.CommandId), cancellationToken));
-                    await _stateGate.WaitAsync(cancellationToken);
-                    try
-                    {
-                        if (ActiveCommandId == playbackEvent.CommandId)
-                        {
-                            SetActive(null, null);
-                            UpdateAudioStatus("idle", playbackEvent.CommandId, playbackEvent.DiagnosticCode);
-                        }
-                        else if (ActiveCommandId is { } activeCommandId)
-                        {
-                            UpdateAudioStatus("playing", activeCommandId, null);
-                        }
-                    }
-                    finally { _stateGate.Release(); }
-                }
-                else
-                {
-                    await Task.Delay(PollInterval, cancellationToken);
-                }
+                var handledPlaybackState = await PollPlaybackOnceAsync(cancellationToken);
+                if (!handledPlaybackState) await Task.Delay(PollInterval, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -299,6 +270,52 @@ internal sealed class AudioWorkerClient : IAudioEndpointControl, IAudioEndpointA
                 await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
             }
         }
+    }
+
+    private async Task<bool> PollPlaybackOnceAsync(CancellationToken cancellationToken)
+    {
+        await _stateGate.WaitAsync(cancellationToken);
+        try
+        {
+            Guid? expectedCommandId = ActiveCommandId;
+            Guid? expectedAnchorId = ActiveEpisodeAnchorId;
+            if (expectedCommandId is null || expectedAnchorId is null) return false;
+
+            AudioWorkerResponse response = await Send(
+                new AudioWorkerRequest(1, Guid.NewGuid(), "get_playback_event"), cancellationToken);
+            EnsureSuccess(response);
+            if (response.PlaybackEvent is { } playbackEvent)
+            {
+                await _eventHandler.OnPlaybackFinishedAsync(playbackEvent.CommandId, playbackEvent.State,
+                    playbackEvent.DiagnosticCode, cancellationToken);
+                EnsureSuccess(await Send(new AudioWorkerRequest(1, Guid.NewGuid(), "ack_playback_event",
+                    CommandId: playbackEvent.CommandId), cancellationToken));
+                if (ActiveCommandId == playbackEvent.CommandId)
+                {
+                    SetActive(null, null);
+                    UpdateAudioStatus("idle", playbackEvent.CommandId, playbackEvent.DiagnosticCode);
+                }
+                else if (ActiveCommandId is { } activeCommandId)
+                {
+                    UpdateAudioStatus("playing", activeCommandId, null);
+                }
+
+                return true;
+            }
+
+            if (response.ActiveCommandId != expectedCommandId ||
+                response.ActiveEpisodeAnchorCommandId != expectedAnchorId)
+            {
+                await _eventHandler.OnPlaybackFinishedAsync(expectedCommandId.Value, DeviceCommandState.Failed,
+                    "audio_worker_unavailable", cancellationToken);
+                SetActive(null, null);
+                UpdateAudioStatus("unavailable", expectedCommandId, "audio_worker_unavailable");
+                return true;
+            }
+
+            return false;
+        }
+        finally { _stateGate.Release(); }
     }
 
     private async Task FailActivePlaybackAsync(CancellationToken cancellationToken)
@@ -349,6 +366,8 @@ internal sealed class AudioWorkerClient : IAudioEndpointControl, IAudioEndpointA
 
     private async Task<AudioWorkerResponse> Send(AudioWorkerRequest request, CancellationToken cancellationToken)
     {
+        if (_sendOverride is not null) return await _sendOverride(request, cancellationToken);
+
         try
         {
             var activeSessionId = GetActiveConsoleSessionId();

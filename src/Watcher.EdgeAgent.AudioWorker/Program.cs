@@ -335,7 +335,9 @@ internal sealed class AudioWorkerPipeServer(
                     return Success(request.RequestId, ActiveCommandId: player.ActiveCommandId,
                         ActiveEpisodeAnchorCommandId: player.ActiveEpisodeAnchorId);
                 case "get_playback_event":
-                    return Success(request.RequestId, PlaybackEvent: events.PeekNext());
+                    return Success(request.RequestId, ActiveCommandId: player.ActiveCommandId,
+                        ActiveEpisodeAnchorCommandId: player.ActiveEpisodeAnchorId,
+                        PlaybackEvent: events.PeekNext());
                 case "ack_playback_event" when request.CommandId is { } eventCommandId:
                     return events.Acknowledge(eventCommandId)
                         ? Success(request.RequestId)
