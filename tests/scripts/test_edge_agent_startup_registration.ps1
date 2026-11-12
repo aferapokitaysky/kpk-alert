@@ -1526,6 +1526,15 @@ try {
     } finally {
         if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
     }
+    Set-EdgeAgentStartupEntriesAtomically -InteractiveUserSid $actualUserSid -RegistryHive ([Microsoft.Win32.RegistryHive]::Users) -RunSubKeyPath $actualUserRunSubKey -Entries @(
+        [pscustomobject]@{ StartupValueName = 'KGTA.Alert.OperatorPanel'; ExecutablePath = $testExecutablePath; StartupArguments = '' }
+    ) | Out-Null
+    $actualUserRunKey = $usersHive.OpenSubKey($actualUserRunSubKey, $false)
+    try {
+        Assert-Equal -Expected $false -Actual ($actualUserRunKey.GetValueNames() -contains 'KGTA.Alert.AudioWorker') -Message 'MachineSession має прибирати застарілий запис worker.'
+    } finally {
+        if ($actualUserRunKey) { $actualUserRunKey.Dispose() }
+    }
     Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey -StartupValueName 'KGTA.Alert.AudioWorker'
     Remove-EdgeAgentDesktopStartupEntry -InteractiveUserSid $actualUserSid -RunSubKeyPath $actualUserRunSubKey
 

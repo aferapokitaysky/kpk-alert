@@ -242,10 +242,11 @@ function Set-EdgeAgentStartupEntriesAtomically {
     )
 
     $InteractiveUserSid = Assert-EdgeAgentInteractiveUserSid -InteractiveUserSid $InteractiveUserSid
-    if ($Entries.Count -ne 2 -or
-        @($Entries | ForEach-Object { [string]$_.StartupValueName } | Sort-Object -Unique).Count -ne 2 -or
+    $entryNames = @($Entries | ForEach-Object { [string]$_.StartupValueName } | Sort-Object -Unique)
+    if ($Entries.Count -lt 1 -or $Entries.Count -gt 2 -or
+        $entryNames.Count -ne $Entries.Count -or
         @($Entries | Where-Object { $_.StartupValueName -notin $script:EdgeAgentStartupValueNames }).Count -gt 0) {
-        throw 'План автозапуску має містити рівно два унікальні записи KGTA Alert.'
+        throw 'План автозапуску має містити один або два унікальні записи KGTA Alert.'
     }
 
     $preparedEntries = foreach ($entry in $Entries) {
@@ -279,13 +280,13 @@ function Set-EdgeAgentStartupEntriesAtomically {
         if (-not $runKey) { throw 'Не вдалося відкрити розділ автозапуску інтерактивного користувача.' }
 
         $previous = @{}
-        foreach ($entry in $preparedEntries) {
-            $exists = $runKey.GetValueNames() -contains $entry.Name
-            $previous[$entry.Name] = if ($exists) {
+        foreach ($name in $script:EdgeAgentStartupValueNames) {
+            $exists = $runKey.GetValueNames() -contains $name
+            $previous[$name] = if ($exists) {
                 [pscustomobject]@{
                     Exists = $true
-                    Value = $runKey.GetValue($entry.Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-                    Kind = $runKey.GetValueKind($entry.Name)
+                    Value = $runKey.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                    Kind = $runKey.GetValueKind($name)
                 }
             } else { [pscustomobject]@{ Exists = $false; Value = $null; Kind = $null } }
         }
@@ -294,15 +295,18 @@ function Set-EdgeAgentStartupEntriesAtomically {
             foreach ($entry in $preparedEntries) {
                 $runKey.SetValue($entry.Name, $entry.Command, [Microsoft.Win32.RegistryValueKind]::String)
             }
+            foreach ($name in $script:EdgeAgentStartupValueNames) {
+                if (-not ($preparedEntries.Name -contains $name)) { $runKey.DeleteValue($name, $false) }
+            }
         } catch {
             $writeFailure = $_
             $rollbackFailures = [System.Collections.Generic.List[string]]::new()
-            foreach ($entry in $preparedEntries) {
+            foreach ($name in $script:EdgeAgentStartupValueNames) {
                 try {
-                    $snapshot = $previous[$entry.Name]
-                    if ($snapshot.Exists) { $runKey.SetValue($entry.Name, $snapshot.Value, $snapshot.Kind) }
-                    else { $runKey.DeleteValue($entry.Name, $false) }
-                } catch { $rollbackFailures.Add("$($entry.Name): $_") }
+                    $snapshot = $previous[$name]
+                    if ($snapshot.Exists) { $runKey.SetValue($name, $snapshot.Value, $snapshot.Kind) }
+                    else { $runKey.DeleteValue($name, $false) }
+                } catch { $rollbackFailures.Add("$name`: $_") }
             }
             if ($rollbackFailures.Count -gt 0) {
                 throw "Не вдалося оновити автозапуск; частину попередніх значень не відновлено: $($rollbackFailures -join '; '). Початкова помилка: $writeFailure"

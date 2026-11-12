@@ -704,22 +704,24 @@ try {
         Write-Warning "Службу налаштовано на автоматичний запуск після завантаження Windows, але зараз не запущено й не перевірено. Надайте $serviceAccount право читання приватного ключа в certlm.msc, перевірте запуск командою Start-Service -Name '$serviceName' і стан автозапуску через Get-Service -Name '$serviceName'."
     }
     $finalService = Get-Service -Name $serviceName
-    $audioWorkerArguments = '--audio-root "{0}" --user-sid "{1}"' -f `
-        [string]$configuration.EdgeAgent.AudioRootDirectory, $interactiveUserSid
+    $startupEntries = [System.Collections.Generic.List[object]]::new()
+    $startupEntries.Add([pscustomobject]@{
+        StartupValueName = 'KGTA.Alert.OperatorPanel'
+        ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
+        StartupArguments = ''
+    })
+    if ($audioSessionMode -eq 'OperatorSession') {
+        $audioWorkerArguments = '--audio-root "{0}" --user-sid "{1}"' -f `
+            [string]$configuration.EdgeAgent.AudioRootDirectory, $interactiveUserSid
+        $startupEntries.Add([pscustomobject]@{
+            StartupValueName = 'KGTA.Alert.AudioWorker'
+            ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.AudioWorker.exe'
+            StartupArguments = $audioWorkerArguments
+        })
+    }
     Set-EdgeAgentStartupEntriesAtomically `
         -InteractiveUserSid $interactiveUserSid `
-        -Entries @(
-            [pscustomobject]@{
-                StartupValueName = 'KGTA.Alert.OperatorPanel'
-                ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.Desktop.exe'
-                StartupArguments = ''
-            },
-            [pscustomobject]@{
-                StartupValueName = 'KGTA.Alert.AudioWorker'
-                ExecutablePath = Join-Path $installDirectory 'Watcher.EdgeAgent.AudioWorker.exe'
-                StartupArguments = $audioWorkerArguments
-            }
-        )
+        -Entries $startupEntries.ToArray()
 } catch {
     $finalizationFailure = $_
     $rollbackFailures = [System.Collections.Generic.List[string]]::new()
